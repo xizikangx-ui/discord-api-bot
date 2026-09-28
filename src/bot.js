@@ -1197,7 +1197,8 @@ function managementRosterEmbeds(guildId, tier = 'senior', roleId = null) {
 }
 
 async function fetchManagementMemberMap(guild, memberList = null) {
-  const fetched = memberList || await guild.members.fetch();
+  if (!memberList) throw new Error('A member collection is required for in-memory management sync.');
+  const fetched = memberList;
   const entries = fetched && typeof fetched.values === 'function'
     ? [...fetched.values()]
     : Array.isArray(fetched) ? fetched : null;
@@ -1213,6 +1214,22 @@ async function fetchManagementMemberMap(guild, memberList = null) {
     throw new Error(`Discord 返回了 ${incomplete.length} 条不完整的成员数据，无法安全读取身份组；请稍后刷新成员名单。`);
   }
   return new Map(members.map((member) => [member.id, member]));
+}
+
+async function forEachGuildMemberPage(guild, visitPage) {
+  let after = null;
+  while (true) {
+    const query = new URLSearchParams({ limit: '1000' });
+    if (after) query.set('after', after);
+    const page = await client.rest.get(Routes.guildMembers(guild.id), { query });
+    if (!Array.isArray(page)) throw new Error('Discord returned an invalid paginated member list.');
+    if (!page.length) return;
+    await visitPage(page);
+    const nextAfter = page.at(-1)?.user?.id;
+    if (!nextAfter || nextAfter === after) throw new Error('Discord member pagination did not advance.');
+    after = nextAfter;
+    if (page.length < 1000) return;
+  }
 }
 
 function memberHasCachedRole(member, roleId) {
@@ -1259,11 +1276,9 @@ async function syncManagementCompanionRole(guild, memberList = null) {
   const track = managementTrack(setting, 'senior');
   if (!track.roleId || !track.companionRoleId) return { configured: false, granted: 0, failed: 0 };
   if (track.roleId === track.companionRoleId) throw new Error('主管理身份组和配套身份组不能相同。');
-  const [mainRole, companionRole, botMember, fetchedMembers] = await Promise.all([
+  const [mainRole, companionRole, botMember] = await Promise.all([
     guild.roles.fetch(track.roleId), guild.roles.fetch(track.companionRoleId), guild.members.fetchMe(),
-    memberList ? Promise.resolve(memberList) : guild.members.fetch(),
   ]);
-  const members = await fetchManagementMemberMap(guild, fetchedMembers);
   if (!mainRole || !companionRole || companionRole.managed || companionRole.id === guild.id) {
     throw new Error('主管理或配套身份组无效。');
   }
@@ -1271,9 +1286,11 @@ async function syncManagementCompanionRole(guild, memberList = null) {
   if (companionRole.position >= botMember.roles.highest.position) throw new Error('机器人身份组必须高于配套身份组。');
   let granted = 0;
   let failed = 0;
-  const holders = [...members.values()].filter((member) => !member.user.bot && memberHasCachedRole(member, mainRole.id));
-  for (const member of holders) {
-    if (memberHasCachedRole(member, companionRole.id)) continue;
+  let holders = 0;
+  const syncMember = async (member) => {
+    if (!member?.user || member.user.bot || !memberHasCachedRole(member, mainRole.id)) return;
+    holders += 1;
+    if (memberHasCachedRole(member, companionRole.id)) return;
     try {
       await member.roles.add(companionRole, '自动同步主管理配套身份组');
       granted += 1;
@@ -1281,8 +1298,30 @@ async function syncManagementCompanionRole(guild, memberList = null) {
       failed += 1;
       logFailure(`无法向成员 ${member.id} 发放主管理配套身份组。`, error);
     }
+  };
+  if (memberList) {
+    const members = await fetchManagementMemberMap(guild, memberList);
+    for (const member of members.values()) await syncMember(member);
+  } else {
+    await forEachGuildMemberPage(guild, async (page) => {
+      for (const data of page) {
+        const user = data?.user;
+        if (!user?.id || user.bot || !data.roles?.includes(mainRole.id)) continue;
+        if (data.roles.includes(companionRole.id)) {
+          holders += 1;
+          continue;
+        }
+        try {
+          const member = await guild.members.fetch({ user: user.id, force: true, cache: false });
+          await syncMember(member);
+        } catch (error) {
+          failed += 1;
+          logFailure(`无法读取成员 ${user.id} 并发放主管理配套身份组。`, error);
+        }
+      }
+    });
   }
-  return { configured: true, granted, failed, holders: holders.size };
+  return { configured: true, granted, failed, holders };
 }
 
 async function setManagementCompanionRole(member) {
@@ -1315,14 +1354,33 @@ async function syncManagementRole(guild, tier = 'senior', memberList = null, rol
   const role = await guild.roles.fetch(track.roleId);
   if (!role) return false;
   // Requires the privileged Server Members Intent in the Developer Portal.
-  const members = await fetchManagementMemberMap(guild, memberList);
+  let members;
+  let presentIds;
+  if (memberList) {
+    members = await fetchManagementMemberMap(guild, memberList);
+    presentIds = new Set([...members.values()]
+      .filter((member) => !member.user.bot && memberHasCachedRole(member, role.id))
+      .map((member) => member.id));
+  } else {
+    const trackedIds = new Set(track.terms.filter((term) => !term.endedAt && !term.isBot).map((term) => term.userId));
+    members = new Map();
+    presentIds = new Set();
+    await forEachGuildMemberPage(guild, async (page) => {
+      for (const data of page) {
+        const userId = data?.user?.id;
+        if (!userId) continue;
+        const hasRole = data.roles?.includes(role.id) || false;
+        if (hasRole && !data.user.bot) presentIds.add(userId);
+        if (hasRole || trackedIds.has(userId)) members.set(userId, { id: userId, user: { bot: Boolean(data.user.bot) } });
+      }
+    });
+  }
   if (tier === 'senior' && track.companionRoleId) {
-    await syncManagementCompanionRole(guild, members).catch((error) => logFailure('主管理配套身份组同步失败。', error));
+    await syncManagementCompanionRole(guild, memberList || undefined).catch((error) => logFailure('主管理配套身份组同步失败。', error));
   }
   const now = Date.now();
   const terms = track.terms;
   const activeTerms = terms.filter((term) => !term.endedAt && !term.isBot);
-  const presentIds = new Set([...members.values()].filter((member) => !member.user.bot && memberHasCachedRole(member, role.id)).map((member) => member.id));
   const newlyDetected = [];
   const removed = [];
   let changed = false;
@@ -1619,20 +1677,15 @@ client.once('clientReady', async () => {
       if (track.roleId && track.channelId) tracks.push(['middle', roleId]);
     }
     if (!tracks.length && !(seniorTrack.roleId && seniorTrack.companionRoleId)) continue;
-    guild.members.fetch().then(async (members) => {
-      const jobs = tracks.map(([tier, roleId]) => {
-        const track = managementTrack(setting, tier, roleId);
-        return syncManagementRole(guild, tier, members, roleId).catch((error) => {
-          logFailure(`${track.label}成员读取失败。请在 Developer Portal 开启 Server Members Intent。`, error);
-        });
+    for (const [tier, roleId] of tracks) {
+      const track = managementTrack(setting, tier, roleId);
+      await syncManagementRole(guild, tier, null, roleId).catch((error) => {
+        logFailure(`${track.label}成员读取失败。请在 Developer Portal 开启 Server Members Intent。`, error);
       });
-      if (seniorTrack.roleId && seniorTrack.companionRoleId && !tracks.some(([tier]) => tier === 'senior')) {
-        jobs.push(syncManagementCompanionRole(guild, members).catch((error) => logFailure('主管理配套身份组同步失败。', error)));
-      }
-      await Promise.all(jobs);
-    }).catch((error) => {
-      logFailure('管理组成员列表读取失败。请在 Developer Portal 开启 Server Members Intent。', error);
-    });
+    }
+    if (seniorTrack.roleId && seniorTrack.companionRoleId && !tracks.some(([tier]) => tier === 'senior')) {
+      await syncManagementCompanionRole(guild).catch((error) => logFailure('主管理配套身份组同步失败。', error));
+    }
   }
   setInterval(() => reconcileLongTimeouts().catch((error) => logFailure('Timeout scheduler failed.', error)), 60 * 1000);
   await processSchedules().catch((error) => logFailure('Schedule startup processing failed.', error));
@@ -2224,26 +2277,28 @@ client.on('interactionCreate', async (interaction) => {
           await saveGuildData();
           let summary;
           try {
-            const members = await fetchManagementMemberMap(interaction.guild);
             let removedPrevious = 0;
             let failedPrevious = 0;
             if (previousRoleId && previousRoleId !== role.id) {
               const previousRole = await interaction.guild.roles.fetch(previousRoleId).catch(() => null);
               if (previousRole && !previousRole.managed && previousRole.position < botMember.roles.highest.position) {
-                const currentManagers = [...members.values()].filter((member) => !member.user.bot && memberHasCachedRole(member, track.roleId));
-                for (const member of currentManagers) {
-                  if (!memberHasCachedRole(member, previousRole.id)) continue;
-                  try {
-                    await member.roles.remove(previousRole, '更换主管理配套身份组');
-                    removedPrevious += 1;
-                  } catch (error) {
-                    failedPrevious += 1;
-                    logFailure(`无法移除成员 ${member.id} 的旧主管理配套身份组。`, error);
+                await forEachGuildMemberPage(interaction.guild, async (page) => {
+                  for (const data of page) {
+                    const user = data?.user;
+                    if (!user?.id || user.bot || !data.roles?.includes(track.roleId) || !data.roles.includes(previousRole.id)) continue;
+                    try {
+                      const member = await interaction.guild.members.fetch({ user: user.id, force: true, cache: false });
+                      await member.roles.remove(previousRole, '更换主管理配套身份组');
+                      removedPrevious += 1;
+                    } catch (error) {
+                      failedPrevious += 1;
+                      logFailure(`无法移除成员 ${user.id} 的旧主管理配套身份组。`, error);
+                    }
                   }
-                }
+                });
               }
             }
-            summary = await syncManagementCompanionRole(interaction.guild, members);
+            summary = await syncManagementCompanionRole(interaction.guild);
             summary.removedPrevious = removedPrevious;
             summary.failedPrevious = failedPrevious;
           } catch (error) {
