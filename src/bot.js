@@ -251,7 +251,7 @@ const commands = [
     .setName('永封').setDescription('永久封禁并移出目标成员')
     .addStringOption((o) => o.setName('原因').setDescription('封禁原因').setRequired(true).setMaxLength(400))
     .addUserOption((o) => o.setName('成员').setDescription('从当前服务器选择成员（可选）').setRequired(false))
-    .addStringOption((o) => o.setName('用户ID').setDescription('服务器外用户：输入用户 ID 或用户提及（可选）').setRequired(false).setMaxLength(32)),
+    .addStringOption((o) => o.setName('user_id').setDescription('服务器外用户：输入用户 ID 或用户提及（可选）').setRequired(false).setMaxLength(32)),
   new SlashCommandBuilder()
     .setName('撤销处罚').setDescription('按处罚 ID 撤销警告、禁言或封禁')
     .addStringOption((o) => o.setName('处罚编号').setDescription('处罚记录中的编号').setRequired(true).setMaxLength(32)),
@@ -2629,7 +2629,7 @@ client.on('interactionCreate', async (interaction) => {
       let user;
       if (isPermanentBan) {
         const selectedUser = interaction.options.getUser('成员');
-        const rawUserId = interaction.options.getString('用户ID')?.trim();
+        const rawUserId = interaction.options.getString('user_id')?.trim();
         if (Boolean(selectedUser) === Boolean(rawUserId)) {
           await interaction.editReply('请在“成员”和“用户 ID”中任选一项填写。服务器外用户请填写用户 ID 或用户提及。');
           return;
