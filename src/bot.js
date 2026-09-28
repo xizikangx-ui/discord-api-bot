@@ -1109,8 +1109,6 @@ function managementPanelComponents(guildId, tier = 'senior') {
       .setPlaceholder(`选择${label}公示频道`).setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`${prefix}-role:${guildId}`)
       .setPlaceholder(`选择${label}身份组`)),
-    new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`${prefix}-companion-role:${guildId}`)
-      .setPlaceholder('选择主管理身份组的配套身份组')),
     new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`${prefix}-appoint:${guildId}`)
       .setPlaceholder('多选成员并任命').setMinValues(1).setMaxValues(25)),
     new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`${prefix}-resign:${guildId}`)
