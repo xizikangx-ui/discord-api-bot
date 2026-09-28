@@ -249,8 +249,9 @@ const commands = [
     .addIntegerOption((o) => o.setName('警告天数').setDescription('警告身份组保留天数（1 到 90；留空则不自动移除）').setRequired(false).setMinValue(1).setMaxValue(90)),
   new SlashCommandBuilder()
     .setName('永封').setDescription('永久封禁并移出目标成员')
-    .addUserOption((o) => o.setName('成员').setDescription('被封禁成员').setRequired(true))
-    .addStringOption((o) => o.setName('原因').setDescription('封禁原因').setRequired(true).setMaxLength(400)),
+    .addStringOption((o) => o.setName('原因').setDescription('封禁原因').setRequired(true).setMaxLength(400))
+    .addUserOption((o) => o.setName('成员').setDescription('从当前服务器选择成员（可选）').setRequired(false))
+    .addStringOption((o) => o.setName('用户ID').setDescription('服务器外用户：输入用户 ID 或用户提及（可选）').setRequired(false).setMaxLength(32)),
   new SlashCommandBuilder()
     .setName('撤销处罚').setDescription('按处罚 ID 撤销警告、禁言或封禁')
     .addStringOption((o) => o.setName('处罚编号').setDescription('处罚记录中的编号').setRequired(true).setMaxLength(32)),
@@ -699,7 +700,12 @@ async function validatePunishmentRequest(interaction, request) {
   for (const guild of guilds) {
     let member;
     try { member = await guild.members.fetch(user.id); }
-    catch { throw new Error(`目标成员不在服务器“${guild.name}”中，未执行处罚。`); }
+    catch {
+      if (!hasBan) throw new Error(`目标成员不在服务器“${guild.name}”中，未执行处罚。`);
+      // Discord permits banning a user by ID even when they have already left this guild.
+      // For a synchronized ban, keep this guild in the transaction and ban the ID there too.
+      member = null;
+    }
     const botMember = await guild.members.fetchMe();
     const setting = settingsFor(guild.id);
     const previousCase = guildData.punishmentCases.find((item) => item.guildId === guild.id && item.userId === user.id && item.status === 'active');
@@ -715,7 +721,7 @@ async function validatePunishmentRequest(interaction, request) {
     if (botNeedsBan && !botMember.permissions.has(PermissionFlagsBits.BanMembers)) {
       throw new Error(`机器人在“${guild.name}”缺少“封禁成员”权限，未执行处罚。`);
     }
-    if (member.roles.highest.position >= botMember.roles.highest.position) {
+    if (member && member.roles.highest.position >= botMember.roles.highest.position) {
       throw new Error(`机器人身份组必须高于目标成员在“${guild.name}”中的最高身份组，未执行处罚。`);
     }
     if (!setting.logChannelId) throw new Error(`尚未为“${guild.name}”配置处罚记录频道。请先在该服务器运行“/处罚面板”。`);
@@ -763,8 +769,8 @@ async function executePunishmentRequestUnlocked(interaction, request) {
   try {
     for (const context of contexts) {
       const { guild, member, warningRole, previousCase } = context;
-      const oldTimeoutUntil = member.communicationDisabledUntilTimestamp || 0;
-      const alreadyHeldWarning = Boolean(warningRole && member.roles.cache.has(warningRole.id));
+      const oldTimeoutUntil = member?.communicationDisabledUntilTimestamp || 0;
+      const alreadyHeldWarning = Boolean(warningRole && member?.roles.cache.has(warningRole.id));
       const appliedContext = { context, oldTimeoutUntil, alreadyHeldWarning, addedWarning: false, changedTimeout: false, banned: false };
       applied.push(appliedContext);
       if (hasBan) {
@@ -2620,7 +2626,27 @@ client.on('interactionCreate', async (interaction) => {
       const hasBan = mode === 'ban';
       const hasWarning = !hasBan && mode !== 'timeout';
       const hasTimeout = !hasBan && mode !== 'warning';
-      const user = interaction.options.getUser('成员', true);
+      let user;
+      if (isPermanentBan) {
+        const selectedUser = interaction.options.getUser('成员');
+        const rawUserId = interaction.options.getString('用户ID')?.trim();
+        if (Boolean(selectedUser) === Boolean(rawUserId)) {
+          await interaction.editReply('请在“成员”和“用户 ID”中任选一项填写。服务器外用户请填写用户 ID 或用户提及。');
+          return;
+        }
+        if (selectedUser) user = selectedUser;
+        else {
+          const match = rawUserId.match(/^(?:<@!?(\d{17,20})>|(\d{17,20}))$/);
+          if (!match) {
+            await interaction.editReply('用户 ID 格式不正确。请粘贴 17 到 20 位数字 ID，或用户提及。');
+            return;
+          }
+          try { user = await client.users.fetch(match[1] || match[2]); }
+          catch { await interaction.editReply('无法通过这个 ID 找到 Discord 用户，请检查 ID 是否正确。'); return; }
+        }
+      } else {
+        user = interaction.options.getUser('成员', true);
+      }
       const reason = interaction.options.getString('原因', true);
       const timeoutDays = isPermanentBan ? null : interaction.options.getInteger('禁言天数');
       const warningDays = isPermanentBan ? null : interaction.options.getInteger('警告天数');
@@ -2654,11 +2680,11 @@ client.on('interactionCreate', async (interaction) => {
         const caseWarningEndAt = previousCase?.hasWarning && previousCase.warningDays && previousCase.createdAt
           ? previousCase.createdAt + previousCase.warningDays * DAY : 0;
         const warningEndAt = warningExpiration?.expiresAt || (caseWarningEndAt > createdAt ? caseWarningEndAt : 0);
-        const warningRoleHeld = Boolean(context.warningRole && context.member.roles.cache.has(context.warningRole.id));
+        const warningRoleHeld = Boolean(context.warningRole && context.member?.roles.cache.has(context.warningRole.id));
         const warningActive = Boolean(warningExpiration)
           || Boolean(previousCase?.hasWarning && (!previousCase.warningDays || caseWarningEndAt > createdAt))
           || (warningRoleHeld && !previousCase?.hasWarning);
-        const timeoutUntil = context.member.communicationDisabledUntilTimestamp || 0;
+        const timeoutUntil = context.member?.communicationDisabledUntilTimestamp || 0;
         const timeoutSchedule = longTimeouts.find((item) => item.guildId === context.guild.id
           && item.userId === context.user.id && (!previousCase || item.caseId === previousCase.id));
         const caseTimeoutEndAt = previousCase?.hasTimeout && previousCase.timeoutDays && previousCase.createdAt
@@ -2675,15 +2701,16 @@ client.on('interactionCreate', async (interaction) => {
           const existing = item.previousCase;
           const expires = guildData.warningExpirations.find((entry) => entry.guildId === item.guild.id && entry.userId === user.id
             && entry.roleId === item.warningRole?.id && entry.expiresAt > createdAt);
-          const warningHeld = Boolean(item.warningRole && item.member.roles.cache.has(item.warningRole.id));
+          const warningHeld = Boolean(item.warningRole && item.member?.roles.cache.has(item.warningRole.id));
           const warningOngoing = Boolean(expires) || Boolean(existing?.hasWarning && (!existing.warningDays || (existing.createdAt + existing.warningDays * DAY) > createdAt))
             || (warningHeld && !existing?.hasWarning);
           const warningRemaining = expires?.expiresAt || (existing?.hasWarning && existing.warningDays ? existing.createdAt + existing.warningDays * DAY : 0);
-          const muteUntil = item.member.communicationDisabledUntilTimestamp || 0;
+          const muteUntil = item.member?.communicationDisabledUntilTimestamp || 0;
           const muteSchedule = longTimeouts.find((entry) => entry.guildId === item.guild.id && entry.userId === user.id && (!existing || entry.caseId === existing.id));
           const caseMuteEnd = existing?.hasTimeout && existing.timeoutDays ? existing.createdAt + existing.timeoutDays * DAY : 0;
           const muteEnd = muteSchedule?.endAt || caseMuteEnd || muteUntil;
-          return `${item.guild.name}：${warningOngoing ? `警告期内（剩余 ${warningRemaining > createdAt ? remaining(warningRemaining) : '无自动到期记录'}）` : '不在警告期'}；${muteUntil > createdAt ? `当前禁言剩余 ${remaining(muteUntil)}` : muteEnd > createdAt ? `处罚禁言剩余 ${remaining(muteEnd)}` : '当前未禁言'}`;
+          const membership = item.member ? '成员在服务器内' : '成员已不在服务器，仍可按 ID 封禁';
+          return `${item.guild.name}：${membership}；${warningOngoing ? `警告期内（剩余 ${warningRemaining > createdAt ? remaining(warningRemaining) : '无自动到期记录'}）` : '不在警告期'}；${muteUntil > createdAt ? `当前禁言剩余 ${remaining(muteUntil)}` : muteEnd > createdAt ? `处罚禁言剩余 ${remaining(muteEnd)}` : '当前未禁言'}`;
         });
         const confirmationLines = [
           '请核对处罚内容，确认后才会执行：',
