@@ -2858,14 +2858,26 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       const content = interaction.options.getString('内容', true);
-      const mentionsEveryone = content.includes('@everyone');
+      const mentionsEveryone = /@(everyone|here)\b/i.test(content);
+      const mentionedRoleIds = [...content.matchAll(/<@&(\d{17,20})>/g)].map((match) => match[1]);
       if (mentionsEveryone && !hasPermission(interaction, PermissionFlagsBits.MentionEveryone)) {
-        await interaction.editReply('只有拥有“提及 @everyone、@here 和所有身份组”权限的成员才能让机器人提及 @everyone。');
+        await interaction.editReply('只有拥有“提及 @everyone、@here 和所有身份组”权限的成员才能让机器人提及 @everyone 或 @here。');
         return;
       }
       if (mentionsEveryone && !botPermissions.has(PermissionFlagsBits.MentionEveryone)) {
-        await interaction.editReply('机器人缺少“提及 @everyone、@here 和所有身份组”权限，无法发送 @everyone 提及。');
+        await interaction.editReply('机器人缺少“提及 @everyone、@here 和所有身份组”权限，无法发送 @everyone 或 @here 提及。');
         return;
+      }
+      if (mentionedRoleIds.length) {
+        const roles = await Promise.all([...new Set(mentionedRoleIds)].map((roleId) => interaction.guild.roles.fetch(roleId).catch(() => null)));
+        if (roles.some((role) => !role)) {
+          await interaction.editReply('消息里包含无效的身份组提及，请确认该身份组仍在本服务器。');
+          return;
+        }
+        if (roles.some((role) => !role.mentionable) && !botPermissions.has(PermissionFlagsBits.MentionEveryone)) {
+          await interaction.editReply('机器人缺少“提及 @everyone、@here 和所有身份组”权限，无法提醒不可被普通成员提及的身份组；请为机器人开启此权限，或将目标身份组设为可被提及。');
+          return;
+        }
       }
       const replyLink = interaction.options.getString('回复消息链接');
       let replyOptions = {};
@@ -2894,7 +2906,7 @@ client.on('interactionCreate', async (interaction) => {
         replyOptions = { reply: { messageReference: sourceMessage.id, failIfNotExists: false } };
       }
       await target.send({ content, ...replyOptions,
-        allowedMentions: { parse: mentionsEveryone ? ['everyone'] : [], repliedUser: false } });
+        allowedMentions: { parse: ['users', 'roles', ...(mentionsEveryone ? ['everyone'] : [])], repliedUser: false } });
       await interaction.editReply(replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。');
       return;
     }
