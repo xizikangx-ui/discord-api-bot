@@ -542,6 +542,7 @@ function managementTrack(setting, tier = 'senior', requestedRoleId = null) {
   setting.managementRosterMessageIds ||= setting.managementRosterMessageId ? [setting.managementRosterMessageId] : [];
   return { tier: 'senior', roleId: setting.managementRoleId || null, channelId: setting.managementChannelId || null,
     announcementChannelId: setting.managementAnnouncementChannelId || null,
+    companionRoleId: setting.managementCompanionRoleId || null,
     rosterMessageId: setting.managementRosterMessageId || null, rosterMessageIds: setting.managementRosterMessageIds, terms: setting.managementTerms,
     label: '管理组', prefix: 'mgmt' };
 }
@@ -1108,6 +1109,8 @@ function managementPanelComponents(guildId, tier = 'senior') {
       .setPlaceholder(`选择${label}公示频道`).setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`${prefix}-role:${guildId}`)
       .setPlaceholder(`选择${label}身份组`)),
+    new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`${prefix}-companion-role:${guildId}`)
+      .setPlaceholder('选择主管理身份组的配套身份组')),
     new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`${prefix}-appoint:${guildId}`)
       .setPlaceholder('多选成员并任命').setMinValues(1).setMaxValues(25)),
     new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`${prefix}-resign:${guildId}`)
@@ -1115,6 +1118,7 @@ function managementPanelComponents(guildId, tier = 'senior') {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${prefix}-refresh:${guildId}`).setLabel('刷新实时名单').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`${prefix}-announcement:${guildId}`).setLabel('创建任免公示子区').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${prefix}-companion-config:${guildId}`).setLabel('配置配套身份组').setStyle(ButtonStyle.Secondary),
     ),
   ];
 }
@@ -1131,7 +1135,17 @@ function managementPanelEmbed(guildId, tier = 'senior') {
   }
   const track = managementTrack(setting, tier);
   return new EmbedBuilder().setColor(0x5865F2).setTitle(`${track.label}任命面板`)
-    .setDescription(`实时名单位置：${track.channelId ? `<#${track.channelId}>` : '尚未设置'}\n任免公示子区：${track.announcementChannelId ? `<#${track.announcementChannelId}>` : '尚未创建'}\n${track.label}身份组：${track.roleId ? `<@&${track.roleId}>` : '尚未设置'}\n当前任职人数：${track.terms.filter((term) => !term.endedAt && !term.isBot).length}\n\n使用上方菜单配置频道和身份组；选择成员可批量任命或卸任。任命、卸任记录发送到任免公示子区，实时名单位置保持不变。Bot 账号不计入名单。`);
+    .setDescription(`实时名单位置：${track.channelId ? `<#${track.channelId}>` : '尚未设置'}\n任免公示子区：${track.announcementChannelId ? `<#${track.announcementChannelId}>` : '尚未创建'}\n${track.label}身份组：${track.roleId ? `<@&${track.roleId}>` : '尚未设置'}\n配套身份组：${track.companionRoleId ? `<@&${track.companionRoleId}>` : '尚未设置'}\n当前任职人数：${track.terms.filter((term) => !term.endedAt && !term.isBot).length}\n\n使用上方菜单配置频道和主管理身份组；点“配置配套身份组”选择要自动发放的身份组。选择成员可批量任命或卸任。持有主管理身份组的真人成员会自动获得配套身份组，卸任时自动移除。任免记录发送到任免公示子区，实时名单位置保持不变。Bot 账号不计入名单。`);
+}
+
+function managementCompanionRolePanel(guildId) {
+  const track = managementTrack(settingsFor(guildId), 'senior');
+  return {
+    embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('主管理配套身份组')
+      .setDescription(`当前主管理身份组：${track.roleId ? `<@&${track.roleId}>` : '尚未设置'}\n当前配套身份组：${track.companionRoleId ? `<@&${track.companionRoleId}>` : '尚未设置'}\n\n选择身份组后，Bot 会为现有主管理成员补发，并在之后自动同步。卸任或移除主管理身份组时会一并移除配套身份组。更换配套组时，会从现有主管理成员移除旧配套组。`)],
+    components: [new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder()
+      .setCustomId(`mgmt-companion-role:${guildId}`).setPlaceholder('选择主管理身份组的配套身份组'))],
+  };
 }
 
 function managementRosterEmbeds(guildId, tier = 'senior', roleId = null) {
@@ -1195,6 +1209,59 @@ async function updateManagementRoster(guild, tier = 'senior', roleId = null) {
   return true;
 }
 
+async function syncManagementCompanionRole(guild, memberList = null) {
+  const setting = settingsFor(guild.id);
+  const track = managementTrack(setting, 'senior');
+  if (!track.roleId || !track.companionRoleId) return { configured: false, granted: 0, failed: 0 };
+  if (track.roleId === track.companionRoleId) throw new Error('主管理身份组和配套身份组不能相同。');
+  const [mainRole, companionRole, botMember, members] = await Promise.all([
+    guild.roles.fetch(track.roleId), guild.roles.fetch(track.companionRoleId), guild.members.fetchMe(),
+    memberList ? Promise.resolve(memberList) : guild.members.fetch(),
+  ]);
+  if (!mainRole || !companionRole || companionRole.managed || companionRole.id === guild.id) {
+    throw new Error('主管理或配套身份组无效。');
+  }
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot 缺少“管理身份组”权限。');
+  if (companionRole.position >= botMember.roles.highest.position) throw new Error('机器人身份组必须高于配套身份组。');
+  let granted = 0;
+  let failed = 0;
+  const holders = members.filter((member) => !member.user.bot && member.roles.cache.has(mainRole.id));
+  for (const member of holders) {
+    if (member.roles.cache.has(companionRole.id)) continue;
+    try {
+      await member.roles.add(companionRole, '自动同步主管理配套身份组');
+      granted += 1;
+    } catch (error) {
+      failed += 1;
+      logFailure(`无法向成员 ${member.id} 发放主管理配套身份组。`, error);
+    }
+  }
+  return { configured: true, granted, failed, holders: holders.size };
+}
+
+async function setManagementCompanionRole(member) {
+  if (member.user.bot) return false;
+  const track = managementTrack(settingsFor(member.guild.id), 'senior');
+  if (!track.roleId || !track.companionRoleId || track.roleId === track.companionRoleId) return false;
+  const mainRolePresent = member.roles.cache.has(track.roleId);
+  const shouldHave = mainRolePresent;
+  const role = await member.guild.roles.fetch(track.companionRoleId);
+  if (!role || role.managed || role.id === member.guild.id) throw new Error('配套身份组无效。');
+  const botMember = await member.guild.members.fetchMe();
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot 缺少“管理身份组”权限。');
+  if (role.position >= botMember.roles.highest.position) throw new Error('机器人身份组必须高于配套身份组。');
+  const currentlyHas = member.roles.cache.has(role.id);
+  if (shouldHave && !currentlyHas) {
+    await member.roles.add(role, '自动同步主管理配套身份组');
+    return true;
+  }
+  if (!shouldHave && currentlyHas) {
+    await member.roles.remove(role, '主管理身份组已移除，同步移除配套身份组');
+    return true;
+  }
+  return false;
+}
+
 async function syncManagementRole(guild, tier = 'senior', memberList = null, roleId = null) {
   const setting = settingsFor(guild.id);
   const track = managementTrack(setting, tier, roleId);
@@ -1203,6 +1270,9 @@ async function syncManagementRole(guild, tier = 'senior', memberList = null, rol
   if (!role) return false;
   // Requires the privileged Server Members Intent in the Developer Portal.
   const members = memberList || await guild.members.fetch();
+  if (tier === 'senior' && track.companionRoleId) {
+    await syncManagementCompanionRole(guild, members).catch((error) => logFailure('主管理配套身份组同步失败。', error));
+  }
   const now = Date.now();
   const terms = track.terms;
   const activeTerms = terms.filter((term) => !term.endedAt && !term.isBot);
@@ -1253,6 +1323,9 @@ async function reconcileManagementMember(member, hasRole, tier = 'senior', roleI
   const guild = member.guild;
   const setting = settingsFor(guild.id);
   const track = managementTrack(setting, tier, roleId);
+  if (tier === 'senior' && track.roleId && track.companionRoleId) {
+    await setManagementCompanionRole(member).catch((error) => logFailure(`成员 ${member.id} 的主管理配套身份组同步失败。`, error));
+  }
   if (!track.roleId || !track.channelId) return;
   const role = await guild.roles.fetch(track.roleId);
   if (!role) return;
@@ -1346,6 +1419,14 @@ async function executeManagementAction(guild, { action, memberIds, moderator, re
     guild.members.fetchMe(), Promise.all(memberIds.map((id) => guild.members.fetch(id))),
   ]);
   if (role.position >= botMember.roles.highest.position) throw new Error('机器人身份组必须高于管理组身份组。');
+  let companionRole = null;
+  if (tier === 'senior' && track.companionRoleId) {
+    companionRole = await guild.roles.fetch(track.companionRoleId);
+    if (!companionRole || companionRole.managed || companionRole.id === guild.id || companionRole.id === role.id) {
+      throw new Error('主管理配套身份组无效，或与主管理身份组相同。');
+    }
+    if (companionRole.position >= botMember.roles.highest.position) throw new Error('机器人身份组必须高于配套身份组。');
+  }
   if (members.some((member) => member.user.bot)) throw new Error('管理组名单仅统计真人账号，不能通过面板任命或卸任其他 Bot。');
   const isAdmin = moderator.id === guild.ownerId || (await guild.members.fetch(moderator.id)).permissions.has(PermissionFlagsBits.Administrator);
   const moderatorMember = isAdmin ? null : await guild.members.fetch(moderator.id);
@@ -1361,7 +1442,8 @@ async function executeManagementAction(guild, { action, memberIds, moderator, re
     const startedAt = Date.now();
     for (const member of members) {
       if (terms.some((term) => term.userId === member.id && !term.endedAt)) continue;
-      if (!member.roles.cache.has(role.id)) await member.roles.add(role, `管理组任命：${reason || '未填写理由'}`);
+      const addRoles = [role, companionRole].filter((targetRole) => targetRole && !member.roles.cache.has(targetRole.id));
+      if (addRoles.length) await member.roles.add(addRoles, `管理组任命：${reason || '未填写理由'}`);
       terms.push({ userId: member.id, startedAt, appointedBy: moderator.id, appointmentReason: reason || '' });
       records.push({ member });
     }
@@ -1375,7 +1457,8 @@ async function executeManagementAction(guild, { action, memberIds, moderator, re
   for (const member of members) {
     const activeTerm = terms.find((term) => term.userId === member.id && !term.endedAt);
     const hadRole = member.roles.cache.has(role.id);
-    if (hadRole) await member.roles.remove(role, `管理组卸任：${reason || '未填写理由'}`);
+    const removeRoles = [role, companionRole].filter((targetRole) => targetRole && member.roles.cache.has(targetRole.id));
+    if (removeRoles.length) await member.roles.remove(removeRoles, `管理组卸任：${reason || '未填写理由'}`);
     if (activeTerm) {
       activeTerm.endedAt = endedAt;
       activeTerm.resignedBy = moderator.id;
@@ -1489,13 +1572,19 @@ client.once('clientReady', async () => {
       const track = managementTrack(setting, 'middle', roleId);
       if (track.roleId && track.channelId) tracks.push(['middle', roleId]);
     }
-    if (!tracks.length) continue;
-    guild.members.fetch().then((members) => Promise.all(tracks.map(([tier, roleId]) => {
-      const track = managementTrack(setting, tier, roleId);
-      return syncManagementRole(guild, tier, members, roleId).catch((error) => {
-        logFailure(`${track.label}成员读取失败。请在 Developer Portal 开启 Server Members Intent。`, error);
+    if (!tracks.length && !(seniorTrack.roleId && seniorTrack.companionRoleId)) continue;
+    guild.members.fetch().then(async (members) => {
+      const jobs = tracks.map(([tier, roleId]) => {
+        const track = managementTrack(setting, tier, roleId);
+        return syncManagementRole(guild, tier, members, roleId).catch((error) => {
+          logFailure(`${track.label}成员读取失败。请在 Developer Portal 开启 Server Members Intent。`, error);
+        });
       });
-    }))).catch((error) => {
+      if (seniorTrack.roleId && seniorTrack.companionRoleId && !tracks.some(([tier]) => tier === 'senior')) {
+        jobs.push(syncManagementCompanionRole(guild, members).catch((error) => logFailure('主管理配套身份组同步失败。', error)));
+      }
+      await Promise.all(jobs);
+    }).catch((error) => {
       logFailure('管理组成员列表读取失败。请在 Developer Portal 开启 Server Members Intent。', error);
     });
   }
@@ -1507,7 +1596,11 @@ client.on('guildMemberUpdate', (oldMember, newMember) => {
   const setting = guildData.settings[newMember.guild.id];
   if (!setting) return;
   const seniorRoleId = managementTrack(setting, 'senior').roleId;
-  if (seniorRoleId && oldMember.roles.cache.has(seniorRoleId) !== newMember.roles.cache.has(seniorRoleId)) {
+  const seniorTrack = managementTrack(setting, 'senior');
+  const seniorChanged = seniorRoleId && oldMember.roles.cache.has(seniorRoleId) !== newMember.roles.cache.has(seniorRoleId);
+  const companionChanged = seniorTrack.companionRoleId
+    && oldMember.roles.cache.has(seniorTrack.companionRoleId) !== newMember.roles.cache.has(seniorTrack.companionRoleId);
+  if (seniorRoleId && (seniorChanged || companionChanged)) {
     scheduleManagementMemberSync(newMember, newMember.roles.cache.has(seniorRoleId), 'senior');
   }
   for (const roleId of Object.keys(setting.middleManagementGroups || {})) {
@@ -2000,6 +2093,15 @@ client.on('interactionCreate', async (interaction) => {
             embeds: [managementPanelEmbed(guildId, tier)], components: managementPanelComponents(guildId, tier) });
           return;
         }
+        if (action === 'mgmt-companion-config' && interaction.isButton() && tier === 'senior') {
+          if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+            await interaction.reply({ content: '需要“管理服务器”权限才能配置配套身份组。', flags: MessageFlags.Ephemeral });
+            return;
+          }
+          await interaction.deferUpdate();
+          await interaction.followUp({ ...managementCompanionRolePanel(guildId), flags: MessageFlags.Ephemeral });
+          return;
+        }
         const requiredPermission = action === 'mgmt-appoint' || action === 'mgmt-resign'
           ? PermissionFlagsBits.ManageRoles : PermissionFlagsBits.ManageGuild;
         if (!hasPermission(interaction, requiredPermission)) {
@@ -2049,6 +2151,57 @@ client.on('interactionCreate', async (interaction) => {
           if (!panelUpdated) await interaction.followUp({ content: '设置已保存，但原面板消息已不存在。请重新运行对应的管理面板指令。', flags: MessageFlags.Ephemeral });
           return;
         }
+        if (action === 'mgmt-companion-role' && interaction.isRoleSelectMenu() && tier === 'senior') {
+          const setting = settingsFor(guildId);
+          const track = managementTrack(setting, 'senior');
+          const role = await interaction.guild.roles.fetch(interaction.values[0]);
+          const botMember = await interaction.guild.members.fetchMe();
+          if (!track.roleId) {
+            await interaction.followUp({ content: '请先配置主管理身份组，再选择配套身份组。', flags: MessageFlags.Ephemeral });
+            return;
+          }
+          if (!role || role.id === guildId || role.managed || role.id === track.roleId || role.position >= botMember.roles.highest.position) {
+            await interaction.followUp({ content: '请选择与主管理身份组不同的普通身份组，并确认机器人身份组高于它。', flags: MessageFlags.Ephemeral });
+            return;
+          }
+          const previousRoleId = track.companionRoleId;
+          setting.managementCompanionRoleId = role.id;
+          await saveGuildData();
+          let summary;
+          try {
+            const members = await interaction.guild.members.fetch();
+            let removedPrevious = 0;
+            let failedPrevious = 0;
+            if (previousRoleId && previousRoleId !== role.id) {
+              const previousRole = await interaction.guild.roles.fetch(previousRoleId).catch(() => null);
+              if (previousRole && !previousRole.managed && previousRole.position < botMember.roles.highest.position) {
+                const currentManagers = members.filter((member) => !member.user.bot && member.roles.cache.has(track.roleId));
+                for (const member of currentManagers) {
+                  if (!member.roles.cache.has(previousRole.id)) continue;
+                  try {
+                    await member.roles.remove(previousRole, '更换主管理配套身份组');
+                    removedPrevious += 1;
+                  } catch (error) {
+                    failedPrevious += 1;
+                    logFailure(`无法移除成员 ${member.id} 的旧主管理配套身份组。`, error);
+                  }
+                }
+              }
+            }
+            summary = await syncManagementCompanionRole(interaction.guild, members);
+            summary.removedPrevious = removedPrevious;
+            summary.failedPrevious = failedPrevious;
+          } catch (error) {
+            logFailure('主管理配套身份组同步失败。', error);
+            summary = { configured: true, granted: 0, failed: 0, removedPrevious: 0, failedPrevious: 0, error: error.message };
+          }
+          await interaction.editReply(managementCompanionRolePanel(guildId));
+          const resultText = summary.error
+            ? `设置已保存，但成员补发未完成：${summary.error}`
+            : `设置已保存：当前持有主管理身份组的真人中补发 ${summary.granted} 人，失败 ${summary.failed} 人。${summary.removedPrevious ? `已从 ${summary.removedPrevious} 人移除旧配套身份组。` : ''}${summary.failedPrevious ? `移除旧身份组失败 ${summary.failedPrevious} 人。` : ''}`;
+          await interaction.followUp({ content: resultText, flags: MessageFlags.Ephemeral });
+          return;
+        }
         if (action === 'mgmt-role' && interaction.isRoleSelectMenu() && tier === 'senior') {
           const setting = settingsFor(guildId);
           const track = managementTrack(setting, tier);
@@ -2062,6 +2215,10 @@ client.on('interactionCreate', async (interaction) => {
           if ((tier === 'senior' && middleRoleIds.includes(role.id)) || (tier === 'middle' && setting.managementRoleId === role.id)) {
             const otherLabel = tier === 'middle' ? '管理组' : '中层管理';
             await interaction.followUp({ content: `${track.label}身份组必须与${otherLabel}身份组不同，请选择另一个身份组。`, flags: MessageFlags.Ephemeral });
+            return;
+          }
+          if (tier === 'senior' && setting.managementCompanionRoleId === role.id) {
+            await interaction.followUp({ content: '主管理身份组不能与当前配套身份组相同，请先改配套组或选择另一个主管理身份组。', flags: MessageFlags.Ephemeral });
             return;
           }
           if (track.roleId === role.id) {
@@ -2307,7 +2464,11 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply('需要“管理服务器”权限才能配置管理组面板。');
         return;
       }
-      await updateManagementRoster(interaction.guild);
+      const track = managementTrack(settingsFor(interaction.guildId), 'senior');
+      if (track.roleId && track.channelId) await syncManagementRole(interaction.guild, 'senior');
+      else if (track.roleId && track.companionRoleId) {
+        await syncManagementCompanionRole(interaction.guild).catch((error) => logFailure('主管理配套身份组同步失败。', error));
+      }
       await interaction.editReply({ embeds: [managementPanelEmbed(interaction.guildId)], components: managementPanelComponents(interaction.guildId) });
       return;
     }
@@ -2364,7 +2525,18 @@ client.on('interactionCreate', async (interaction) => {
       const endedAt = Date.now();
       const activeTerm = track.terms.find((term) => term.userId === member.id && !term.endedAt);
       const reason = interaction.options.getString('理由')?.trim() || '';
-      await member.roles.remove(role, `管理组成员自行卸任`);
+      const rolesToRemove = [role];
+      if (tier === 'senior' && track.companionRoleId) {
+        const companionRole = await interaction.guild.roles.fetch(track.companionRoleId);
+        if (companionRole && member.roles.cache.has(companionRole.id)) {
+          if (companionRole.position >= botMember.roles.highest.position) {
+            await interaction.editReply('机器人身份组必须高于配套身份组，才能一并办理卸任。');
+            return;
+          }
+          rolesToRemove.push(companionRole);
+        }
+      }
+      await member.roles.remove(rolesToRemove, `管理组成员自行卸任`);
       if (activeTerm) {
         activeTerm.endedAt = endedAt;
         activeTerm.resignedBy = interaction.user.id;
