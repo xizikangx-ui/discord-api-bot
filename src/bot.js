@@ -26,48 +26,96 @@ const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType,
   PermissionFlagsBits, MessageFlags, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ChannelSelectMenuBuilder, RoleSelectMenuBuilder, UserSelectMenuBuilder,
-  ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder,
+  ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials,
 } = require('discord.js');
 
-const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID', 'API_BASE_URL', 'API_KEY', 'API_MODEL'];
+const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
 if (missing.length) {
   console.error(`Missing required environment variables: ${missing.join(', ')}`);
   process.exit(1);
 }
 
-const encodedDataEncryptionKey = process.env.DATA_ENCRYPTION_KEY || '';
-const dataEncryptionKey = Buffer.from(encodedDataEncryptionKey, 'base64');
-if (dataEncryptionKey.length !== 32 || dataEncryptionKey.toString('base64') !== encodedDataEncryptionKey.trim()) {
-  console.error('DATA_ENCRYPTION_KEY must be a Base64-encoded 32-byte key. See README.md for setup instructions.');
-  process.exit(1);
+function logFailure(label, error) {
+  const code = error?.code ?? error?.rawError?.code;
+  console.error(code ? `${label} (error code ${code})${error?.rawError?.message ? `: ${error.rawError.message}` : ''}` : `${label}${error?.message ? `: ${error.message}` : ''}`);
+  if (code === 50035) console.error(JSON.stringify(error?.rawError?.errors || error?.errors || {}, null, 2));
 }
 
 const DAY = 24 * 60 * 60 * 1000;
 const MAX_TIMEOUT = 28 * DAY;
 const TIMEOUT_REFRESH = 27 * DAY;
-const historyLimit = Math.max(0, Number.parseInt(process.env.MAX_HISTORY_MESSAGES || '12', 10));
-const histories = new Map();
 const pendingManagementActions = new Map();
 const pendingManagementPanelSelections = new Map();
 const pendingPunishments = new Map();
+const pendingPunishmentRecords = {};
+const claimedPunishments = new Set();
+const activePunishmentLocks = new Set();
+const pendingPunishmentTargetClaims = new Set();
 const managementSyncTimers = new Map();
+let scheduleProcessing = false;
+const activeReactionCleanups = new Set();
+const activeModerationTargetClaims = new Set();
 const timeoutFile = path.join(__dirname, '..', 'data', 'long-timeouts.json');
 const guildDataFile = path.join(__dirname, '..', 'data', 'guild-settings.json');
 const pendingPunishmentsDir = path.join(__dirname, '..', 'data', 'pending-punishments');
-const PUNISHMENT_CONFIRM_TTL = 15 * 60 * 1000;
+const PUNISHMENT_CONFIRM_TTL = 60 * 1000;
+const MODERATION_PROPOSAL_TTL = 24 * 60 * 60 * 1000;
 const ENCRYPTED_JSON_FORMAT = 'discord-api-bot-encrypted-json';
+const STORAGE_MARKER = 'discord-api-bot-state-v1';
+const STORAGE_FILE_NAME = 'discord-api-bot-state.json';
+const storageChannelId = process.env.DISCORD_STORAGE_CHANNEL_ID || '';
+const legacyStorageChannelId = process.env.DISCORD_LEGACY_STORAGE_CHANNEL_ID || '';
+function parseGuildIds(value) {
+  return [...new Set((value || '').split(',').map((id) => id.trim()).filter(Boolean))];
+}
+function commandGuildIds() {
+  return parseGuildIds(process.env.DISCORD_GUILD_IDS || process.env.DISCORD_GUILD_ID || '');
+}
+function punishmentGuildIds() {
+  const configured = parseGuildIds(process.env.DISCORD_PUNISHMENT_GUILD_IDS || '');
+  if (configured.length) return configured;
+  const legacyIds = commandGuildIds();
+  return legacyIds.length === 2 ? legacyIds : [];
+}
+
+function encryptionKey() {
+  const encoded = process.env.DATA_ENCRYPTION_KEY || '';
+  const key = Buffer.from(encoded, 'base64');
+  if (key.length !== 32 || key.toString('base64') !== encoded.trim()) {
+    throw new Error('DATA_ENCRYPTION_KEY must be a Base64-encoded 32-byte key to encrypt Discord state storage.');
+  }
+  return key;
+}
 let longTimeouts = [];
 let guildData = { settings: {}, reminders: [], warningFollowups: [], warningExpirations: [], punishmentCases: [] };
+let storageChannel = null;
+let storageMessage = null;
+let storageWritePromise = null;
+let storageWriteRequested = false;
+let storageReady = false;
 
-function pendingPunishmentPath(token) {
-  if (!/^[a-f0-9]{16}$/.test(token || '')) return null;
-  return path.join(pendingPunishmentsDir, `${token}.json`);
+function decryptJson(envelope) {
+  if (envelope?.format !== ENCRYPTED_JSON_FORMAT) return { value: envelope, encrypted: false };
+  const key = encryptionKey();
+  if (envelope.version !== 1 || envelope.algorithm !== 'aes-256-gcm') {
+    throw new Error('Unsupported encrypted data format.');
+  }
+  const iv = Buffer.from(envelope.iv, 'base64');
+  const authTag = Buffer.from(envelope.authTag, 'base64');
+  const ciphertext = Buffer.from(envelope.ciphertext, 'base64');
+  if (iv.length !== 12 || authTag.length !== 16 || ciphertext.length === 0) {
+    throw new Error('Encrypted data file is invalid or incomplete.');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(authTag);
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  return { value: JSON.parse(plaintext), encrypted: true };
 }
 
 function encryptJson(value) {
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', dataEncryptionKey, iv);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv);
   const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
   return JSON.stringify({
     format: ENCRYPTED_JSON_FORMAT,
@@ -79,85 +127,47 @@ function encryptJson(value) {
   });
 }
 
-function decryptJson(envelope) {
-  if (envelope?.format !== ENCRYPTED_JSON_FORMAT) return { value: envelope, encrypted: false };
-  if (envelope.version !== 1 || envelope.algorithm !== 'aes-256-gcm') {
-    throw new Error('Unsupported encrypted data format.');
-  }
-  const iv = Buffer.from(envelope.iv, 'base64');
-  const authTag = Buffer.from(envelope.authTag, 'base64');
-  const ciphertext = Buffer.from(envelope.ciphertext, 'base64');
-  if (iv.length !== 12 || authTag.length !== 16 || ciphertext.length === 0) {
-    throw new Error('Encrypted data file is invalid or incomplete.');
-  }
-  const decipher = createDecipheriv('aes-256-gcm', dataEncryptionKey, iv);
-  decipher.setAuthTag(authTag);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
-  return { value: JSON.parse(plaintext), encrypted: true };
-}
-
-async function writeEncryptedJson(file, value) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  await fs.writeFile(temp, encryptJson(value), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-  await fs.rename(temp, file);
-}
-
-async function readEncryptedJson(file) {
+async function readLegacyJson(file) {
   const raw = await fs.readFile(file, 'utf8');
-  const { value, encrypted } = decryptJson(JSON.parse(raw));
-  if (!encrypted) {
-    await writeEncryptedJson(file, value);
-    console.log(`Migrated a legacy data file to encrypted storage: ${path.basename(file)}`);
-  }
-  return value;
+  return decryptJson(JSON.parse(raw)).value;
 }
 
 async function savePendingPunishment(token, request) {
-  const file = pendingPunishmentPath(token);
-  if (!file) throw new Error('无效的处罚确认编号。');
-  await fs.mkdir(pendingPunishmentsDir, { recursive: true });
-  await writeEncryptedJson(file, request);
+  if (!/^[a-f0-9]{16}$/.test(token || '')) throw new Error('无效的处罚确认编号。');
+  pendingPunishmentRecords[token] = request;
+  try { await savePlatformStorage(); }
+  catch (error) { delete pendingPunishmentRecords[token]; throw error; }
 }
 
 async function readPendingPunishment(token) {
-  const file = pendingPunishmentPath(token);
-  if (!file) return null;
-  try { return await readEncryptedJson(file); }
-  catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
+  return /^[a-f0-9]{16}$/.test(token || '') ? pendingPunishmentRecords[token] || null : null;
 }
 
-async function claimPendingPunishment(token) {
-  const file = pendingPunishmentPath(token);
-  if (!file) return null;
-  const lock = `${file}.lock`;
-  const processing = `${file}.processing`;
-  const claimed = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.processing`;
-  let lockHandle;
-  try {
-    lockHandle = await fs.open(lock, 'wx');
-    await lockHandle.close();
-    const request = await readEncryptedJson(file);
-    await fs.rename(file, claimed);
-    await fs.rename(claimed, processing);
-    return { request, claimed: processing, lock };
-  } catch (error) {
-    await fs.unlink(claimed).catch(() => {});
-    await fs.unlink(lock).catch(() => {});
-    if (error.code === 'ENOENT' || error.code === 'EEXIST' || error instanceof SyntaxError) return null;
+async function claimPendingPunishment(token, recoveredRequest = null) {
+  if (!/^[a-f0-9]{16}$/.test(token || '') || claimedPunishments.has(token)) return null;
+  const request = pendingPunishmentRecords[token] || recoveredRequest;
+  if (!request) return null;
+  claimedPunishments.add(token);
+  const savedRequest = pendingPunishmentRecords[token];
+  delete pendingPunishmentRecords[token];
+  try { await savePlatformStorage(); }
+  catch (error) {
+    if (savedRequest) pendingPunishmentRecords[token] = savedRequest;
+    claimedPunishments.delete(token);
     throw error;
   }
+  return { request };
 }
 
 function recoverPunishmentFromConfirmationMessage(interaction) {
   const content = interaction.message?.content || '';
   const targetId = content.match(/^目标成员：<@!?([0-9]+)>$/m)?.[1];
-  const modeText = content.match(/^处罚方式：(警告并禁言|仅禁言|仅警告)$/m)?.[1];
+  const modeText = content.match(/^处罚方式：(封禁并踢出|警告并禁言|仅禁言|仅警告)$/m)?.[1];
   const timeoutDays = content.match(/^禁言时长：([0-9]+) 天$/m)?.[1];
   const warningDaysText = content.match(/^警告时长：([0-9]+) 天$/m)?.[1];
   const reasonMatch = content.match(/^原因：(.*?)(?:\n\n此确认仅限你本人操作，)/ms);
   if (!targetId || !modeText || !reasonMatch) return null;
-  const mode = modeText === '警告并禁言' ? 'both' : modeText === '仅禁言' ? 'timeout' : 'warning';
+  const mode = modeText === '封禁并踢出' ? 'ban' : modeText === '警告并禁言' ? 'both' : modeText === '仅禁言' ? 'timeout' : 'warning';
   const createdAt = interaction.message.createdTimestamp || Date.now();
   return {
     guildId: interaction.guildId,
@@ -173,11 +183,7 @@ function recoverPunishmentFromConfirmationMessage(interaction) {
 
 const commands = [
   new SlashCommandBuilder()
-    .setName('提问').setDescription('向已接入的 AI/API 提问')
-    .addStringOption((o) => o.setName('问题').setDescription('请输入你想问的内容').setRequired(true).setMaxLength(4000)),
-  new SlashCommandBuilder()
     .setName('说话').setDescription('让机器人以自己的身份在当前频道或子区发言')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
     .addStringOption((o) => o.setName('内容').setDescription('机器人要发送的消息').setRequired(true).setMaxLength(1900))
     .addStringOption((o) => o.setName('回复消息链接').setDescription('可选：粘贴当前频道/子区中要回复的消息链接').setRequired(false).setMaxLength(200)),
   new SlashCommandBuilder()
@@ -197,6 +203,22 @@ const commands = [
   new SlashCommandBuilder()
     .setName('处罚面板').setDescription('发送并配置本服务器的处罚面板')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('版务审批面板').setDescription('配置帖子操作和内容删除的审批流程')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('反应清理面板').setDescription('配置指定成员消息的自动表情反应清理')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('帖子操作申请').setDescription('申请锁定、关闭或锁定并关闭一个帖子')
+    .addStringOption((o) => o.setName('链接').setDescription('粘贴本服务器的帖子链接').setRequired(true).setMaxLength(200))
+    .addStringOption((o) => o.setName('操作').setDescription('要申请的帖子操作').setRequired(true)
+      .addChoices({ name: '锁定', value: 'lock' }, { name: '关闭', value: 'close' }, { name: '锁定并关闭', value: 'lock-close' })),
+  new SlashCommandBuilder()
+    .setName('内容删除申请').setDescription('申请删除指定消息或整个帖子')
+    .addStringOption((o) => o.setName('链接').setDescription('粘贴本服务器的消息或帖子链接').setRequired(true).setMaxLength(200))
+    .addStringOption((o) => o.setName('目标类型').setDescription('选择删除一条消息还是整个帖子').setRequired(true)
+      .addChoices({ name: '一条消息', value: 'message' }, { name: '整个帖子', value: 'thread' })),
   new SlashCommandBuilder()
     .setName('管理组面板').setDescription('配置管理组任命、卸任和公示名单')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
@@ -218,7 +240,7 @@ const commands = [
     .addRoleOption((o) => o.setName('身份组').setDescription('选择要卸任的中层身份组').setRequired(true))
     .addStringOption((o) => o.setName('理由').setDescription('卸任理由（可选）').setRequired(false).setMaxLength(400)),
   new SlashCommandBuilder()
-    .setName('处罚').setDescription('警告、禁言或同时执行警告和禁言')
+    .setName('处罚').setDescription('警告或禁言成员')
     .addStringOption((o) => o.setName('方式').setDescription('选择处罚方式').setRequired(true)
       .addChoices({ name: '仅警告', value: 'warning' }, { name: '仅禁言', value: 'timeout' }, { name: '警告并禁言', value: 'both' }))
     .addUserOption((o) => o.setName('成员').setDescription('被处罚成员').setRequired(true))
@@ -226,17 +248,23 @@ const commands = [
     .addIntegerOption((o) => o.setName('禁言天数').setDescription('禁言时长（1 到 90 天；仅禁言或警告并禁言时填写）').setRequired(false).setMinValue(1).setMaxValue(90))
     .addIntegerOption((o) => o.setName('警告天数').setDescription('警告身份组保留天数（1 到 90；留空则不自动移除）').setRequired(false).setMinValue(1).setMaxValue(90)),
   new SlashCommandBuilder()
-    .setName('撤销处罚').setDescription('按处罚 ID 撤销当前生效的警告和/或禁言')
+    .setName('永封').setDescription('永久封禁并移出目标成员')
+    .addUserOption((o) => o.setName('成员').setDescription('被封禁成员').setRequired(true))
+    .addStringOption((o) => o.setName('原因').setDescription('封禁原因').setRequired(true).setMaxLength(400)),
+  new SlashCommandBuilder()
+    .setName('撤销处罚').setDescription('按处罚 ID 撤销警告、禁言或封禁')
     .addStringOption((o) => o.setName('处罚编号').setDescription('处罚记录中的编号').setRequired(true).setMaxLength(32)),
   new SlashCommandBuilder()
     .setName('定时提醒').setDescription('管理定时提及提醒')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addSubcommand((s) => s.setName('添加').setDescription('添加定时提醒（到期后自动重复，间隔为 0 表示只提醒一次）')
       .addChannelOption((o) => o.setName('频道').setDescription('发送提醒的频道').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-      .addIntegerOption((o) => o.setName('分钟后').setDescription('首次提醒在多少分钟后发送').setRequired(true).setMinValue(1).setMaxValue(525600))
       .addIntegerOption((o) => o.setName('重复间隔分钟').setDescription('0 表示只发送一次；最小重复间隔 10 分钟').setRequired(true).setMinValue(0).setMaxValue(525600))
       .addStringOption((o) => o.setName('内容').setDescription('提醒文字').setRequired(true).setMaxLength(1500))
+      .addIntegerOption((o) => o.setName('分钟后').setDescription('首次提醒在多少分钟后发送；与“秒后”二选一').setRequired(false).setMinValue(1).setMaxValue(525600))
+      .addIntegerOption((o) => o.setName('秒后').setDescription('首次提醒在多少秒后发送（最少 5 秒；与“分钟后”二选一）').setRequired(false).setMinValue(5).setMaxValue(31536000))
       .addUserOption((o) => o.setName('提及成员').setDescription('要提醒的某个人（可选）').setRequired(false))
+      .addStringOption((o) => o.setName('提及多人').setDescription('多个成员提及，粘贴成员提及并用空格或逗号分隔，最多 25 人').setRequired(false).setMaxLength(600))
       .addRoleOption((o) => o.setName('提及身份组').setDescription('要提醒的身份组（可选）').setRequired(false)))
     .addSubcommand((s) => s.setName('列表').setDescription('查看本服务器的定时提醒'))
     .addSubcommand((s) => s.setName('删除').setDescription('按编号删除一个定时提醒')
@@ -245,8 +273,7 @@ const commands = [
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  const guildIds = [...new Set((process.env.DISCORD_GUILD_IDS || process.env.DISCORD_GUILD_ID || '')
-    .split(',').map((id) => id.trim()).filter(Boolean))];
+  const guildIds = commandGuildIds();
   const body = commands.map((command) => command.toJSON());
   if (guildIds.length) {
     for (const guildId of guildIds) {
@@ -259,88 +286,223 @@ async function registerCommands() {
   }
 }
 
-function endpointUrl() {
-  const base = process.env.API_BASE_URL.replace(/\/+$/, '');
-  const endpoint = (process.env.API_PATH || '/chat/completions').replace(/^\/+/, '');
-  return new URL(`${base}/${endpoint}`);
+function defaultGuildData() {
+  return { settings: {}, reminders: [], warningFollowups: [], warningExpirations: [], punishmentCases: [], moderationProposals: [] };
 }
 
-async function askApi(messages) {
-  const response = await fetch(endpointUrl(), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: process.env.API_MODEL, messages }),
-    signal: AbortSignal.timeout(60000),
-  });
-  if (!response.ok) throw new Error(`API returned HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`);
-  const data = await response.json();
-  const answer = data.choices?.[0]?.message?.content;
-  if (typeof answer !== 'string' || !answer.trim()) throw new Error('API response did not contain choices[0].message.content.');
-  return answer.trim();
+function snapshotStorageState() {
+  return JSON.parse(JSON.stringify({
+    version: 1,
+    savedAt: Date.now(),
+    guildData,
+    longTimeouts,
+    pendingPunishments: pendingPunishmentRecords,
+  }));
 }
 
-function splitMessage(text, maxLength = 1900) {
-  const chunks = [];
-  while (text.length > maxLength) {
-    let cut = text.lastIndexOf('\n', maxLength);
-    if (cut < maxLength * 0.5) cut = maxLength;
-    chunks.push(text.slice(0, cut));
-    text = text.slice(cut).trimStart();
+function savePlatformStorage() {
+  if (!storageChannel || !client.isReady()) return Promise.reject(new Error('Discord 私密存储频道尚未连接，数据没有保存。'));
+  storageWriteRequested = true;
+  if (storageWritePromise) {
+    const activeWrite = storageWritePromise;
+    return activeWrite.then(() => storageWriteRequested ? savePlatformStorage() : undefined);
   }
-  if (text) chunks.push(text);
-  return chunks;
+
+  const write = (async () => {
+    do {
+      // Coalesce concurrent state changes into one encrypted attachment update.
+      // If another command changes data during the REST request, write one more
+      // latest snapshot before unblocking the callers.
+      storageWriteRequested = false;
+      const snapshot = snapshotStorageState();
+      const file = Buffer.from(encryptJson(snapshot), 'utf8');
+      const options = {
+        content: STORAGE_MARKER,
+        files: [{ attachment: file, name: STORAGE_FILE_NAME }],
+        allowedMentions: { parse: [] },
+      };
+      if (storageMessage?.author?.id === client.user.id) {
+        try {
+          storageMessage = await storageMessage.edit({ ...options, attachments: [] });
+        } catch (error) {
+          if (error.code !== 10008) throw error;
+          storageMessage = await storageChannel.send(options);
+        }
+      } else {
+        storageMessage = await storageChannel.send(options);
+      }
+    } while (storageWriteRequested);
+  })();
+  let trackedWrite;
+  trackedWrite = write.finally(() => {
+    if (storageWritePromise === trackedWrite) storageWritePromise = null;
+    // A save request can arrive just as the previous write loop is finishing.
+    if (storageWriteRequested) return savePlatformStorage();
+  });
+  storageWritePromise = trackedWrite;
+  return trackedWrite;
+}
+
+async function findStorageMessage(channel) {
+  let before;
+  for (let page = 0; page < 10; page += 1) {
+    const messages = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+    if (!messages.size) return null;
+    const found = messages.find((message) => message.author.id === client.user.id && message.content === STORAGE_MARKER);
+    if (found) return found;
+    before = messages.last().id;
+    if (messages.size < 100) return null;
+  }
+  return null;
+}
+
+async function readStorageSnapshot(message) {
+  const attachment = message.attachments.find((item) => item.name === STORAGE_FILE_NAME);
+  if (!attachment) throw new Error('Discord 私密存储记录缺少数据附件；为避免覆盖数据，机器人已停止启动。');
+  const response = await fetch(attachment.url, { signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw new Error(`读取 Discord 私密存储附件失败（HTTP ${response.status}）。`);
+  const { value, encrypted } = decryptJson(JSON.parse(await response.text()));
+  if (value?.version !== 1 || !value.guildData || !Array.isArray(value.longTimeouts) || !value.pendingPunishments) {
+    throw new Error('Discord 私密存储记录格式无效；为避免覆盖数据，机器人已停止启动。');
+  }
+  return { saved: value, encrypted };
+}
+
+async function fetchLegacyLocalState() {
+  let savedGuildData = defaultGuildData();
+  let savedTimeouts = [];
+  const savedPending = {};
+  try {
+    const saved = await readLegacyJson(guildDataFile);
+    savedGuildData = { ...defaultGuildData(), ...saved };
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try {
+    const saved = await readLegacyJson(timeoutFile);
+    if (Array.isArray(saved)) savedTimeouts = saved;
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try {
+    const entries = await fs.readdir(pendingPunishmentsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^[a-f0-9]{16}(?:\..+)?\.(?:json|processing)$/.test(entry.name)) continue;
+      const token = entry.name.slice(0, 16);
+      const file = path.join(pendingPunishmentsDir, entry.name);
+      try { savedPending[token] = await readLegacyJson(file); }
+      catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
+    }
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return { savedGuildData, savedTimeouts, savedPending };
+}
+
+async function encryptLegacyLocalStateFile(file) {
+  let raw;
+  try { raw = await fs.readFile(file, 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  if (!raw.trim()) return false;
+
+  const value = JSON.parse(raw);
+  const { encrypted } = decryptJson(value);
+  if (encrypted) return false;
+
+  const temporaryFile = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(temporaryFile, encryptJson(value), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    await fs.rename(temporaryFile, file);
+  } catch (error) {
+    try { await fs.unlink(temporaryFile); } catch {}
+    throw error;
+  }
+  return true;
+}
+
+async function encryptLegacyLocalStateFiles() {
+  const files = [guildDataFile, timeoutFile];
+  try {
+    const entries = await fs.readdir(pendingPunishmentsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && /^[a-f0-9]{16}(?:\..+)?\.(?:json|processing)$/.test(entry.name)) {
+        files.push(path.join(pendingPunishmentsDir, entry.name));
+      }
+    }
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+
+  let encryptedCount = 0;
+  for (const file of files) {
+    if (await encryptLegacyLocalStateFile(file)) encryptedCount += 1;
+  }
+  if (encryptedCount) {
+    console.log(`已使用 AES-256-GCM 加密 ${encryptedCount} 份本机旧状态副本。`);
+  }
+}
+
+async function loadPlatformStorage() {
+  if (!storageChannelId) throw new Error('请先在 .env 配置 DISCORD_STORAGE_CHANNEL_ID（私密存储频道 ID）。');
+  storageChannel = await client.channels.fetch(storageChannelId);
+  if (!storageChannel?.isTextBased?.() || !storageChannel.messages || !storageChannel.guild) {
+    throw new Error('DISCORD_STORAGE_CHANNEL_ID 必须是机器人可访问的服务器文字频道或子区。');
+  }
+  const permissions = storageChannel.permissionsFor(client.user);
+  const requiredPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles];
+  if (!permissions?.has(requiredPermissions)) {
+    throw new Error('机器人在私密存储频道需要查看频道、读取消息历史、发送消息和附加文件权限。');
+  }
+  if (storageChannel.permissionsFor(storageChannel.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
+    throw new Error('存储频道目前对 @everyone 可见。请先将频道设为私密，仅允许机器人和可信管理员访问。');
+  }
+
+  const storedMessage = await findStorageMessage(storageChannel);
+
+  if (storedMessage) {
+    const { saved, encrypted } = await readStorageSnapshot(storedMessage);
+    guildData = { ...defaultGuildData(), ...saved.guildData };
+    longTimeouts = saved.longTimeouts;
+    Object.assign(pendingPunishmentRecords, saved.pendingPunishments);
+    storageMessage = storedMessage;
+    if (!encrypted) {
+      await savePlatformStorage();
+      console.log('已读取旧版未加密状态，并已在当前 Discord 频道覆盖为 AES-256-GCM 加密附件。');
+    }
+    await encryptLegacyLocalStateFiles();
+    console.log('已从 Discord 私密存储频道读取数据。');
+    return;
+  }
+
+  if (legacyStorageChannelId && legacyStorageChannelId !== storageChannelId) {
+    const legacyChannel = await client.channels.fetch(legacyStorageChannelId);
+    if (!legacyChannel?.isTextBased?.() || !legacyChannel.messages || !legacyChannel.guild) {
+      throw new Error('DISCORD_LEGACY_STORAGE_CHANNEL_ID 必须是机器人可访问的旧状态文字频道。');
+    }
+    const legacyPermissions = legacyChannel.permissionsFor(client.user);
+    if (!legacyPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])) {
+      throw new Error('机器人在旧状态频道需要查看频道和读取消息历史权限，无法迁移旧数据。');
+    }
+    const legacyMessage = await findStorageMessage(legacyChannel);
+    if (legacyMessage) {
+      const { saved } = await readStorageSnapshot(legacyMessage);
+      guildData = { ...defaultGuildData(), ...saved.guildData };
+      longTimeouts = saved.longTimeouts;
+      Object.assign(pendingPunishmentRecords, saved.pendingPunishments);
+      await savePlatformStorage();
+      await encryptLegacyLocalStateFiles();
+      console.log('已从旧 Discord 状态频道迁移数据，并以 AES-256-GCM 加密后保存到新频道；旧频道副本未删除。');
+      return;
+    }
+  }
+
+  const legacy = await fetchLegacyLocalState();
+  guildData = legacy.savedGuildData;
+  longTimeouts = legacy.savedTimeouts;
+  Object.assign(pendingPunishmentRecords, legacy.savedPending);
+  await savePlatformStorage();
+  await encryptLegacyLocalStateFiles();
+  console.log('已将本地旧数据复制到 Discord 私密存储频道。本地旧文件尚未删除，请先核对 Discord 中的存储记录。');
 }
 
 async function saveTimeouts() {
-  await writeEncryptedJson(timeoutFile, longTimeouts);
+  await savePlatformStorage();
 }
 
-async function loadTimeouts() {
-  try {
-    longTimeouts = await readEncryptedJson(timeoutFile);
-    if (!Array.isArray(longTimeouts)) longTimeouts = [];
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      longTimeouts = [];
-      return;
-    }
-    throw new Error(`Could not read encrypted timeout data. Keep DATA_ENCRYPTION_KEY unchanged and restore a valid backup if necessary. ${error.message}`);
-  }
-}
-
-let guildSaveQueue = Promise.resolve();
 async function saveGuildData() {
-  const snapshot = JSON.parse(JSON.stringify(guildData));
-  const write = guildSaveQueue.catch(() => {}).then(async () => {
-    await writeEncryptedJson(guildDataFile, snapshot);
-  });
-  guildSaveQueue = write;
-  await write;
-}
-
-async function loadGuildData() {
-  try {
-    const saved = await readEncryptedJson(guildDataFile);
-    guildData = { settings: saved.settings || {}, reminders: saved.reminders || [], warningFollowups: saved.warningFollowups || [], warningExpirations: saved.warningExpirations || [], punishmentCases: saved.punishmentCases || [] };
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      guildData = { settings: {}, reminders: [], warningFollowups: [], warningExpirations: [], punishmentCases: [] };
-      return;
-    }
-    throw new Error(`Could not read encrypted guild data. Keep DATA_ENCRYPTION_KEY unchanged and restore a valid backup if necessary. ${error.message}`);
-  }
-}
-
-async function migratePendingPunishments() {
-  await fs.mkdir(pendingPunishmentsDir, { recursive: true });
-  const entries = await fs.readdir(pendingPunishmentsDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isFile() || !/^[a-f0-9]{16}(?:\..+)?\.(?:json|processing)$/.test(entry.name)) continue;
-    const token = entry.name.slice(0, 16);
-    const lock = `${pendingPunishmentPath(token)}.lock`;
-    try { await fs.access(lock); continue; } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    await readEncryptedJson(path.join(pendingPunishmentsDir, entry.name));
-  }
+  await savePlatformStorage();
 }
 
 function settingsFor(guildId) {
@@ -459,20 +621,20 @@ async function ensureManagementAnnouncementThread(guild, tier = 'senior', roleId
   return thread;
 }
 
-async function postPunishment(guild, { user, moderator, mode, reason, timeoutDays, hasWarning, warningDays, caseId, replacedCaseId = null }) {
+async function postPunishment(guild, { user, moderator, mode, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId, replacedCaseId = null }) {
   const setting = settingsFor(guild.id);
   if (!setting.logChannelId) return { primarySent: false, auditSent: !setting.auditChannelId };
   const channel = await guild.channels.fetch(setting.logChannelId).catch(() => null);
   if (!channel?.isTextBased()) return { primarySent: false, auditSent: !setting.auditChannelId };
-  const action = mode === 'both' ? '警告并禁言' : mode === 'timeout' ? '禁言处罚' : '警告处罚';
-  const embed = new EmbedBuilder().setColor(timeoutDays ? 0xE67E22 : 0xF1C40F)
-    .setTitle(`${timeoutDays ? '🔇' : '⚠️'} ${action}`)
+  const action = hasBan ? '封禁并踢出' : hasWarning ? '处罚通知' : '禁言处罚';
+  const embed = new EmbedBuilder().setColor(hasBan ? 0x992D22 : timeoutDays ? 0xE67E22 : 0xF1C40F)
+    .setTitle(`${hasBan ? '⛔' : hasWarning ? '⚠️' : '🔇'} ${action}`)
     .addFields(
       { name: '成员', value: `<@${user.id}>`, inline: true },
       { name: '管理员', value: `<@${moderator.id}>`, inline: true },
       { name: '原因', value: reason.slice(0, 1024) },
-      ...(hasWarning ? [{ name: '警告', value: warningDays ? `${warningDays} 天` : '不自动移除', inline: true }] : []),
       ...(timeoutDays ? [{ name: '禁言时长', value: `${timeoutDays} 天`, inline: true }] : []),
+      ...(hasWarning ? [{ name: '警告', value: warningDays ? `${warningDays} 天` : '不自动移除', inline: true }] : []),
       { name: '处罚 ID', value: caseId, inline: false },
       ...(replacedCaseId ? [{ name: '覆盖处罚', value: replacedCaseId, inline: false }] : []),
     ).setThumbnail(user.displayAvatarURL({ size: 128 })).setTimestamp();
@@ -488,7 +650,7 @@ async function postPunishmentRevocation(guild, record, moderator) {
     { name: '成员', value: `<@${record.userId}>`, inline: true },
     { name: '撤销人', value: `<@${moderator.id}>`, inline: true },
     { name: '被撤销处罚 ID', value: record.id, inline: false },
-    { name: '撤销内容', value: [record.hasWarning ? '警告' : null, record.hasTimeout ? '禁言' : null].filter(Boolean).join(' + '), inline: true },
+    { name: '撤销内容', value: [record.hasWarning ? '警告' : null, record.hasTimeout ? '禁言' : null, record.hasBan || record.mode === 'ban' ? '封禁' : null].filter(Boolean).join(' + '), inline: true },
   ];
   return sendPunishmentEmbed(guild, new EmbedBuilder().setColor(0x95A5A6).setTitle('↩️ 处罚已撤销').addFields(...fields).setTimestamp());
 }
@@ -501,7 +663,7 @@ async function sendPunishmentEmbed(guild, embed) {
   for (const channelId of channelIds) {
     const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel?.isTextBased()) {
-      console.error(`Punishment log channel ${channelId} is unavailable.`);
+      console.error('Punishment log channel is unavailable.');
       continue;
     }
     try {
@@ -509,86 +671,182 @@ async function sendPunishmentEmbed(guild, embed) {
       if (channelId === setting.logChannelId) primarySent = true;
       if (channelId === setting.auditChannelId) auditSent = true;
     } catch (error) {
-      console.error(`Could not write punishment log to ${channelId}:`, error.message);
+      logFailure('Could not write punishment log.', error);
     }
   }
   return { primarySent, auditSent };
 }
 
 async function validatePunishmentRequest(interaction, request) {
-  const hasWarning = request.mode !== 'timeout';
-  const hasTimeout = request.mode !== 'warning';
-  const guild = interaction.guild;
+  const hasBan = request.mode === 'ban';
+  const hasWarning = !hasBan && request.mode !== 'timeout';
+  const hasTimeout = !hasBan && request.mode !== 'warning';
   const user = await client.users.fetch(request.userId);
-  const [member, botMember] = await Promise.all([guild.members.fetch(user.id), guild.members.fetchMe()]);
-  const setting = settingsFor(guild.id);
-  const previousCase = guildData.punishmentCases.find((item) => item.guildId === guild.id && item.userId === user.id && item.status === 'active');
-  const botNeedsRoles = hasWarning || Boolean(previousCase?.hasWarning && !hasWarning);
-  const botNeedsModeration = hasTimeout || Boolean(previousCase?.hasTimeout && !hasTimeout);
-  if (botNeedsRoles && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
-    throw new Error('机器人缺少“管理身份组”权限，无法执行或覆盖警告。');
+  const availableGuildIds = commandGuildIds();
+  if (availableGuildIds.length && !availableGuildIds.includes(interaction.guildId)) {
+    throw new Error('当前服务器未包含在 DISCORD_GUILD_IDS 可用名单中。');
   }
-  if (botNeedsModeration && !botMember.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-    throw new Error('机器人缺少“管理成员”权限，无法执行或解除禁言。');
+  const pairedGuildIds = punishmentGuildIds();
+  const isPairedGuild = pairedGuildIds.includes(interaction.guildId);
+  if (isPairedGuild && (pairedGuildIds.length !== 2
+      || (availableGuildIds.length && !pairedGuildIds.every((id) => availableGuildIds.includes(id))))) {
+    throw new Error('处罚互通需要在 DISCORD_PUNISHMENT_GUILD_IDS 配置两个服务器 ID，并确保它们也包含在 DISCORD_GUILD_IDS；再分别在两边配置处罚频道和警告身份组。');
   }
-  if (member.roles.highest.position >= botMember.roles.highest.position) {
-    throw new Error('机器人身份组必须高于被处罚成员的最高身份组。');
-  }
-  if (!setting.logChannelId) throw new Error('尚未配置处罚记录频道。请先运行 `/处罚面板` 进行设置。');
-  let warningRole = null;
-  if (setting.warningRoleId) {
-    warningRole = await guild.roles.fetch(setting.warningRoleId);
-    if (hasWarning && (!warningRole || warningRole.id === guild.id || warningRole.managed || warningRole.position >= botMember.roles.highest.position)) {
-      throw new Error('警告身份组无效或高于机器人身份组，请检查面板设置和身份组层级。');
+  const guildIds = isPairedGuild ? pairedGuildIds : [interaction.guildId];
+  const guilds = await Promise.all(guildIds.map((id) => client.guilds.fetch(id)));
+  const contexts = [];
+  for (const guild of guilds) {
+    let member;
+    try { member = await guild.members.fetch(user.id); }
+    catch { throw new Error(`目标成员不在服务器“${guild.name}”中，未执行处罚。`); }
+    const botMember = await guild.members.fetchMe();
+    const setting = settingsFor(guild.id);
+    const previousCase = guildData.punishmentCases.find((item) => item.guildId === guild.id && item.userId === user.id && item.status === 'active');
+    const botNeedsRoles = hasWarning || Boolean(previousCase?.hasWarning && !hasWarning && !hasBan);
+    const botNeedsModeration = hasTimeout || Boolean(previousCase?.hasTimeout && !hasTimeout && !hasBan);
+    const botNeedsBan = hasBan;
+    if (botNeedsRoles && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      throw new Error(`机器人在“${guild.name}”缺少“管理身份组”权限，未执行处罚。`);
     }
-  } else if (hasWarning) {
-    throw new Error('尚未设置警告身份组。请先运行 `/处罚面板` 并选择警告身份组。');
+    if (botNeedsModeration && !botMember.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+      throw new Error(`机器人在“${guild.name}”缺少“管理成员”权限，未执行处罚。`);
+    }
+    if (botNeedsBan && !botMember.permissions.has(PermissionFlagsBits.BanMembers)) {
+      throw new Error(`机器人在“${guild.name}”缺少“封禁成员”权限，未执行处罚。`);
+    }
+    if (member.roles.highest.position >= botMember.roles.highest.position) {
+      throw new Error(`机器人身份组必须高于目标成员在“${guild.name}”中的最高身份组，未执行处罚。`);
+    }
+    if (!setting.logChannelId) throw new Error(`尚未为“${guild.name}”配置处罚记录频道。请先在该服务器运行“/处罚面板”。`);
+    const logChannel = await guild.channels.fetch(setting.logChannelId).catch(() => null);
+    if (!logChannel?.isTextBased()) throw new Error(`“${guild.name}”的处罚记录频道不可用，未执行处罚。`);
+    const logPermissions = logChannel.permissionsFor(client.user);
+    if (!logPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+      throw new Error(`机器人在“${guild.name}”的处罚记录频道缺少查看、发送消息或嵌入链接权限，未执行处罚。`);
+    }
+    if (setting.auditChannelId) {
+      const auditChannel = await guild.channels.fetch(setting.auditChannelId).catch(() => null);
+      const auditPermissions = auditChannel?.isTextBased() ? auditChannel.permissionsFor(client.user) : null;
+      if (!auditPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+        throw new Error(`机器人在“${guild.name}”的留痕频道缺少查看、发送消息或嵌入链接权限，未执行处罚。`);
+      }
+    }
+    let warningRole = null;
+    if (setting.warningRoleId) {
+      warningRole = await guild.roles.fetch(setting.warningRoleId).catch(() => null);
+      if (hasWarning && (!warningRole || warningRole.id === guild.id || warningRole.managed || warningRole.position >= botMember.roles.highest.position)) {
+        throw new Error(`“${guild.name}”的警告身份组无效或高于机器人身份组，未执行处罚。`);
+      }
+    } else if (hasWarning) {
+      throw new Error(`尚未为“${guild.name}”设置警告身份组。请先在该服务器运行“/处罚面板”。`);
+    }
+    contexts.push({ guild, member, botMember, setting, warningRole, previousCase, hasWarning, hasTimeout, hasBan });
   }
-  return { guild, user, member, botMember, setting, warningRole, previousCase, hasWarning, hasTimeout };
+  const originContext = contexts.find((context) => context.guild.id === interaction.guildId);
+  return { ...originContext, user, contexts, hasWarning, hasTimeout, hasBan };
 }
 
 async function executePunishmentRequest(interaction, request) {
-  const { guild, user, member, setting, warningRole, previousCase, hasWarning, hasTimeout } = await validatePunishmentRequest(interaction, request);
+  const lockKey = request.userId;
+  if (activePunishmentLocks.has(lockKey)) throw new Error('该目标正在执行另一笔处罚，请稍后重试。');
+  activePunishmentLocks.add(lockKey);
+  try { return await executePunishmentRequestUnlocked(interaction, request); }
+  finally { activePunishmentLocks.delete(lockKey); }
+}
+
+async function executePunishmentRequestUnlocked(interaction, request) {
+  const { user, contexts, hasWarning, hasTimeout, hasBan } = await validatePunishmentRequest(interaction, request);
   const { mode, reason, timeoutDays, warningDays } = request;
-  const caseId = randomBytes(4).toString('hex');
-  if (previousCase) {
-    if (previousCase.hasWarning && (!hasWarning || previousCase.warningRoleId !== warningRole?.id)) {
-      const previousRole = await guild.roles.fetch(previousCase.warningRoleId).catch(() => null);
-      if (previousRole && member.roles.cache.has(previousRole.id)) {
-        await member.roles.remove(previousRole, `处罚 ${caseId} 覆盖旧处罚 ${previousCase.id}`);
+  const caseId = randomBytes(6).toString('hex');
+  const applied = [];
+  try {
+    for (const context of contexts) {
+      const { guild, member, warningRole, previousCase } = context;
+      const oldTimeoutUntil = member.communicationDisabledUntilTimestamp || 0;
+      const alreadyHeldWarning = Boolean(warningRole && member.roles.cache.has(warningRole.id));
+      const appliedContext = { context, oldTimeoutUntil, alreadyHeldWarning, addedWarning: false, changedTimeout: false, banned: false };
+      applied.push(appliedContext);
+      if (hasBan) {
+        await guild.members.ban(user.id, { reason: `处罚 ${caseId}：${reason}` });
+        appliedContext.banned = true;
+      }
+      if (hasWarning && !alreadyHeldWarning) {
+        await member.roles.add(warningRole, `警告处罚 ${caseId}：${reason}`);
+        appliedContext.addedWarning = true;
+      }
+      if (hasTimeout) {
+        const endAt = Date.now() + timeoutDays * DAY;
+        const until = Math.min(endAt, Date.now() + MAX_TIMEOUT);
+        await member.timeout(until - Date.now(), reason);
+        appliedContext.changedTimeout = true;
       }
     }
-    if (previousCase.hasTimeout && !hasTimeout) await member.timeout(null, `处罚 ${caseId} 覆盖旧处罚 ${previousCase.id}`);
-    previousCase.status = 'superseded';
-    previousCase.supersededBy = caseId;
-  }
-  longTimeouts = longTimeouts.filter((job) => !(job.guildId === guild.id && job.userId === user.id));
-  guildData.warningExpirations = guildData.warningExpirations.filter((item) => !(item.guildId === guild.id && item.userId === user.id));
-  guildData.warningFollowups = guildData.warningFollowups.filter((item) => !(item.guildId === guild.id && item.userId === user.id));
-  if (hasTimeout) {
-    const endAt = Date.now() + timeoutDays * DAY;
-    const until = Math.min(endAt, Date.now() + MAX_TIMEOUT);
-    await member.timeout(until - Date.now(), reason);
-    if (timeoutDays > 28) longTimeouts.push({ guildId: guild.id, userId: user.id, caseId, endAt, nextRefreshAt: until - DAY, reason });
-  }
-  if (hasWarning) {
-    await member.roles.add(warningRole, `警告处罚 ${caseId}：${reason}`);
-    if (warningDays) guildData.warningExpirations.push({ id: caseId, caseId, guildId: guild.id, userId: user.id, roleId: warningRole.id, expiresAt: Date.now() + warningDays * DAY });
-    if (setting.secondWarningReminder) {
-      guildData.warningFollowups.push({ id: `${caseId}-${user.id}`, caseId, guildId: guild.id, userId: user.id, guildName: guild.name, reason, dueAt: Date.now() + DAY });
+  } catch (error) {
+    for (const { context, oldTimeoutUntil, addedWarning, changedTimeout, banned } of applied.reverse()) {
+      if (banned) await context.guild.members.unban(user.id, `同步处罚 ${caseId} 未能完成，回滚`).catch(() => {});
+      if (addedWarning && context.warningRole) await context.member.roles.remove(context.warningRole, `同步处罚 ${caseId} 未能完成，回滚`).catch(() => {});
+      if (changedTimeout) {
+        const remainingMs = oldTimeoutUntil - Date.now();
+        await context.member.timeout(remainingMs > 0 ? remainingMs : null, `同步处罚 ${caseId} 未能完成，回滚`).catch(() => {});
+      }
     }
-    await user.send(`你在“${guild.name}”收到警告。原因：${reason}`).catch(() => {});
+    throw new Error(`双向同步未能在全部服务器完成，已尝试回滚；${error.message}`);
   }
-  guildData.punishmentCases.push({ id: caseId, guildId: guild.id, userId: user.id, moderatorId: interaction.user.id, mode, reason,
-    hasWarning, warningRoleId: warningRole?.id || null, warningDays: warningDays || null,
-    hasTimeout, timeoutDays: timeoutDays || null, status: 'active', createdAt: Date.now() });
-  await Promise.all([saveGuildData(), saveTimeouts()]);
-  const logged = await postPunishment(guild, { user, moderator: interaction.user, mode, reason, timeoutDays, hasWarning, warningDays, caseId, replacedCaseId: previousCase?.id || null });
-  const summary = [`处罚已执行，编号：\`${caseId}\`。`, ...(hasWarning ? [`警告身份组${warningDays ? `将在 ${warningDays} 天后自动移除` : '不会自动移除'}。`] : []), ...(hasTimeout ? [`已禁言 ${timeoutDays} 天${timeoutDays > 28 ? '，并保存自动续期计划' : ''}。`] : []), ...(hasWarning && setting.secondWarningReminder ? ['已安排 24 小时后的私信提醒。'] : []), ...(!logged.primarySent ? ['处罚记录频道写入失败，请检查频道和 Bot 权限。'] : []), ...(!logged.auditSent ? ['留痕频道写入失败，请检查频道和 Bot 权限。'] : [])];
+
+  const now = Date.now();
+  const cleanupFailures = [];
+  for (const { guild, member, setting, warningRole, previousCase } of contexts) {
+    if (previousCase) {
+      if (!hasBan && previousCase.hasWarning && (!hasWarning || previousCase.warningRoleId !== warningRole?.id)) {
+        const previousRole = await guild.roles.fetch(previousCase.warningRoleId).catch(() => null);
+        if (previousRole && member.roles.cache.has(previousRole.id)) {
+          try { await member.roles.remove(previousRole, `处罚 ${caseId} 覆盖旧处罚 ${previousCase.id}`); }
+          catch (error) { cleanupFailures.push(guild.name); logFailure('旧警告身份组清理失败。', error); }
+        }
+      }
+      if (!hasBan && previousCase.hasTimeout && !hasTimeout) {
+        try { await member.timeout(null, `处罚 ${caseId} 覆盖旧处罚 ${previousCase.id}`); }
+        catch (error) { cleanupFailures.push(guild.name); logFailure('旧禁言清理失败。', error); }
+      }
+      previousCase.status = 'superseded';
+      previousCase.supersededBy = caseId;
+    }
+    longTimeouts = longTimeouts.filter((job) => !(job.guildId === guild.id && job.userId === user.id));
+    guildData.warningExpirations = guildData.warningExpirations.filter((item) => !(item.guildId === guild.id && item.userId === user.id));
+    guildData.warningFollowups = guildData.warningFollowups.filter((item) => !(item.guildId === guild.id && item.userId === user.id));
+    if (hasTimeout && timeoutDays > 28) {
+      const endAt = now + timeoutDays * DAY;
+      longTimeouts.push({ guildId: guild.id, userId: user.id, caseId, endAt, nextRefreshAt: Math.min(endAt, now + MAX_TIMEOUT) - DAY, reason });
+    }
+    if (hasWarning && warningDays) guildData.warningExpirations.push({ id: caseId, caseId, guildId: guild.id, userId: user.id, roleId: warningRole.id, expiresAt: now + warningDays * DAY });
+    guildData.punishmentCases.push({ id: caseId, syncGroupId: caseId, syncGuildIds: contexts.map((item) => item.guild.id), guildId: guild.id,
+      userId: user.id, moderatorId: interaction.user.id, mode, reason, hasWarning, warningRoleId: warningRole?.id || null,
+      warningDays: warningDays || null, hasTimeout, timeoutDays: timeoutDays || null, hasBan, status: 'active', createdAt: now });
+  }
+  if (hasWarning && contexts.some((context) => context.setting.secondWarningReminder)) {
+    guildData.warningFollowups.push({ id: `${caseId}-${user.id}`, caseId, guildId: interaction.guildId, userId: user.id,
+      guildName: contexts.map((context) => context.guild.name).join('、'), reason, dueAt: now + DAY });
+  }
+  if (hasWarning) await user.send(`你在以下服务器收到同步警告：${contexts.map((item) => item.guild.name).join('、')}。原因：${reason}`).catch(() => {});
+  let persistenceFailed = false;
+  try { await savePlatformStorage(); }
+  catch (error) { persistenceFailed = true; logFailure('双向处罚已应用，但状态没有写入 Discord 私密存储。', error); }
+  const logResults = await Promise.all(contexts.map(({ guild, previousCase }) => postPunishment(guild, {
+    user, moderator: interaction.user, mode, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId, replacedCaseId: previousCase?.id || null,
+  })));
+  const failedLogs = logResults.filter((logged) => !logged.primarySent || !logged.auditSent).length;
+  const summary = [`处罚已同步至 ${contexts.length} 个服务器，编号：\`${caseId}\`。`, ...(hasBan ? ['目标已在两边封禁并移出服务器；撤销可使用此处罚编号。'] : []), ...(hasWarning ? [`两边的警告身份组${warningDays ? `将在 ${warningDays} 天后自动移除` : '不会自动移除'}。`] : []), ...(hasTimeout ? [`两边均已禁言 ${timeoutDays} 天${timeoutDays > 28 ? '，并保存自动续期计划' : ''}。`] : []), ...(hasWarning && contexts.some((context) => context.setting.secondWarningReminder) ? ['已安排 24 小时后的二次私信提醒。'] : []), ...(cleanupFailures.length ? [`旧处罚清理在以下服务器失败：${[...new Set(cleanupFailures)].join('、')}。`] : []), ...(failedLogs ? [`有 ${failedLogs} 个服务器的处罚记录或留痕频道写入失败，请检查对应面板和频道权限。`] : []), ...(persistenceFailed ? ['但同步状态写入 Discord 私密存储失败；请先保持 Bot 运行并检查存储频道连接，再重试保存。'] : [])];
   return summary.join('\n');
 }
 
 async function processSchedules() {
+  if (scheduleProcessing) return;
+  scheduleProcessing = true;
+  try { await processSchedulesUnlocked(); }
+  finally { scheduleProcessing = false; }
+}
+
+async function processSchedulesUnlocked() {
   const now = Date.now();
   let changed = false;
   for (const reminder of [...guildData.reminders]) {
@@ -596,14 +854,15 @@ async function processSchedules() {
     try {
       const guild = await client.guilds.fetch(reminder.guildId);
       const channel = await guild.channels.fetch(reminder.channelId);
-      const mention = reminder.userId ? `<@${reminder.userId}>` : reminder.roleId ? `<@&${reminder.roleId}>` : '';
-      await channel.send({ content: `${mention} ${reminder.content}`.trim(),
-        allowedMentions: { users: reminder.userId ? [reminder.userId] : [], roles: reminder.roleId ? [reminder.roleId] : [] } });
+      const userIds = reminder.userIds || (reminder.userId ? [reminder.userId] : []);
+      const mentions = [...userIds.map((id) => `<@${id}>`), ...(reminder.roleId ? [`<@&${reminder.roleId}>`] : [])];
+      await channel.send({ content: `${mentions.join(' ')} ${reminder.content}`.trim(),
+        allowedMentions: { users: userIds, roles: reminder.roleId ? [reminder.roleId] : [] } });
       if (reminder.intervalMs > 0) reminder.nextAt = now + reminder.intervalMs;
       else guildData.reminders = guildData.reminders.filter((item) => item.id !== reminder.id);
       changed = true;
     } catch (error) {
-      console.error(`Reminder ${reminder.id} could not be sent:`, error.message);
+      logFailure('A scheduled reminder could not be sent.', error);
       reminder.nextAt = now + 5 * 60 * 1000;
       changed = true;
     }
@@ -614,7 +873,7 @@ async function processSchedules() {
       const user = await client.users.fetch(followup.userId);
       await user.send(`再次提醒：你在“${followup.guildName}”收到警告。原因：${followup.reason}`);
     } catch (error) {
-      console.error(`Warning follow-up for ${followup.userId} could not be sent:`, error.message);
+      logFailure('A warning follow-up could not be sent.', error);
     }
     guildData.warningFollowups = guildData.warningFollowups.filter((item) => item.id !== followup.id);
     changed = true;
@@ -634,7 +893,7 @@ async function processSchedules() {
       if (error.code === 10007 || error.code === 10011) {
         guildData.warningExpirations = guildData.warningExpirations.filter((item) => item.id !== expiration.id);
       } else {
-        console.error(`Warning role expiration ${expiration.id} failed:`, error.message);
+        logFailure('A warning role expiration failed.', error);
         expiration.expiresAt = now + 5 * 60 * 1000;
       }
       changed = true;
@@ -660,6 +919,171 @@ function punishmentPanel(guildId) {
       new ButtonBuilder().setCustomId(`punish-audit-clear:${guildId}`).setLabel('清除留痕频道').setStyle(ButtonStyle.Secondary).setDisabled(!setting.auditChannelId),
     ),
   ];
+}
+
+function moderationProposalResourceKey(proposal) {
+  const targetType = proposal.kind === 'thread-action' || proposal.deleteTargetType === 'thread' ? 'thread' : 'message';
+  const targetId = targetType === 'thread' ? (proposal.threadId || proposal.channelId) : proposal.messageId;
+  return targetId ? targetType + ':' + targetId : null;
+}
+
+async function notifyModerationOffice(guild, proposal, roleIds, stageLabel) {
+  const setting = settingsFor(guild.id);
+  if (!setting.moderationOfficeChannelId || !roleIds || !roleIds.length || !proposal.approvalMessageId) return;
+  try {
+    const channel = await guild.channels.fetch(setting.moderationOfficeChannelId).catch(() => null);
+    const botMember = await guild.members.fetchMe();
+    const permissions = channel && channel.permissionsFor(botMember);
+    if (!channel || !channel.isTextBased() || !channel.send || !permissions || !permissions.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) throw new Error('办公室频道不可用，或 Bot 缺少查看/发送消息权限。');
+    const roles = roleIds.map((id) => guild.roles.cache.get(id)).filter(Boolean);
+    if (roles.some((role) => !role.mentionable) && !permissions.has(PermissionFlagsBits.MentionEveryone)) throw new Error('请开启目标身份组的“允许任何人提及”，或授予 Bot“提及 @everyone、@here 和所有身份组”权限。');
+    const mentions = roleIds.map((id) => '<@&' + id + '>').join(' ');
+    const jumpUrl = 'https://discord.com/channels/' + proposal.guildId + '/' + proposal.approvalChannelId + '/' + proposal.approvalMessageId;
+    await channel.send({ content: mentions + ' 有新的' + stageLabel + '，请点击审批卡处理：' + jumpUrl + '\n事项：' + proposal.actionLabel + '\n申请编号：' + proposal.id, allowedMentions: { parse: [], roles: roleIds } });
+  } catch (error) {
+    logFailure('版务办公室频道通知发送失败。', error);
+  }
+}
+function moderationApprovalPanelEmbed(guildId) {
+  const setting = settingsFor(guildId);
+  return new EmbedBuilder().setColor(0x5865F2).setTitle('帖子操作与内容删除审批设置')
+    .setDescription(`审批频道：${setting.moderationApprovalChannelId ? `<#${setting.moderationApprovalChannelId}>` : '未设置'}\n办公室频道：${setting.moderationOfficeChannelId ? `<#${setting.moderationOfficeChannelId}>` : '未设置'}\n操作员身份组：${setting.moderationOperatorRoleIds?.length ? setting.moderationOperatorRoleIds.map((id) => `<@&${id}>`).join('、') : '未设置'}\n审核员身份组：${setting.moderationReviewerRoleId ? `<@&${setting.moderationReviewerRoleId}>` : '未设置'}\n帖子操作员同意票数：${setting.threadOperatorVotesRequired || 2}\n删除操作员同意票数：${setting.deleteOperatorVotesRequired || 2}\n删除审核员同意票数：${setting.moderationReviewerVotesRequired || 2}\n\n锁定/关闭帖子：达到帖子操作员票数后执行。\n删除消息/帖子：先达到删除操作员票数，再由审核员身份组达到票数后执行。\n申请人自动计作 1 张操作员同意票；每人每阶段只能投一次。办公室频道会在需要投票时收到申请卡链接并提及当前阶段身份组。`);
+}
+
+function moderationApprovalPanel(guildId) {
+  const setting = settingsFor(guildId);
+  return [
+    new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`modcfg-channel:${guildId}`).setPlaceholder('选择审批记录频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+    new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`modcfg-operators:${guildId}`).setPlaceholder('选择操作员身份组（可多选）').setMinValues(1).setMaxValues(10)),
+    new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`modcfg-reviewer:${guildId}`).setPlaceholder('选择审核员身份组')),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`modcfg-counts:${guildId}`).setLabel('设置同意票数').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`modcfg-clear:${guildId}`).setLabel('清除审批频道').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`modcfg-office:${guildId}`).setLabel('设置办公室频道').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`modcfg-office-clear:${guildId}`).setLabel('清除办公室频道').setStyle(ButtonStyle.Secondary).setDisabled(!setting.moderationOfficeChannelId),
+    ),
+  ];
+}
+
+function moderationVoteComponents(proposal) {
+  const buttons = [
+    new ButtonBuilder().setCustomId(`modvote:operator:yes:${proposal.id}`).setLabel('同意').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`modvote:operator:no:${proposal.id}`).setLabel('拒绝').setStyle(ButtonStyle.Danger),
+  ];
+  if (proposal.status === 'pending_reviewer') {
+    buttons[0].setCustomId(`modvote:reviewer:yes:${proposal.id}`);
+    buttons[1].setCustomId(`modvote:reviewer:no:${proposal.id}`);
+  }
+  return [new ActionRowBuilder().addComponents(buttons)];
+}
+
+function moderationProposalEmbed(proposal) {
+  const operatorVotes = proposal.operatorVotes?.length || 0;
+  const reviewerVotes = proposal.reviewerVotes?.length || 0;
+  const phase = proposal.status === 'pending_operator'
+    ? `操作员同意：${operatorVotes}/${proposal.operatorVotesRequired}`
+    : proposal.status === 'pending_reviewer'
+      ? `操作员同意：${operatorVotes}/${proposal.operatorVotesRequired}\n审核员同意：${reviewerVotes}/${proposal.reviewerVotesRequired}`
+      : `结果：${proposal.status === 'completed' ? '已执行' : proposal.status === 'failed' ? `执行失败：${proposal.failure || '请检查 Bot 权限'}` : proposal.status === 'rejected' ? '已拒绝' : proposal.status === 'executing' ? '审批通过，正在执行' : '已过期'}`;
+  return new EmbedBuilder().setColor(proposal.status === 'completed' ? 0x2ECC71 : proposal.status === 'rejected' ? 0xE74C3C : 0xF1C40F)
+    .setTitle(proposal.kind === 'thread-action' ? '帖子操作申请' : '内容删除申请')
+    .setDescription(`申请人：<@${proposal.requesterId}>\n目标：${proposal.targetLink}\n操作：${proposal.actionLabel}\n\n${phase}\n\n申请编号：${proposal.id}`)
+    .setTimestamp(proposal.createdAt);
+}
+
+function reactionCleanupPanelEmbed(guildId) {
+  const setting = settingsFor(guildId);
+  const userIds = setting.reactionDeleteUserIds || [];
+  const emojiKeys = setting.reactionDeleteEmojiKeys || [];
+  const emojis = emojiKeys.map((emoji) => /^\d{17,20}$/.test(emoji) ? `自定义表情 ID \`${emoji}\`` : emoji).join('、');
+  return new EmbedBuilder().setColor(0x5865F2).setTitle('表情反应自动清理面板')
+    .setDescription(`监控成员：${userIds.length ? userIds.map((id) => `<@${id}>`).join('、') : '尚未设置'}\n清理表情：${emojis || '尚未设置'}\n\n当其他人给这些成员发出的消息添加指定表情时，Bot 会移除该消息上此表情的所有反应。不会删除消息或读取消息内容。\n\n请确保 Bot 在相关频道/子区有“管理消息”权限。`);
+}
+
+function reactionCleanupPanel(guildId) {
+  const setting = settingsFor(guildId);
+  return [
+    new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`reactclean-users:${guildId}`)
+      .setPlaceholder('选择要监控发言的成员').setMinValues(1).setMaxValues(25)),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`reactclean-emoji:${guildId}`).setLabel('设置要清理的表情').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`reactclean-clear-users:${guildId}`).setLabel('清除成员').setStyle(ButtonStyle.Secondary).setDisabled(!(setting.reactionDeleteUserIds || []).length),
+      new ButtonBuilder().setCustomId(`reactclean-clear-emojis:${guildId}`).setLabel('清除表情').setStyle(ButtonStyle.Secondary).setDisabled(!(setting.reactionDeleteEmojiKeys || []).length),
+    ),
+  ];
+}
+
+function parseReactionEmojiKeys(input) {
+  const values = String(input || '').split(/[\s,，]+/u).map((value) => value.trim()).filter(Boolean);
+  if (!values.length) throw new Error('请至少填写一个表情。');
+  if (values.length > 25) throw new Error('一次最多配置 25 个表情。');
+  const keys = values.map((value) => {
+    const match = value.match(/^<a?:[^:]+:(\d+)>$/) || value.match(/^[^:]+:(\d+)$/) || value.match(/^(\d{17,20})$/);
+    const key = match ? match[1] : value.normalize('NFC');
+    if (!key || key.length > 100) throw new Error(`无法识别这个表情：${value}`);
+    return key;
+  });
+  return [...new Set(keys)];
+}
+
+function reactionEmojiKey(reaction) {
+  return reaction.emoji.id || reaction.emoji.name?.normalize('NFC') || '';
+}
+
+function parseDiscordMessageLink(link) {
+  // Discord uses both channel URLs (/guild/channel) and message URLs
+  // (/guild/channel/message). Forum/thread links can also put a thread ID
+  // in the third segment, so resolve it against the guild before treating it
+  // as a message ID.
+  const match = String(link || '').trim().match(/^https?:\/\/(?:www\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)(?:\/(\d+))?(?:\/(\d+))?(?:\?.*)?\/?$/i);
+  return match ? {
+    guildId: match[1], channelId: match[2],
+    threadId: match[4] ? match[3] : null,
+    messageId: match[4] || match[3] || null,
+  } : null;
+}
+
+function memberHasAnyRole(member, roleIds = []) {
+  return roleIds.some((roleId) => member.roles.cache.has(roleId));
+}
+
+async function resolveModerationTarget(guild, proposal) {
+  let channel = await guild.channels.fetch(proposal.channelId);
+  if (!channel || channel.guildId !== guild.id) throw new Error('目标频道或子区不存在，或不属于本服务器。');
+  if (proposal.kind === 'thread-action' || proposal.deleteTargetType === 'thread') {
+    const linkedThreadId = proposal.threadId || proposal.messageId;
+    if (!channel.isThread() && linkedThreadId) {
+      const linkedThread = await guild.channels.fetch(linkedThreadId).catch(() => null);
+      if (linkedThread?.isThread() && linkedThread.guildId === guild.id && linkedThread.parentId === channel.id) channel = linkedThread;
+    }
+    if (!channel.isThread()) throw new Error('目标链接没有指向一个仍存在的帖子或子区。请复制帖子/子区链接，或其中一条消息的链接。');
+    return { channel };
+  }
+  if (!proposal.messageId) throw new Error('删除单条消息需要消息链接；请复制目标消息的链接。');
+  if (proposal.threadId) {
+    const linkedThread = await guild.channels.fetch(proposal.threadId).catch(() => null);
+    if (linkedThread?.isThread() && linkedThread.guildId === guild.id && linkedThread.parentId === channel.id) channel = linkedThread;
+  }
+  if (!channel.isTextBased?.() || !channel.messages) throw new Error('目标不是可读取消息的文字频道或子区。');
+  const message = await channel.messages.fetch(proposal.messageId);
+  return { channel, message };
+}
+
+async function executeModerationProposal(guild, proposal) {
+  const { channel, message } = await resolveModerationTarget(guild, proposal);
+  const botMember = await guild.members.fetchMe();
+  const permissions = channel.permissionsFor(botMember);
+  if (proposal.kind === 'thread-action') {
+    if (!permissions?.has(PermissionFlagsBits.ManageThreads)) throw new Error('Bot 缺少“管理帖子”权限。');
+    if (proposal.action === 'lock' || proposal.action === 'lock-close') await channel.setLocked(true, `审批通过（${proposal.id}）`);
+    if (proposal.action === 'close' || proposal.action === 'lock-close') await channel.setArchived(true, `审批通过（${proposal.id}）`);
+  } else if (proposal.deleteTargetType === 'thread') {
+    if (!permissions?.has(PermissionFlagsBits.ManageThreads)) throw new Error('Bot 缺少“管理帖子”权限。');
+    await channel.delete(`删除审批通过（${proposal.id}）`);
+  } else {
+    if (!permissions?.has(PermissionFlagsBits.ManageMessages)) throw new Error('Bot 缺少“管理消息”权限。');
+    await message.delete(`删除审批通过（${proposal.id}）`);
+  }
 }
 
 function managementPanelComponents(guildId, tier = 'senior') {
@@ -859,7 +1283,7 @@ function scheduleManagementMemberSync(member, hasRole, tier = 'senior', roleId =
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
     managementSyncTimers.delete(key);
-    reconcileManagementMember(member, hasRole, tier, roleId).catch((error) => console.error(`${managementTrack(settingsFor(member.guild.id), tier, roleId).label}成员同步失败（${member.guild.id}/${member.id}）：`, error.message));
+    reconcileManagementMember(member, hasRole, tier, roleId).catch((error) => logFailure(`${managementTrack(settingsFor(member.guild.id), tier, roleId).label}成员同步失败。`, error));
   }, 1200);
   managementSyncTimers.set(key, timer);
 }
@@ -871,7 +1295,7 @@ async function announceManagementChange(guild, { action, records, moderator, sta
   try {
     channel = await ensureManagementAnnouncementThread(guild, tier, roleId);
   } catch (error) {
-    console.error(`${track.label}任免公示子区不可用，将尝试现有公示位置：`, error.message);
+    logFailure(`${track.label}任免公示子区不可用，将尝试现有公示位置。`, error);
     channel = track.channelId ? await guild.channels.fetch(track.channelId).catch(() => null) : null;
   }
   if (!channel?.isTextBased()) return false;
@@ -974,7 +1398,7 @@ async function reconcileLongTimeouts() {
   const active = [];
   for (const job of longTimeouts) {
     if (job.endAt <= now) {
-      console.log(`Long timeout ended for ${job.userId} in ${job.guildId}.`);
+      console.log('A long timeout schedule ended.');
       continue;
     }
     try {
@@ -984,12 +1408,12 @@ async function reconcileLongTimeouts() {
         const until = Math.min(job.endAt, now + TIMEOUT_REFRESH);
         await member.timeout(until - now, job.reason || 'Scheduled long timeout refresh');
         job.nextRefreshAt = until >= job.endAt ? job.endAt : until - DAY;
-        console.log(`Refreshed long timeout for ${job.userId} until ${new Date(until).toISOString()}.`);
+        console.log('A long timeout schedule was refreshed.');
       }
       active.push(job);
     } catch (error) {
       // A departed member or removed bot permission should not prevent other schedules from running.
-      console.error(`Could not refresh timeout for ${job.userId} in ${job.guildId}:`, error.message);
+      logFailure('Could not refresh a long timeout.', error);
       active.push(job);
     }
   }
@@ -1001,17 +1425,60 @@ function hasPermission(interaction, permission) {
   return interaction.memberPermissions?.has(permission) || false;
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessageReactions],
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
+});
 let readyWatchdog;
-client.on('shardError', (error) => console.error('Discord 网关连接错误:', error.message));
+client.on('shardError', (error) => logFailure('Discord 网关连接错误。', error));
 client.on('shardConnecting', () => console.log('正在连接 Discord 实时网关……'));
 client.on('shardDisconnect', (event, shardId) => {
-  console.error(`Discord 网关已断开（分片 ${shardId}，代码 ${event.code}）：${event.reason || '未提供原因'}`);
+  console.error(`Discord 网关已断开（错误代码 ${event.code}）。`);
 });
-client.on('error', (error) => console.error('Discord 客户端错误:', error.message));
+client.on('error', (error) => logFailure('Discord 客户端错误。', error));
+client.on('messageReactionAdd', async (incomingReaction, user) => {
+  if (user.id === client.user?.id || user.bot) return;
+  try {
+    const reaction = incomingReaction.partial ? await incomingReaction.fetch() : incomingReaction;
+    let message = reaction.message;
+    if (message.partial) message = await message.fetch();
+    const guildId = message.guildId;
+    if (!guildId) return;
+    const setting = guildData.settings[guildId];
+    if (!setting?.reactionDeleteUserIds?.includes(message.author?.id)) return;
+    if (!(setting.reactionDeleteEmojiKeys || []).includes(reactionEmojiKey(reaction))) return;
+
+    const guild = message.guild || await client.guilds.fetch(guildId);
+    const botMember = await guild.members.fetchMe();
+    if (!message.channel.permissionsFor(botMember)?.has(PermissionFlagsBits.ManageMessages)) {
+      logFailure('表情反应符合清理规则，但 Bot 缺少“管理消息”权限。');
+      return;
+    }
+    const cleanupKey = `${message.channelId}:${message.id}:${reactionEmojiKey(reaction)}`;
+    if (activeReactionCleanups.has(cleanupKey)) return;
+    activeReactionCleanups.add(cleanupKey);
+    try {
+      await reaction.remove();
+      console.log('已按服务器规则移除指定成员消息上的表情反应。');
+    } finally {
+      activeReactionCleanups.delete(cleanupKey);
+    }
+  } catch (error) {
+    logFailure('自动清理消息表情反应失败。', error);
+  }
+});
 client.once('clientReady', async () => {
   clearTimeout(readyWatchdog);
   console.log(`Logged in as ${client.user.tag}`);
+  try {
+    await loadPlatformStorage();
+    storageReady = true;
+  } catch (error) {
+    logFailure('Discord 私密存储初始化失败；为避免使用空数据覆盖记录，机器人不会处理指令。', error);
+    client.destroy();
+    process.exit(1);
+    return;
+  }
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -1026,15 +1493,15 @@ client.once('clientReady', async () => {
     guild.members.fetch().then((members) => Promise.all(tracks.map(([tier, roleId]) => {
       const track = managementTrack(setting, tier, roleId);
       return syncManagementRole(guild, tier, members, roleId).catch((error) => {
-        console.error(`${track.label}成员读取失败（${guild.name}/${roleId || track.roleId}）：${error.message}。请在 Developer Portal 开启 Server Members Intent。`);
+        logFailure(`${track.label}成员读取失败。请在 Developer Portal 开启 Server Members Intent。`, error);
       });
     }))).catch((error) => {
-      console.error(`管理组成员列表读取失败（${guild.name}）：${error.message}。请在 Developer Portal 开启 Server Members Intent。`);
+      logFailure('管理组成员列表读取失败。请在 Developer Portal 开启 Server Members Intent。', error);
     });
   }
-  setInterval(() => reconcileLongTimeouts().catch((error) => console.error('Timeout scheduler failed:', error)), 60 * 1000);
-  await processSchedules().catch((error) => console.error('Schedule startup processing failed:', error.message));
-  setInterval(() => processSchedules().catch((error) => console.error('Schedule processing failed:', error.message)), 30 * 1000);
+  setInterval(() => reconcileLongTimeouts().catch((error) => logFailure('Timeout scheduler failed.', error)), 60 * 1000);
+  await processSchedules().catch((error) => logFailure('Schedule startup processing failed.', error));
+  setInterval(() => processSchedules().catch((error) => logFailure('Schedule processing failed.', error)), 1000);
 });
 client.on('guildMemberUpdate', (oldMember, newMember) => {
   const setting = guildData.settings[newMember.guild.id];
@@ -1058,7 +1525,13 @@ client.on('guildMemberRemove', (member) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.customId || interaction.type}（服务器 ${interaction.guildId || '私聊'}）`);
+  if (!storageReady) {
+    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '机器人正在连接私密存储，请稍后重试。', flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return;
+  }
+  console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
   if (interaction.isModalSubmit() && interaction.customId.startsWith('mgmt-reason:')) {
     const token = interaction.customId.split(':')[1];
     const pending = pendingManagementActions.get(token);
@@ -1082,9 +1555,152 @@ client.on('interactionCreate', async (interaction) => {
       });
       await interaction.editReply(result.message);
     } catch (error) {
-      console.error('管理组理由提交失败:', error.message);
+      logFailure('管理组理由提交失败。', error);
       await interaction.editReply(`操作未完成：${error.message}`);
     }
+    return;
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('modcfg-office-id:')) {
+    const [, guildId, panelChannelId, panelMessageId] = interaction.customId.split(':');
+    if (!interaction.inGuild() || guildId !== interaction.guildId || !hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: '只有本服务器管理员可以配置办公室频道。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const input = interaction.fields.getTextInputValue('channel-id').trim();
+    const match = input.match(/^(?:<#)?(\d{17,20})>?$/);
+    if (!match) { await interaction.reply({ content: '请输入有效的本服务器频道 ID，或粘贴频道提及（<#频道ID>）。', flags: MessageFlags.Ephemeral }); return; }
+    const channel = await interaction.guild.channels.fetch(match[1]).catch(() => null);
+    const botMember = await interaction.guild.members.fetchMe();
+    const perms = channel && channel.permissionsFor(botMember);
+    if (!channel || channel.guildId !== guildId || !channel.isTextBased() || !channel.send || !perms || !perms.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
+      await interaction.reply({ content: '该频道无效，或 Bot 缺少查看和发送消息权限。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    settingsFor(guildId).moderationOfficeChannelId = channel.id;
+    await saveGuildData();
+    const panelChannel = await interaction.guild.channels.fetch(panelChannelId).catch(() => null);
+    const panelMessage = panelChannel && panelChannel.isTextBased() ? await panelChannel.messages.fetch(panelMessageId).catch(() => null) : null;
+    if (panelMessage) await panelMessage.edit({ embeds: [moderationApprovalPanelEmbed(guildId)], components: moderationApprovalPanel(guildId) }).catch(() => {});
+    await interaction.reply({ content: '办公室通知频道已设置为 <#' + channel.id + '>。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('modcfg-counts:')) {
+    const guildId = interaction.customId.split(':')[1];
+    if (!interaction.inGuild() || guildId !== interaction.guildId || !hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: '只有本服务器管理员可以配置审批门槛。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const threadCount = Number(interaction.fields.getTextInputValue('thread-count'));
+    const deleteCount = Number(interaction.fields.getTextInputValue('delete-count'));
+    const reviewerCount = Number(interaction.fields.getTextInputValue('reviewer-count'));
+    if (![threadCount, deleteCount, reviewerCount].every((value) => Number.isInteger(value) && value >= 1 && value <= 25)) {
+      await interaction.reply({ content: '同意票数必须是 1 到 25 的整数。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const setting = settingsFor(guildId);
+    setting.threadOperatorVotesRequired = threadCount;
+    setting.deleteOperatorVotesRequired = deleteCount;
+    setting.moderationReviewerVotesRequired = reviewerCount;
+    await saveGuildData();
+    await interaction.reply({ content: '审批同意票数已保存。', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('reactclean-emoji:')) {
+    const [, guildId, channelId, messageId] = interaction.customId.split(':');
+    if (!interaction.inGuild() || guildId !== interaction.guildId || !hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: '只有本服务器管理员可以配置表情反应清理。', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const emojiKeys = parseReactionEmojiKeys(interaction.fields.getTextInputValue('emoji-list'));
+      const setting = settingsFor(guildId);
+      setting.reactionDeleteEmojiKeys = emojiKeys;
+      await saveGuildData();
+      const panelChannel = await interaction.guild.channels.fetch(channelId).catch(() => null);
+      const panelMessage = panelChannel?.isTextBased() ? await panelChannel.messages.fetch(messageId).catch(() => null) : null;
+      if (panelMessage) await panelMessage.edit({ embeds: [reactionCleanupPanelEmbed(guildId)], components: reactionCleanupPanel(guildId) });
+      await interaction.editReply(`已配置 ${emojiKeys.length} 个要移除的表情反应。只会移除匹配的那种表情，消息上的其他表情和消息本身都会保留。`);
+    } catch (error) {
+      await interaction.editReply(`表情设置未保存：${error.message}`);
+    }
+    return;
+  }
+  if (interaction.isButton() && interaction.customId.startsWith('modvote:') && interaction.inGuild()) {
+    const [, stage, choice, proposalId] = interaction.customId.split(':');
+    const proposal = (guildData.moderationProposals || []).find((item) => item.id === proposalId && item.guildId === interaction.guildId);
+    try { await interaction.deferUpdate(); } catch (error) { logFailure('审批投票交互无法应答。', error); return; }
+    if (!proposal || proposal.status !== (stage === 'reviewer' ? 'pending_reviewer' : 'pending_operator')) {
+      await interaction.followUp({ content: '这项审批已处理、已过期或当前不在这个审批阶段。', flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    if (Date.now() - proposal.createdAt > MODERATION_PROPOSAL_TTL) {
+      proposal.status = 'expired';
+      await saveGuildData();
+      await interaction.message.edit({ embeds: [moderationProposalEmbed(proposal)], components: [] }).catch(() => {});
+      await interaction.followUp({ content: '这项审批已超过 24 小时，不能再投票。', flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    if (interaction.user.id === proposal.requesterId) {
+      await interaction.followUp({ content: stage === 'operator' ? '申请人已自动计作 1 张操作员同意票，不能重复投票。' : '申请人不能参与自己删除申请的审核员投票。', flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    const setting = settingsFor(interaction.guildId);
+    const authorized = stage === 'operator'
+      ? memberHasAnyRole(member, setting.moderationOperatorRoleIds || [])
+      : Boolean(setting.moderationReviewerRoleId && member.roles.cache.has(setting.moderationReviewerRoleId));
+    if (!authorized) {
+      await interaction.followUp({ content: stage === 'operator' ? '你不在已配置的操作员身份组内。' : '你不在已配置的审核员身份组内。', flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    const votesKey = stage === 'reviewer' ? 'reviewerVotes' : 'operatorVotes';
+    proposal[votesKey] ||= [];
+    if (proposal[votesKey].some((vote) => vote.userId === interaction.user.id)) {
+      await interaction.followUp({ content: '你已经在这个阶段投过票。', flags: MessageFlags.Ephemeral }).catch(() => {});
+      return;
+    }
+    proposal[votesKey].push({ userId: interaction.user.id, choice, votedAt: Date.now() });
+    let execute = false;
+    let notifyReviewers = false;
+    if (choice === 'no') proposal.status = 'rejected';
+    else if (stage === 'operator' && proposal.operatorVotes.filter((vote) => vote.choice === 'yes').length >= proposal.operatorVotesRequired) {
+      if (proposal.kind === 'thread-action') {
+        execute = true;
+        proposal.status = 'executing';
+      }
+      else {
+        proposal.status = 'pending_reviewer';
+        notifyReviewers = true;
+      }
+    } else if (stage === 'reviewer' && proposal.reviewerVotes.filter((vote) => vote.choice === 'yes').length >= proposal.reviewerVotesRequired) {
+      execute = true;
+      proposal.status = 'executing';
+    }
+    await saveGuildData();
+    if (notifyReviewers && setting.moderationReviewerRoleId) {
+      await notifyModerationOffice(interaction.guild, proposal, [setting.moderationReviewerRoleId], '删除申请审核阶段');
+      const approvalChannel = await interaction.guild.channels.fetch(proposal.approvalChannelId).catch(() => null);
+      if (approvalChannel?.isTextBased?.() && approvalChannel.send) {
+      await approvalChannel.send({ content: `<@&${setting.moderationReviewerRoleId}> 删除申请已通过操作员阶段，请前往审批卡投票：https://discord.com/channels/${proposal.guildId}/${proposal.approvalChannelId}/${proposal.approvalMessageId}（编号：${proposal.id}）。`, allowedMentions: { parse: [], roles: [setting.moderationReviewerRoleId] } }).catch((error) => logFailure('审核员阶段提及发送失败。', error));
+      }
+    }
+    if (execute) {
+      await interaction.message.edit({ embeds: [moderationProposalEmbed(proposal)], components: [] }).catch(() => {});
+      try {
+        await executeModerationProposal(interaction.guild, proposal);
+        proposal.status = 'completed';
+      } catch (error) {
+        proposal.status = 'failed';
+        proposal.failure = String(error.message || '操作失败').slice(0, 300);
+        logFailure('审批通过后的版务操作执行失败。', error);
+      }
+      await saveGuildData();
+    }
+    await interaction.message.edit({ embeds: [moderationProposalEmbed(proposal)], components: proposal.status === 'pending_operator' || proposal.status === 'pending_reviewer' ? moderationVoteComponents(proposal) : [] }).catch((error) => logFailure('审批消息更新失败。', error));
+    if (proposal.status === 'failed') await interaction.followUp({ content: `审批已通过，但 Bot 执行操作失败：${proposal.failure}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    else if (proposal.status === 'completed') await interaction.followUp({ content: '审批通过，已执行对应操作。', flags: MessageFlags.Ephemeral }).catch(() => {});
+    else await interaction.followUp({ content: proposal.status === 'rejected' ? '申请已被拒绝。' : '投票已记录。', flags: MessageFlags.Ephemeral }).catch(() => {});
     return;
   }
   if (interaction.isButton() && (interaction.customId.startsWith('punishment-confirm:') || interaction.customId.startsWith('punishment-cancel:'))) {
@@ -1092,19 +1708,19 @@ client.on('interactionCreate', async (interaction) => {
     try {
       await interaction.deferUpdate();
     } catch (error) {
-      console.warn(`处罚确认交互 ${token} 无法应答，未执行本次操作：${error.code || error.message}`);
+      logFailure('处罚确认交互无法应答，未执行本次操作。', error);
       return;
     }
-    let pending = await readPendingPunishment(token).catch((error) => { console.error('读取待确认处罚失败:', error); return null; });
+    let pending = await readPendingPunishment(token).catch((error) => { logFailure('读取待确认处罚失败。', error); return null; });
     let recoveredFromMessage = false;
     if (!pending) {
       pending = recoverPunishmentFromConfirmationMessage(interaction);
       recoveredFromMessage = Boolean(pending);
-      if (pending) console.warn(`待确认处罚 ${token} 的数据文件不存在，已从确认消息恢复；进程 ${process.pid}，目录 ${pendingPunishmentsDir}`);
+      if (pending) console.warn('待确认处罚的存储记录不存在，已从确认消息恢复。');
     }
     if (!pending) {
       pendingPunishments.delete(token);
-      console.error(`待确认处罚 ${token} 无法恢复；进程 ${process.pid}，目录 ${pendingPunishmentsDir}`);
+      console.error('待确认处罚无法恢复；尚未执行处罚。');
       await interaction.editReply({ content: '找不到这张处罚确认卡对应的数据，尚未执行处罚。请重新运行 `/处罚`；若再次出现，请检查是否有多个不同目录中的 Bot 实例。', embeds: [], components: [] });
       return;
     }
@@ -1116,25 +1732,14 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ content: '处罚确认卡与当前服务器不匹配，尚未执行处罚。', embeds: [], components: [] });
       return;
     }
-    if (Date.now() - pending.createdAt > PUNISHMENT_CONFIRM_TTL) {
+    if (Date.now() - pending.createdAt >= PUNISHMENT_CONFIRM_TTL) {
       pendingPunishments.delete(token);
-      const file = pendingPunishmentPath(token);
-      if (file) await fs.unlink(file).catch(() => {});
-      await interaction.editReply({ content: '这次处罚确认已超过 15 分钟，请重新运行 `/处罚`。', embeds: [], components: [] });
+      delete pendingPunishmentRecords[token];
+      await savePlatformStorage();
+      await interaction.editReply({ content: '这次处罚确认已超过 1 分钟，请重新运行 `/处罚`。', embeds: [], components: [] });
       return;
     }
-    let claim = recoveredFromMessage ? null : await claimPendingPunishment(token);
-    if (recoveredFromMessage) {
-      const lock = `${pendingPunishmentPath(token)}.lock`;
-      await fs.mkdir(pendingPunishmentsDir, { recursive: true });
-      try {
-        const handle = await fs.open(lock, 'wx');
-        await handle.close();
-        claim = { request: pending, claimed: lock };
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-      }
-    }
+    const claim = await claimPendingPunishment(token, recoveredFromMessage ? pending : null);
     if (!claim) {
       pendingPunishments.delete(token);
       await interaction.editReply({ content: '这次处罚确认已处理，请重新运行 `/处罚`。', embeds: [], components: [] });
@@ -1143,8 +1748,7 @@ client.on('interactionCreate', async (interaction) => {
     const claimedRequest = claim.request;
     pendingPunishments.delete(token);
     if (action === 'punishment-cancel') {
-      await fs.unlink(claim.claimed).catch(() => {});
-      if (claim.lock) await fs.unlink(claim.lock).catch(() => {});
+      claimedPunishments.delete(token);
       await interaction.editReply({ content: '已取消处罚，没有执行任何操作。', embeds: [], components: [] });
       return;
     }
@@ -1152,15 +1756,112 @@ client.on('interactionCreate', async (interaction) => {
       const summary = await executePunishmentRequest(interaction, claimedRequest);
       await interaction.editReply({ content: summary, embeds: [], components: [], allowedMentions: { parse: [] } });
     } catch (error) {
-      console.error('/处罚 确认执行失败:', error);
+      logFailure('/处罚 确认执行失败。', error);
       await interaction.editReply({ content: `处罚未能执行：${error.message}`, embeds: [], components: [], allowedMentions: { parse: [] } }).catch(() => {});
     } finally {
-      await fs.unlink(claim.claimed).catch(() => {});
-      if (claim.lock) await fs.unlink(claim.lock).catch(() => {});
+      claimedPunishments.delete(token);
     }
     return;
   }
   if (interaction.isChannelSelectMenu() || interaction.isRoleSelectMenu() || interaction.isUserSelectMenu() || interaction.isButton()) {
+    if (interaction.customId.startsWith('reactclean-') && interaction.inGuild()) {
+      const [action, guildId] = interaction.customId.split(':');
+      if (guildId !== interaction.guildId || !hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        await interaction.reply({ content: '只有本服务器管理员可以配置表情反应清理。', flags: MessageFlags.Ephemeral }).catch(() => {});
+        return;
+      }
+      const setting = settingsFor(guildId);
+      try {
+        if (action === 'reactclean-emoji' && interaction.isButton()) {
+          const modal = new ModalBuilder()
+            .setCustomId(`reactclean-emoji:${guildId}:${interaction.channelId}:${interaction.message.id}`)
+            .setTitle('设置要清理的表情')
+            .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder()
+              .setCustomId('emoji-list').setLabel('表情（可填多个，用逗号或空格分隔）')
+              .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500)
+              .setPlaceholder('例如：😂 🧹 或 <:表情名:表情ID>')));
+          await interaction.showModal(modal);
+          return;
+        }
+        await interaction.deferUpdate();
+        if (action === 'reactclean-users' && interaction.isUserSelectMenu()) {
+          const members = await Promise.all(interaction.values.map((id) => interaction.guild.members.fetch(id).catch(() => null)));
+          if (members.some((member) => !member || member.user.bot)) {
+            await interaction.followUp({ content: '监控名单只能选择本服务器中的真人成员。', flags: MessageFlags.Ephemeral });
+            return;
+          }
+          setting.reactionDeleteUserIds = [...new Set(members.map((member) => member.id))];
+        } else if (action === 'reactclean-clear-users' && interaction.isButton()) {
+          setting.reactionDeleteUserIds = [];
+        } else if (action === 'reactclean-clear-emojis' && interaction.isButton()) {
+          setting.reactionDeleteEmojiKeys = [];
+        } else return;
+        await saveGuildData();
+        try {
+          await interaction.message.edit({ embeds: [reactionCleanupPanelEmbed(guildId)], components: reactionCleanupPanel(guildId) });
+        } catch (error) {
+          if (error.code !== 10008) throw error;
+          const channel = interaction.channel;
+          if (!channel?.isTextBased() || typeof channel.send !== 'function') throw error;
+          await channel.send({ embeds: [reactionCleanupPanelEmbed(guildId)], components: reactionCleanupPanel(guildId) });
+          await interaction.followUp({ content: '设置已保存。原面板消息已失效，我已在当前频道/子区重新发送面板。', flags: MessageFlags.Ephemeral });
+        }
+      } catch (error) {
+        logFailure('表情反应清理面板操作失败。', error);
+        await interaction.followUp({ content: `设置未保存：${error.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+      return;
+    }
+    if ((interaction.customId.startsWith('modcfg-')) && interaction.inGuild()) {
+      const [action, guildId] = interaction.customId.split(':');
+      if (guildId !== interaction.guildId || !hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        await interaction.reply({ content: '只有本服务器管理员可以配置版务审批。', flags: MessageFlags.Ephemeral }).catch(() => {});
+        return;
+      }
+      const setting = settingsFor(guildId);
+      try {
+        if (action === 'modcfg-office' && interaction.isButton()) {
+          const modal = new ModalBuilder().setCustomId('modcfg-office-id:' + guildId + ':' + interaction.channelId + ':' + interaction.message.id).setTitle('设置办公室通知频道')
+            .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel-id').setLabel('频道 ID 或频道提及').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30).setPlaceholder('例如：123456789012345678 或 <#123456789012345678>')));
+          await interaction.showModal(modal);
+          return;
+        }
+        if (action === 'modcfg-counts' && interaction.isButton()) {
+          const modal = new ModalBuilder().setCustomId(`modcfg-counts:${guildId}`).setTitle('设置审批同意票数')
+            .addComponents(
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('thread-count').setLabel('帖子操作员同意票数').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(2).setValue(String(setting.threadOperatorVotesRequired || 2))),
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('delete-count').setLabel('删除操作员同意票数').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(2).setValue(String(setting.deleteOperatorVotesRequired || 2))),
+              new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reviewer-count').setLabel('删除审核员阶段同意票数').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(2).setValue(String(setting.moderationReviewerVotesRequired || 2))),
+            );
+          await interaction.showModal(modal);
+          return;
+        }
+        await interaction.deferUpdate();
+        if (action === 'modcfg-channel' && interaction.isChannelSelectMenu()) {
+          const [channel, botMember] = await Promise.all([
+            interaction.guild.channels.fetch(interaction.values[0]),
+            interaction.guild.members.fetchMe(),
+          ]);
+          const perms = channel?.permissionsFor(botMember);
+          if (!channel || channel.guildId !== guildId || !perms?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) throw new Error('审批频道必须属于本服务器，并允许 Bot 查看、发送消息和嵌入链接。');
+          setting.moderationApprovalChannelId = channel.id;
+        } else if (action === 'modcfg-operators' && interaction.isRoleSelectMenu()) {
+          setting.moderationOperatorRoleIds = [...new Set(interaction.values)];
+        } else if (action === 'modcfg-reviewer' && interaction.isRoleSelectMenu()) {
+          setting.moderationReviewerRoleId = interaction.values[0];
+        } else if (action === 'modcfg-clear' && interaction.isButton()) {
+          setting.moderationApprovalChannelId = null;
+        } else if (action === 'modcfg-office-clear' && interaction.isButton()) {
+          setting.moderationOfficeChannelId = null;
+        } else return;
+        await saveGuildData();
+        await interaction.message.edit({ embeds: [moderationApprovalPanelEmbed(guildId)], components: moderationApprovalPanel(guildId) });
+      } catch (error) {
+        logFailure('版务审批面板操作失败。', error);
+        await interaction.followUp({ content: `设置未保存：${error.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      }
+      return;
+    }
     if ((interaction.customId.startsWith('mgmt-') || interaction.customId.startsWith('midmgmt-')) && interaction.inGuild()) {
       try {
         const [rawAction, guildId] = interaction.customId.split(':');
@@ -1387,7 +2088,7 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
       } catch (error) {
-        console.error('管理组面板操作失败:', error);
+        logFailure('管理组面板操作失败。', error);
         if (interaction.deferred) {
           await interaction.editReply('管理组面板操作失败。请确认 Bot 权限和子区状态；具体错误已输出到控制台。').catch(() => {});
         } else if (!interaction.replied) {
@@ -1438,7 +2139,7 @@ client.on('interactionCreate', async (interaction) => {
     await saveGuildData();
     await interaction.message.edit({ embeds: [punishmentPanelEmbed(guildId)], components: punishmentPanel(guildId) });
     } catch (error) {
-      console.error('处罚面板交互失败:', error.message);
+      logFailure('处罚面板交互失败。', error);
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: '设置没有保存，请检查频道和 Bot 权限后重试。', flags: MessageFlags.Ephemeral }).catch(() => {});
       } else {
@@ -1453,22 +2154,7 @@ client.on('interactionCreate', async (interaction) => {
     // this async listener independently for every interaction, so slow API work
     // below does not put other commands into a shared queue.
     if (interaction.commandName !== '处罚面板') {
-      await interaction.deferReply(interaction.commandName === '提问' ? {} : { flags: MessageFlags.Ephemeral });
-    }
-    if (interaction.commandName === '提问') {
-      const prompt = interaction.options.getString('问题', true);
-      const historyKey = `${interaction.guildId || 'dm'}:${interaction.channelId}:${interaction.user.id}`;
-      const history = histories.get(historyKey) || [];
-      const answer = await askApi([
-        { role: 'system', content: process.env.SYSTEM_PROMPT || 'You are a helpful assistant.' },
-        ...history,
-        { role: 'user', content: prompt },
-      ]);
-      if (historyLimit > 0) histories.set(historyKey, [...history, { role: 'user', content: prompt }, { role: 'assistant', content: answer }].slice(-historyLimit));
-      const chunks = splitMessage(answer);
-      await interaction.editReply({ content: chunks.shift() || '（API 没有返回文字。）', allowedMentions: { parse: [] } });
-      for (const chunk of chunks) await interaction.followUp({ content: chunk, allowedMentions: { parse: [] } });
-      return;
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     }
 
     if (!interaction.inGuild()) {
@@ -1482,6 +2168,137 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       await interaction.reply({ content: '处罚面板已创建。请使用下方菜单配置处罚记录频道、可选留痕频道、警告身份组和二次提醒。', embeds: [punishmentPanelEmbed(interaction.guildId)], components: punishmentPanel(interaction.guildId) });
+      return;
+    }
+
+    if (interaction.commandName === '版务审批面板') {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        await interaction.editReply('需要“管理服务器”权限才能配置版务审批。');
+        return;
+      }
+      await interaction.editReply('审批设置保存在本服务器的加密配置中。面板已发送到当前频道。');
+      await interaction.followUp({ content: '请配置审批频道、办公室频道、操作员/审核员身份组和同意票数。', embeds: [moderationApprovalPanelEmbed(interaction.guildId)], components: moderationApprovalPanel(interaction.guildId) });
+      return;
+    }
+
+    if (interaction.commandName === '反应清理面板') {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        await interaction.editReply('需要“管理服务器”权限才能配置表情反应清理。');
+        return;
+      }
+      await interaction.editReply('表情清理面板已发送到当前频道。');
+      await interaction.followUp({ content: '配置监控成员和要移除的表情。匹配时只移除该种表情在这条消息上的反应，其他表情和消息本身都保留。',
+        embeds: [reactionCleanupPanelEmbed(interaction.guildId)], components: reactionCleanupPanel(interaction.guildId) });
+      return;
+    }
+
+    if (interaction.commandName === '帖子操作申请' || interaction.commandName === '内容删除申请') {
+      const setting = settingsFor(interaction.guildId);
+      const link = interaction.options.getString('链接', true).trim();
+      const parsed = parseDiscordMessageLink(link);
+      if (!parsed || parsed.guildId !== interaction.guildId) {
+        await interaction.editReply('链接格式不正确。请复制本服务器的频道/子区链接、帖子链接，或具体消息的 Discord 链接。');
+        return;
+      }
+      if (!setting.moderationApprovalChannelId || !setting.moderationOperatorRoleIds?.length) {
+        await interaction.editReply('本服务器还没有配置审批频道和操作员身份组。请管理员先运行 `/版务审批面板`。');
+        return;
+      }
+      const requester = await interaction.guild.members.fetch(interaction.user.id);
+      if (!memberHasAnyRole(requester, setting.moderationOperatorRoleIds)) {
+        await interaction.editReply('只有已配置的操作员身份组成员可以提交版务申请。');
+        return;
+      }
+      const isThreadAction = interaction.commandName === '帖子操作申请';
+      const action = isThreadAction ? interaction.options.getString('操作', true) : interaction.options.getString('目标类型', true);
+      const actionLabel = isThreadAction
+        ? ({ lock: '锁定帖子', close: '关闭帖子', 'lock-close': '锁定并关闭帖子' })[action]
+        : action === 'thread' ? '删除整个帖子' : '删除指定消息';
+      const approvalChannel = await interaction.guild.channels.fetch(setting.moderationApprovalChannelId);
+      if (!approvalChannel?.isTextBased?.() || !approvalChannel.send) {
+        await interaction.editReply('配置的审批频道当前不可用，请管理员检查面板设置。');
+        return;
+      }
+      const proposal = {
+        id: randomBytes(6).toString('hex'), guildId: interaction.guildId, kind: isThreadAction ? 'thread-action' : 'delete',
+        requesterId: interaction.user.id, targetLink: link, channelId: parsed.channelId, threadId: parsed.threadId, messageId: parsed.messageId,
+        action, actionLabel, deleteTargetType: isThreadAction ? null : action,
+        status: 'pending_operator', operatorVotes: [], reviewerVotes: [],
+        operatorVotesRequired: isThreadAction ? setting.threadOperatorVotesRequired || 2 : setting.deleteOperatorVotesRequired || 2,
+        reviewerVotesRequired: setting.moderationReviewerVotesRequired || 2,
+        createdAt: Date.now(), approvalChannelId: approvalChannel.id,
+      };
+      if (!isThreadAction && !setting.moderationReviewerRoleId) {
+        await interaction.editReply('删除申请还需要先配置审核员身份组。');
+        return;
+      }
+      try {
+        const target = await resolveModerationTarget(interaction.guild, proposal);
+        if (isThreadAction && !target.channel.isThread()) throw new Error('这个链接没有指向帖子，请粘贴帖子内消息链接。');
+      } catch (error) {
+        await interaction.editReply(`目标无法用于此申请：${error.message}`);
+        return;
+      }
+      const targetKey = moderationProposalResourceKey(proposal);
+      if (!targetKey) {
+        await interaction.editReply('无法识别申请目标，请重新复制对应帖子或消息链接。');
+        return;
+      }
+      const duplicate = (guildData.moderationProposals || []).find((item) => item.guildId === interaction.guildId
+        && (item.status === 'executing' || (['pending_operator', 'pending_reviewer'].includes(item.status) && Date.now() - item.createdAt < MODERATION_PROPOSAL_TTL))
+        && moderationProposalResourceKey(item) === targetKey);
+      if (duplicate) {
+        await interaction.editReply('这个帖子或消息已有未完成的申请（编号：' + duplicate.id + '），请勿重复发起；请在审批频道查看现有申请。');
+        return;
+      }
+      const targetClaim = interaction.guildId + ':' + targetKey;
+      if (activeModerationTargetClaims.has(targetClaim)) {
+        await interaction.editReply('这个帖子或消息正在创建申请，请稍候；请勿重复提交。');
+        return;
+      }
+      activeModerationTargetClaims.add(targetClaim);
+      try {
+        guildData.moderationProposals ||= [];
+        proposal.operatorVotes = [{ userId: interaction.user.id, choice: 'yes', votedAt: proposal.createdAt, requesterVote: true }];
+        guildData.moderationProposals.push(proposal);
+        try {
+          await saveGuildData();
+          const approvalMessage = await approvalChannel.send({ embeds: [moderationProposalEmbed(proposal)], components: moderationVoteComponents(proposal), allowedMentions: { parse: [] } });
+          proposal.approvalMessageId = approvalMessage.id;
+          if (proposal.operatorVotes.length >= proposal.operatorVotesRequired) {
+            if (isThreadAction) {
+              proposal.status = 'executing';
+              await saveGuildData();
+              await approvalMessage.edit({ embeds: [moderationProposalEmbed(proposal)], components: [] });
+              try {
+                await executeModerationProposal(interaction.guild, proposal);
+                proposal.status = 'completed';
+              } catch (error) {
+                proposal.status = 'failed';
+                proposal.failure = String(error.message || '操作失败').slice(0, 300);
+                logFailure('达到门槛后执行帖子操作失败。', error);
+              }
+            } else {
+              proposal.status = 'pending_reviewer';
+            }
+            await saveGuildData();
+            await approvalMessage.edit({ embeds: [moderationProposalEmbed(proposal)], components: proposal.status === 'pending_reviewer' ? moderationVoteComponents(proposal) : [] });
+            if (proposal.status === 'pending_reviewer') {
+              await approvalChannel.send({ content: `<@&${setting.moderationReviewerRoleId}> 删除申请已通过操作员阶段，请前往审批卡投票：https://discord.com/channels/${proposal.guildId}/${proposal.approvalChannelId}/${proposal.approvalMessageId}（编号：${proposal.id}）。`, allowedMentions: { parse: [], roles: [setting.moderationReviewerRoleId] } }).catch((error) => logFailure('审核员阶段提及发送失败。', error));
+            }
+          }
+          await saveGuildData();
+          if (proposal.status === 'pending_operator') await notifyModerationOffice(interaction.guild, proposal, setting.moderationOperatorRoleIds || [], '版务操作员审批');
+          else if (proposal.status === 'pending_reviewer' && setting.moderationReviewerRoleId) await notifyModerationOffice(interaction.guild, proposal, [setting.moderationReviewerRoleId], '删除申请审核阶段');
+          await interaction.editReply(`申请已提交到 <#${approvalChannel.id}>，申请编号：${proposal.id}。`);
+        } catch (error) {
+          guildData.moderationProposals = guildData.moderationProposals.filter((item) => item.id !== proposal.id);
+          await saveGuildData();
+          throw error;
+        }
+      } finally {
+        activeModerationTargetClaims.delete(targetClaim);
+      }
       return;
     }
 
@@ -1571,13 +2388,32 @@ client.on('interactionCreate', async (interaction) => {
       const subcommand = interaction.options.getSubcommand();
       if (subcommand === '添加') {
         const channel = interaction.options.getChannel('频道', true);
-        const minutes = interaction.options.getInteger('分钟后', true);
+        const minutes = interaction.options.getInteger('分钟后');
+        const seconds = interaction.options.getInteger('秒后');
         const repeat = interaction.options.getInteger('重复间隔分钟', true);
         const user = interaction.options.getUser('提及成员');
+        const usersText = interaction.options.getString('提及多人')?.trim() || '';
         const role = interaction.options.getRole('提及身份组');
-        if (user && role) { await interaction.editReply('一次提醒只能选择提及某个人或某个身份组，请重新添加。'); return; }
+        if ((minutes === null) === (seconds === null)) { await interaction.editReply('“分钟后”和“秒后”必须填写一个，而且只能填写一个；5 秒是最短首次提醒时间。'); return; }
+        if ([Boolean(user), Boolean(usersText), Boolean(role)].filter(Boolean).length > 1) { await interaction.editReply('一次提醒只能选择单个成员、多人列表或一个身份组中的一种提及方式。'); return; }
         if (repeat > 0 && repeat < 10) { await interaction.editReply('重复间隔至少需要 10 分钟，或填写 0 表示只提醒一次。'); return; }
-        const botPerms = channel.permissionsFor(interaction.guild.members.me);
+        const userIds = user ? [user.id] : [];
+        if (usersText) {
+          const ids = [...usersText.matchAll(/<@!?(\d+)>|(\d{17,20})/g)].map((match) => match[1] || match[2]);
+          const residue = usersText.replace(/<@!?\d+>|\d{17,20}/g, '').replace(/[,，\s]+/g, '');
+          if (!ids.length || residue || ids.some((id) => !/^\d{17,20}$/.test(id))) {
+            await interaction.editReply('“提及多人”请粘贴成员提及或 17 到 20 位用户 ID，并用空格或逗号分隔。'); return;
+          }
+          userIds.push(...ids);
+        }
+        const uniqueUserIds = [...new Set(userIds)];
+        if (uniqueUserIds.length > 25) { await interaction.editReply('一次最多提及 25 位成员。'); return; }
+        if (uniqueUserIds.length) {
+          const members = await Promise.all(uniqueUserIds.map((id) => interaction.guild.members.fetch(id).catch(() => null)));
+          if (members.some((member) => !member)) { await interaction.editReply('多人列表里有人不在本服务器，或用户 ID 无效。'); return; }
+        }
+        const botMember = await interaction.guild.members.fetchMe();
+        const botPerms = channel.permissionsFor(botMember);
         if (!botPerms?.has(PermissionFlagsBits.ViewChannel) || !botPerms.has(PermissionFlagsBits.SendMessages)) {
           await interaction.editReply('机器人在所选频道缺少查看频道或发送消息权限。'); return;
         }
@@ -1585,13 +2421,19 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.editReply('要提醒这个身份组，请将其设为可被提及，或给机器人“提及 @everyone、@here 和所有身份组”权限。'); return;
         }
         const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-        guildData.reminders.push({ id, guildId: interaction.guildId, channelId: channel.id, userId: user?.id || null,
-          roleId: role?.id || null, content: interaction.options.getString('内容', true), nextAt: Date.now() + minutes * 60_000, intervalMs: repeat * 60_000 });
+        const firstDelayMs = minutes !== null ? minutes * 60_000 : seconds * 1000;
+        guildData.reminders.push({ id, guildId: interaction.guildId, channelId: channel.id, userIds: uniqueUserIds,
+          roleId: role?.id || null, content: interaction.options.getString('内容', true), nextAt: Date.now() + firstDelayMs, intervalMs: repeat * 60_000 });
         await saveGuildData();
-        await interaction.editReply(`已创建提醒，编号：\`${id}\`。首次提醒将在 ${minutes} 分钟后发送${repeat ? `，之后每 ${repeat} 分钟重复` : '，且只发送一次'}。`);
+        const firstDelayText = minutes !== null ? `${minutes} 分钟` : `${seconds} 秒`;
+        await interaction.editReply(`已创建提醒，编号：\`${id}\`。首次提醒将在 ${firstDelayText} 后发送${repeat ? `，之后每 ${repeat} 分钟重复` : '，且只发送一次'}。`);
       } else if (subcommand === '列表') {
         const entries = guildData.reminders.filter((item) => item.guildId === interaction.guildId);
-        await interaction.editReply(entries.length ? entries.map((item) => `编号：\`${item.id}\` · <#${item.channelId}> · <t:${Math.floor(item.nextAt / 1000)}:R> · ${item.intervalMs ? `每 ${item.intervalMs / 60000} 分钟` : '一次'} · ${item.userId ? `<@${item.userId}>` : item.roleId ? `<@&${item.roleId}>` : '无提及'} · ${item.content}`).join('\n') : '当前没有定时提醒。');
+        await interaction.editReply(entries.length ? entries.map((item) => {
+          const users = item.userIds || (item.userId ? [item.userId] : []);
+          const targets = [...users.map((userId) => `<@${userId}>`), ...(item.roleId ? [`<@&${item.roleId}>`] : [])];
+          return `编号：\`${item.id}\` · <#${item.channelId}> · <t:${Math.floor(item.nextAt / 1000)}:R> · ${item.intervalMs ? `每 ${item.intervalMs / 60000} 分钟` : '一次'} · ${targets.join('、') || '无提及'} · ${item.content}`;
+        }).join('\n') : '当前没有定时提醒。');
       } else {
         const id = interaction.options.getString('编号', true);
         const before = guildData.reminders.length;
@@ -1602,27 +2444,40 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '处罚') {
-      const mode = interaction.options.getString('方式', true);
-      const hasWarning = mode !== 'timeout';
-      const hasTimeout = mode !== 'warning';
+    if (interaction.commandName === '处罚' || interaction.commandName === '永封') {
+      const isPermanentBan = interaction.commandName === '永封';
+      const mode = isPermanentBan ? 'ban' : interaction.options.getString('方式', true);
+      const hasBan = mode === 'ban';
+      const hasWarning = !hasBan && mode !== 'timeout';
+      const hasTimeout = !hasBan && mode !== 'warning';
       const user = interaction.options.getUser('成员', true);
       const reason = interaction.options.getString('原因', true);
-      const timeoutDays = interaction.options.getInteger('禁言天数');
-      const warningDays = interaction.options.getInteger('警告天数');
+      const timeoutDays = isPermanentBan ? null : interaction.options.getInteger('禁言天数');
+      const warningDays = isPermanentBan ? null : interaction.options.getInteger('警告天数');
       if (hasTimeout && !timeoutDays) { await interaction.editReply('此处罚方式需要填写“禁言天数”。'); return; }
-      if (!hasTimeout && timeoutDays) { await interaction.editReply('“仅警告”不能填写禁言天数，请更改处罚方式。'); return; }
-      if (!hasWarning && warningDays) { await interaction.editReply('“仅禁言”不能填写警告天数，请更改处罚方式。'); return; }
+      if (!hasTimeout && timeoutDays) { await interaction.editReply('此处罚方式不能填写禁言天数，请更改处罚方式。'); return; }
+      if (!hasWarning && warningDays) { await interaction.editReply('此处罚方式不能填写警告天数，请更改处罚方式。'); return; }
       const request = { guildId: interaction.guildId, userId: user.id, mode, reason, timeoutDays, warningDays };
+      const targetId = user.id;
+      const now = Date.now();
+      const hasPendingForTarget = Object.values(pendingPunishmentRecords).some((item) => item.userId === targetId
+        && Number.isFinite(item.createdAt) && now >= item.createdAt && now - item.createdAt < PUNISHMENT_CONFIRM_TTL);
+      if (activePunishmentLocks.has(targetId) || pendingPunishmentTargetClaims.has(targetId) || hasPendingForTarget) {
+        await interaction.editReply(hasPendingForTarget
+          ? '这个目标已有一张待处理的处罚确认卡。确认卡 1 分钟后失效；请等待失效，或由原发起人确认/取消。'
+          : '这个目标正在创建或执行另一笔处罚，请稍后重试。');
+        return;
+      }
+      pendingPunishmentTargetClaims.add(targetId);
       try {
         const context = await validatePunishmentRequest(interaction, request);
         const token = randomBytes(8).toString('hex');
         const createdAt = Date.now();
         const pendingRequest = { ...request, userId: context.user.id, guildId: context.guild.id, moderatorId: interaction.user.id, createdAt };
         await savePendingPunishment(token, pendingRequest);
-        console.log(`处罚确认已保存：${token}（进程 ${process.pid}，${pendingPunishmentsDir}）`);
+        console.log('处罚确认已保存到 Discord 私密存储。');
         pendingPunishments.set(token, pendingRequest);
-        const modeLabel = mode === 'both' ? '警告并禁言' : mode === 'timeout' ? '仅禁言' : '仅警告';
+        const modeLabel = hasBan ? '封禁并踢出' : mode === 'both' ? '警告并禁言' : mode === 'timeout' ? '仅禁言' : '仅警告';
         const previousCase = context.previousCase;
         const warningExpiration = guildData.warningExpirations.find((item) => item.guildId === context.guild.id
           && item.userId === context.user.id && item.roleId === context.warningRole?.id && item.expiresAt > createdAt);
@@ -1646,20 +2501,37 @@ client.on('interactionCreate', async (interaction) => {
           if (hours < 48) return `${hours} 小时`;
           return `${Math.ceil(hours / 24)} 天`;
         };
+        const otherGuildStatus = context.contexts.filter((item) => item.guild.id !== interaction.guildId).map((item) => {
+          const existing = item.previousCase;
+          const expires = guildData.warningExpirations.find((entry) => entry.guildId === item.guild.id && entry.userId === user.id
+            && entry.roleId === item.warningRole?.id && entry.expiresAt > createdAt);
+          const warningHeld = Boolean(item.warningRole && item.member.roles.cache.has(item.warningRole.id));
+          const warningOngoing = Boolean(expires) || Boolean(existing?.hasWarning && (!existing.warningDays || (existing.createdAt + existing.warningDays * DAY) > createdAt))
+            || (warningHeld && !existing?.hasWarning);
+          const warningRemaining = expires?.expiresAt || (existing?.hasWarning && existing.warningDays ? existing.createdAt + existing.warningDays * DAY : 0);
+          const muteUntil = item.member.communicationDisabledUntilTimestamp || 0;
+          const muteSchedule = longTimeouts.find((entry) => entry.guildId === item.guild.id && entry.userId === user.id && (!existing || entry.caseId === existing.id));
+          const caseMuteEnd = existing?.hasTimeout && existing.timeoutDays ? existing.createdAt + existing.timeoutDays * DAY : 0;
+          const muteEnd = muteSchedule?.endAt || caseMuteEnd || muteUntil;
+          return `${item.guild.name}：${warningOngoing ? `警告期内（剩余 ${warningRemaining > createdAt ? remaining(warningRemaining) : '无自动到期记录'}）` : '不在警告期'}；${muteUntil > createdAt ? `当前禁言剩余 ${remaining(muteUntil)}` : muteEnd > createdAt ? `处罚禁言剩余 ${remaining(muteEnd)}` : '当前未禁言'}`;
+        });
         const confirmationLines = [
           '请核对处罚内容，确认后才会执行：',
           `目标成员：<@${user.id}>`,
           `处罚方式：${modeLabel}`,
+          `同步服务器：${context.contexts.map((item) => item.guild.name).join('、')}`,
           ...(hasWarning ? [`警告身份组：${context.warningRole}` , `警告时长：${warningDays ? `${warningDays} 天` : '不自动移除'}`] : []),
           ...(hasTimeout ? [`禁言时长：${timeoutDays} 天`] : []),
+          ...(hasBan ? [`封禁效果：目标将从${context.contexts.length > 1 ? '两个服务器' : '当前服务器'}移出；撤销处罚可按编号解封。`] : []),
           `目标当前是否在警告期：${warningActive ? '是' : '否'}`,
           `当前警告剩余时长：${warningActive ? (warningEndAt > createdAt ? remaining(warningEndAt) : '无自动到期记录') : '—'}`,
           `当前处罚剩余时长：${punishmentEndAt > createdAt ? remaining(punishmentEndAt) : (timeoutUntil > createdAt ? remaining(timeoutUntil) : '当前无生效处罚期限')}`,
           `Discord 当前禁言剩余时长：${timeoutUntil > createdAt ? remaining(timeoutUntil) : '当前未禁言'}`,
+          ...otherGuildStatus,
           `原因：${reason}`,
-          ...(previousCase ? [`注意：确认后会覆盖当前生效处罚 \`${previousCase.id}\`。`] : []),
+          ...context.contexts.filter((item) => item.previousCase).map((item) => `注意：确认后会覆盖“${item.guild.name}”中生效的处罚 \`${item.previousCase.id}\`。`),
           '',
-          '此确认仅限你本人操作，15 分钟后失效。',
+          '此确认仅限你本人操作，1 分钟后失效；同一目标同时只能有一张待处理处罚确认卡。',
         ];
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`punishment-confirm:${token}`).setLabel('确认执行').setStyle(ButtonStyle.Danger),
@@ -1667,7 +2539,14 @@ client.on('interactionCreate', async (interaction) => {
         );
         await interaction.editReply({ content: confirmationLines.join('\n'), components: [row], allowedMentions: { parse: [] } });
       } catch (error) {
-        await interaction.editReply(error.message);
+        logFailure('/处罚 准备确认卡失败。', error);
+        if (error.code === 10062) {
+          console.error('处罚确认数据可能已保存，但 Discord 的交互回复令牌已失效；请确认没有重复 Bot 进程，并查看私密存储中的待确认记录。');
+          return;
+        }
+        await interaction.editReply(error.message).catch((replyError) => logFailure('/处罚 错误提示发送失败。', replyError));
+      } finally {
+        pendingPunishmentTargetClaims.delete(targetId);
       }
       return;
     }
@@ -1684,47 +2563,114 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply(statusText);
         return;
       }
-      const needsRoles = record.hasWarning && !hasPermission(interaction, PermissionFlagsBits.ManageRoles);
-      const needsModeration = record.hasTimeout && !hasPermission(interaction, PermissionFlagsBits.ModerateMembers);
-      if (needsRoles || needsModeration) {
-        await interaction.editReply(`撤销此处罚需要${needsRoles ? '“管理身份组”' : ''}${needsRoles && needsModeration ? '和' : ''}${needsModeration ? '“管理成员”' : ''}权限。`);
+      const linkedRecords = record.syncGroupId
+        ? guildData.punishmentCases.filter((item) => item.syncGroupId === record.syncGroupId && item.status === 'active')
+        : [record];
+      const expectedGuildIds = record.syncGuildIds || [record.guildId];
+      const hasAllLinkedRecords = expectedGuildIds.every((guildId) => linkedRecords.some((item) => item.guildId === guildId));
+      if (!hasAllLinkedRecords) {
+        await interaction.editReply('这笔同步处罚的服务器记录不完整；为避免只撤销一边，没有执行操作。请检查 Discord 私密存储记录。');
         return;
       }
-      const guild = interaction.guild;
-      const [member, botMember] = await Promise.all([guild.members.fetch(record.userId), guild.members.fetchMe()]);
+      const needsRoles = linkedRecords.some((item) => item.hasWarning) && !hasPermission(interaction, PermissionFlagsBits.ManageRoles);
+      const needsModeration = linkedRecords.some((item) => item.hasTimeout) && !hasPermission(interaction, PermissionFlagsBits.ModerateMembers);
+      const needsBan = linkedRecords.some((item) => item.hasBan || item.mode === 'ban') && !hasPermission(interaction, PermissionFlagsBits.BanMembers);
+      if (needsRoles || needsModeration || needsBan) {
+        const needed = [needsRoles ? '“管理身份组”' : null, needsModeration ? '“管理成员”' : null, needsBan ? '“封禁成员”' : null].filter(Boolean).join('、');
+        await interaction.editReply(`撤销此处罚需要${needed}权限。`);
+        return;
+      }
+      const revokeContexts = [];
+      for (const linked of linkedRecords) {
+        const guild = await client.guilds.fetch(linked.guildId);
+        const botMember = await guild.members.fetchMe();
+        const hasBan = Boolean(linked.hasBan || linked.mode === 'ban');
+        const needsMember = Boolean(linked.hasWarning || linked.hasTimeout);
+        let member = null;
+        if (needsMember) {
+          try { member = await guild.members.fetch(linked.userId); }
+          catch { await interaction.editReply(`目标成员已不在“${guild.name}”中；为保持双向一致，没有执行撤销。`); return; }
+        }
+        let existingBan = null;
+        if (hasBan) {
+          try { existingBan = await guild.bans.fetch(linked.userId); }
+          catch (error) { if ((error.code ?? error.rawError?.code) !== 10026) throw error; }
+        }
+        if (linked.hasWarning && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+          await interaction.editReply(`机器人在“${guild.name}”缺少“管理身份组”权限；没有执行撤销。`); return;
+        }
+        if (linked.hasTimeout && !botMember.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+          await interaction.editReply(`机器人在“${guild.name}”缺少“管理成员”权限；没有执行撤销。`); return;
+        }
+        if (hasBan && !botMember.permissions.has(PermissionFlagsBits.BanMembers)) {
+          await interaction.editReply(`机器人在“${guild.name}”缺少“封禁成员”权限；没有执行撤销。`); return;
+        }
+        if (member && member.roles.highest.position >= botMember.roles.highest.position) {
+          await interaction.editReply(`机器人身份组必须高于目标成员在“${guild.name}”中的最高身份组；没有执行撤销。`); return;
+        }
+        const role = linked.hasWarning && linked.warningRoleId ? await guild.roles.fetch(linked.warningRoleId).catch(() => null) : null;
+        if (linked.hasWarning && (!linked.warningRoleId || !role)) {
+          await interaction.editReply(`“${guild.name}”中的警告身份组已不存在；没有执行撤销。`); return;
+        }
+        revokeContexts.push({ linked, guild, member, role, oldTimeoutUntil: member?.communicationDisabledUntilTimestamp || 0,
+          hadWarning: Boolean(role && member?.roles.cache.has(role.id)), removedWarning: false, clearedTimeout: false,
+          hasBan, existingBan: Boolean(existingBan), removedBan: false });
+      }
+      const invokingContext = revokeContexts.find((item) => item.guild.id === interaction.guildId);
       if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-        const caller = await guild.members.fetch(interaction.user.id);
-        if (member.roles.highest.position >= caller.roles.highest.position) {
+        const caller = await interaction.guild.members.fetch(interaction.user.id);
+        if (invokingContext.member && invokingContext.member.roles.highest.position >= caller.roles.highest.position) {
           await interaction.editReply('只能撤销身份组层级低于自己的成员处罚。');
           return;
         }
       }
-      if (member.roles.highest.position >= botMember.roles.highest.position) {
-        await interaction.editReply('机器人身份组必须高于被处罚成员的最高身份组，才能撤销此处罚。');
+      try {
+        for (const context of revokeContexts) {
+          if (context.role && context.hadWarning) {
+            await context.member.roles.remove(context.role, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
+            context.removedWarning = true;
+          }
+          if (context.linked.hasTimeout) {
+            await context.member.timeout(null, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
+            context.clearedTimeout = true;
+          }
+          if (context.hasBan && context.existingBan) {
+            await context.guild.members.unban(context.linked.userId, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
+            context.removedBan = true;
+          }
+        }
+      } catch (error) {
+        for (const context of revokeContexts.slice().reverse()) {
+          if (context.removedWarning && context.role) await context.member.roles.add(context.role, `同步撤销 ${record.id} 未能完成，回滚`).catch(() => {});
+          if (context.clearedTimeout && context.oldTimeoutUntil > Date.now()) {
+            await context.member.timeout(context.oldTimeoutUntil - Date.now(), `同步撤销 ${record.id} 未能完成，回滚`).catch(() => {});
+          }
+          if (context.removedBan) await context.guild.members.ban(context.linked.userId, { reason: `同步撤销 ${record.id} 未能完成，回滚` }).catch(() => {});
+        }
+        await interaction.editReply(`双向撤销未能在全部服务器完成，已尝试回滚；${error.message}`);
         return;
       }
-      if (record.hasWarning && record.warningRoleId) {
-        const role = await guild.roles.fetch(record.warningRoleId).catch(() => null);
-        if (role && member.roles.cache.has(role.id)) await member.roles.remove(role, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
+      const revokedAt = Date.now();
+      for (const context of revokeContexts) {
+        context.linked.status = 'revoked';
+        context.linked.revokedAt = revokedAt;
+        context.linked.revokedBy = interaction.user.id;
       }
-      if (record.hasTimeout) await member.timeout(null, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
-      record.status = 'revoked';
-      record.revokedAt = Date.now();
-      record.revokedBy = interaction.user.id;
       guildData.warningExpirations = guildData.warningExpirations.filter((item) => item.caseId !== record.id);
       guildData.warningFollowups = guildData.warningFollowups.filter((item) => item.caseId !== record.id);
       longTimeouts = longTimeouts.filter((item) => item.caseId !== record.id);
-      await Promise.all([saveGuildData(), saveTimeouts()]);
-      const logged = await postPunishmentRevocation(guild, record, interaction.user);
-      await interaction.editReply(`已按处罚 ID \`${record.id}\` 撤销${record.hasWarning && record.hasTimeout ? '警告和禁言' : record.hasWarning ? '警告' : '禁言'}。${!logged.primarySent ? '撤销已执行，但写入处罚记录频道失败。' : ''}${!logged.auditSent ? '留痕频道写入失败，请检查频道和 Bot 权限。' : ''}`);
+      let persistenceFailed = false;
+      try { await savePlatformStorage(); }
+      catch (error) { persistenceFailed = true; logFailure('双向撤销已应用，但状态没有写入 Discord 私密存储。', error); }
+      const logResults = await Promise.all(revokeContexts.map(({ guild, linked }) => postPunishmentRevocation(guild, linked, interaction.user)));
+      const logFailures = logResults.filter((logged) => !logged.primarySent || !logged.auditSent).length;
+      const syncedText = revokeContexts.length > 1 ? `已在 ${revokeContexts.length} 个服务器双向撤销处罚 \`${record.id}\`。` : `已按处罚 ID \`${record.id}\` 撤销`;
+      const revokedActions = [record.hasWarning ? '警告' : null, record.hasTimeout ? '禁言' : null, record.hasBan || record.mode === 'ban' ? '封禁' : null].filter(Boolean).join('和');
+      await interaction.editReply(`${syncedText}${revokeContexts.length === 1 ? `${revokedActions}。` : ''}${logFailures ? `有 ${logFailures} 个服务器的撤销记录或留痕频道写入失败。` : ''}${persistenceFailed ? '撤销状态写入 Discord 私密存储失败；请检查存储频道连接。' : ''}`);
       return;
     }
 
     if (interaction.commandName === '说话') {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageMessages)) {
-        await interaction.editReply('你需要“管理消息”权限才能使用此指令。');
-        return;
-      }
       const target = interaction.channel;
       if (!target?.isTextBased() || !target.guildId || target.guildId !== interaction.guildId) {
         await interaction.editReply('请在本服务器的文字频道或子区中使用此指令。');
@@ -1739,6 +2685,16 @@ client.on('interactionCreate', async (interaction) => {
       const sendPermission = target.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
       if (!botPermissions?.has(PermissionFlagsBits.ViewChannel) || !botPermissions.has(sendPermission)) {
         await interaction.editReply(`机器人在当前${target.isThread() ? '子区' : '频道'}缺少“查看频道”或“${target.isThread() ? '在子区内发送消息' : '发送消息'}”权限。论坛帖子还需要机器人有权访问该帖子，且帖子未被锁定。`);
+        return;
+      }
+      const content = interaction.options.getString('内容', true);
+      const mentionsEveryone = content.includes('@everyone');
+      if (mentionsEveryone && !hasPermission(interaction, PermissionFlagsBits.MentionEveryone)) {
+        await interaction.editReply('只有拥有“提及 @everyone、@here 和所有身份组”权限的成员才能让机器人提及 @everyone。');
+        return;
+      }
+      if (mentionsEveryone && !botPermissions.has(PermissionFlagsBits.MentionEveryone)) {
+        await interaction.editReply('机器人缺少“提及 @everyone、@here 和所有身份组”权限，无法发送 @everyone 提及。');
         return;
       }
       const replyLink = interaction.options.getString('回复消息链接');
@@ -1767,8 +2723,8 @@ client.on('interactionCreate', async (interaction) => {
         }
         replyOptions = { reply: { messageReference: sourceMessage.id, failIfNotExists: false } };
       }
-      await target.send({ content: interaction.options.getString('内容', true), ...replyOptions,
-        allowedMentions: { parse: [], repliedUser: false } });
+      await target.send({ content, ...replyOptions,
+        allowedMentions: { parse: mentionsEveryone ? ['everyone'] : [], repliedUser: false } });
       await interaction.editReply(replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。');
       return;
     }
@@ -1847,7 +2803,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
   } catch (error) {
-    console.error(`/${interaction.commandName} 执行失败:`, error.message, `错误代码=${error.code ?? '无'}`);
+    logFailure(`/${interaction.commandName} 执行失败（交互 ID ${interaction.id}，PID ${process.pid}）。`, error);
     if (error.code === 10062) {
       console.error('这次交互可能已超时，或已被另一个 Bot 进程确认。请确保相同 Token 只运行一个 Bot 实例。');
       return;
@@ -1859,9 +2815,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function main() {
-  await loadTimeouts();
-  await loadGuildData();
-  await migratePendingPunishments();
+  if (!storageChannelId) throw new Error('请先在 .env 配置 DISCORD_STORAGE_CHANNEL_ID（私密存储频道 ID）。');
   await registerCommands();
   console.log('指令注册成功，正在登录 Discord……');
   readyWatchdog = setTimeout(() => {
@@ -1873,6 +2827,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('Bot startup failed:', error);
+  logFailure('Bot startup failed.', error);
   process.exit(1);
 });

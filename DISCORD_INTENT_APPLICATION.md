@@ -16,11 +16,11 @@ Do not request Message Content or Presence for this bot. The current code does n
 
 ## Data stored outside Discord
 
-**Answer: Yes.**
+**Yes.** The bot keeps encrypted operational state in the operator's Discord private channel and encrypted local state copies on the self-hosted bot host. These copies are not automatically deleted. The application does not retain all records for 30 days or less; historical moderation and tenure records remain until they are no longer needed or a deletion request is handled.
 
-> The self-hosted bot stores limited operational data on the machine controlled by the bot operator. For the Server Members Intent feature, this includes the guild, role, channel, and user IDs needed to configure and maintain management rosters, plus appointment start and end timestamps. Other enabled bot features also store their own operational settings and records, including reminder settings and moderation case records. The updated implementation encrypts these JSON files at rest with AES-256-GCM using a deployment-specific key stored in the operator's `.env` file; the key is not included in the repository and must be backed up separately. The data is kept under the deployment's `data/` directory and is not sent to the source-code repository maintainer. Historical roster and moderation records are not automatically purged on a fixed schedule. Access to the host, key, and backups is controlled by the operator. The operator can remove the local files to delete stored data, but deleting a shared settings file also removes other configuration and records. The operator's privacy policy and contact address are available at https://github.com/xizikangx-ui/discord-api-bot/blob/main/PRIVACY.md.
+> The bot stores operational state in a bot-authored attachment encrypted with AES-256-GCM before upload to the operator's private Discord channel. It also encrypts the supported local legacy state files in place after the encrypted Discord copy has been successfully saved. The key is held on the operator's bot host in a local `.env` file or secret manager, separately from the data files and public source repository. The bot decrypts state in memory while running. This includes only the guild, role, channel, and user IDs and timestamps needed for configured management rosters, moderation records, reminders, and timeout renewal features. Legacy Discord-channel messages, unrelated backups, and logs are not automatically removed or encrypted; the operator must review and protect or delete those copies. No external AI API integration is present. Historical records have no fixed automatic deletion schedule; users can request access, correction, or deletion through the published privacy contact. When configured, punishment cases may be synchronized between the specified servers and logged in each server's configured channels. The privacy policy is available at https://github.com/xizikangx-ui/discord-api-bot/blob/main/PRIVACY.md.
 
-> Separately, when a user explicitly submits a question through the bot's AI question interaction, that submitted text and a bounded in-memory conversation history are sent to the API service configured by the operator. This feature is not the reason for requesting the Server Members Intent.
+> No user questions or Discord API data are sent to an external AI service by this bot.
 
 ## Evidence links
 
@@ -56,7 +56,7 @@ If a step cannot be demonstrated in the current deployed version, omit it and co
 >
 > This requires the Server Members Intent because the bot must initialize the roster for members who already have the configured role and receive member role-update and removal events. Slash commands and modals cannot provide a complete current list or replace those events. The bot does not read ordinary messages or presence data. Message Content and Presence are not requested.
 >
-> The roster configuration and appointment records are stored as local operational data on the bot operator's host. The public privacy policy explains the data, storage, and deletion process.
+> The roster configuration and appointment records are stored in a private Discord channel selected by the bot operator. The public privacy policy explains the data, storage, and deletion process.
 
 ## Before submitting
 
@@ -64,8 +64,10 @@ If a step cannot be demonstrated in the current deployed version, omit it and co
 - Confirm that the Developer Portal and deployed code both enable Server Members Intent.
 - Confirm the test video shows the current deployed code and a real end-to-end roster update.
 - Replace the demo-video placeholder with the Unlisted YouTube URL.
-- Make sure the privacy policy accurately describes the actual host, backup access, API provider, data retention, and contact details for this deployment.
-- State that JSON files are encrypted only after the updated version has been started successfully and has migrated the existing files.
+- Make sure the privacy policy accurately describes the private storage channel, access controls, migration files/backups, data retention, and contact details for this deployment.
+- Answer “Yes” about persistent off-platform storage because encrypted local state copies remain on the operator's bot host.
+- Answer “No” to retention of 30 days or less; historical records have no fixed deletion period.
+- Answer “Yes” to at-rest encryption only after confirming that the Discord attachment and supported local state files are encrypted. Legacy Discord messages, independent backups and logs require a separate review.
 - Do not state that historical data is automatically deleted on a fixed schedule; the current code does not do that.
 
 ## Official guidance
