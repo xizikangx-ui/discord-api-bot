@@ -3007,6 +3007,22 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.editReply('消息里包含无效的身份组提及，请确认该身份组仍在本服务器。');
           return;
         }
+        const setting = settingsFor(interaction.guildId);
+        const managementRoleIds = new Set([
+          managementTrack(setting, 'senior').roleId,
+          ...Object.keys(setting.middleManagementGroups || {}),
+        ].filter(Boolean));
+        const memberRoleCache = interaction.member?.roles?.cache;
+        const memberRoleIds = memberRoleCache?.keys
+          ? new Set(memberRoleCache.keys())
+          : new Set(Array.isArray(interaction.member?.roles) ? interaction.member.roles : []);
+        const isManagementMember = [...managementRoleIds].some((roleId) => memberRoleIds.has(roleId));
+        const canMentionRestrictedRoles = hasPermission(interaction, PermissionFlagsBits.MentionEveryone) || isManagementMember;
+        const restrictedRole = roles.find((role) => !role.mentionable);
+        if (restrictedRole && !canMentionRestrictedRoles) {
+          await interaction.editReply(`你不能提及身份组“${restrictedRole.name}”：该组未开放给普通成员提及。只有拥有“提及 @everyone、@here 和所有身份组”权限的成员或管理组成员可以让 Bot 提及此类身份组。`);
+          return;
+        }
         if (roles.some((role) => !role.mentionable) && !botPermissions.has(PermissionFlagsBits.MentionEveryone)) {
           await interaction.editReply('机器人缺少“提及 @everyone、@here 和所有身份组”权限，无法提醒不可被普通成员提及的身份组；请为机器人开启此权限，或将目标身份组设为可被提及。');
           return;
