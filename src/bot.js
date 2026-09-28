@@ -49,6 +49,7 @@ const pendingManagementActions = new Map();
 const pendingManagementPanelSelections = new Map();
 const pendingPunishments = new Map();
 const pendingPunishmentRecords = {};
+const processedPunishmentTokens = {};
 const claimedPunishments = new Set();
 const activePunishmentLocks = new Set();
 const pendingPunishmentTargetClaims = new Set();
@@ -147,13 +148,23 @@ async function claimPendingPunishment(token, recoveredRequest = null) {
   if (!/^[a-f0-9]{16}$/.test(token || '') || claimedPunishments.has(token)) return null;
   const request = pendingPunishmentRecords[token] || recoveredRequest;
   if (!request) return null;
+  const now = Date.now();
+  for (const [processedToken, expiresAt] of Object.entries(processedPunishmentTokens)) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) delete processedPunishmentTokens[processedToken];
+  }
+  if (processedPunishmentTokens[token]) return null;
+  if (activePunishmentLocks.has(request.userId)) return null;
   claimedPunishments.add(token);
+  activePunishmentLocks.add(request.userId);
   const savedRequest = pendingPunishmentRecords[token];
+  processedPunishmentTokens[token] = now + 7 * DAY;
   delete pendingPunishmentRecords[token];
   try { await savePlatformStorage(); }
   catch (error) {
     if (savedRequest) pendingPunishmentRecords[token] = savedRequest;
+    delete processedPunishmentTokens[token];
     claimedPunishments.delete(token);
+    activePunishmentLocks.delete(request.userId);
     throw error;
   }
   return { request };
@@ -298,6 +309,7 @@ function snapshotStorageState() {
     guildData,
     longTimeouts,
     pendingPunishments: pendingPunishmentRecords,
+    processedPunishmentTokens,
   }));
 }
 
@@ -457,6 +469,7 @@ async function loadPlatformStorage() {
     guildData = { ...defaultGuildData(), ...saved.guildData };
     longTimeouts = saved.longTimeouts;
     Object.assign(pendingPunishmentRecords, saved.pendingPunishments);
+    Object.assign(processedPunishmentTokens, saved.processedPunishmentTokens || {});
     storageMessage = storedMessage;
     if (!encrypted) {
       await savePlatformStorage();
@@ -482,6 +495,7 @@ async function loadPlatformStorage() {
       guildData = { ...defaultGuildData(), ...saved.guildData };
       longTimeouts = saved.longTimeouts;
       Object.assign(pendingPunishmentRecords, saved.pendingPunishments);
+      Object.assign(processedPunishmentTokens, saved.processedPunishmentTokens || {});
       await savePlatformStorage();
       await encryptLegacyLocalStateFiles();
       console.log('已从旧 Discord 状态频道迁移数据，并以 AES-256-GCM 加密后保存到新频道；旧频道副本未删除。');
@@ -753,10 +767,14 @@ async function validatePunishmentRequest(interaction, request) {
   return { ...originContext, user, contexts, hasWarning, hasTimeout, hasBan };
 }
 
-async function executePunishmentRequest(interaction, request) {
+async function executePunishmentRequest(interaction, request, targetLockHeld = false) {
   const lockKey = request.userId;
-  if (activePunishmentLocks.has(lockKey)) throw new Error('该目标正在执行另一笔处罚，请稍后重试。');
-  activePunishmentLocks.add(lockKey);
+  if (targetLockHeld) {
+    if (!activePunishmentLocks.has(lockKey)) throw new Error('处罚目标锁定状态无效，请重新发起处罚。');
+  } else {
+    if (activePunishmentLocks.has(lockKey)) throw new Error('该目标正在执行另一笔处罚，请稍后重试。');
+    activePunishmentLocks.add(lockKey);
+  }
   try { return await executePunishmentRequestUnlocked(interaction, request); }
   finally { activePunishmentLocks.delete(lockKey); }
 }
@@ -1178,6 +1196,29 @@ function managementRosterEmbeds(guildId, tier = 'senior', roleId = null) {
     .setFooter({ text: `本名单由机器人自动更新 · 共 ${active.length} 人${pages.length > 1 ? ` · 第 ${index + 1}/${pages.length} 页` : ''}` }).setTimestamp());
 }
 
+async function fetchManagementMemberMap(guild, memberList = null) {
+  const fetched = memberList || await guild.members.fetch();
+  const entries = fetched && typeof fetched.values === 'function'
+    ? [...fetched.values()]
+    : Array.isArray(fetched) ? fetched : null;
+  if (!entries) throw new Error('Discord 返回的成员列表格式无效，请稍后重新同步。');
+
+  const members = await Promise.all(entries.map(async (member) => {
+    if (member?.id && member.user && member.roles?.cache?.has) return member;
+    if (!member?.id) return null;
+    return guild.members.fetch({ user: member.id, force: true }).catch(() => null);
+  }));
+  const incomplete = members.filter((member) => !member?.id || !member.user || !member.roles?.cache?.has);
+  if (incomplete.length) {
+    throw new Error(`Discord 返回了 ${incomplete.length} 条不完整的成员数据，无法安全读取身份组；请稍后刷新成员名单。`);
+  }
+  return new Map(members.map((member) => [member.id, member]));
+}
+
+function memberHasCachedRole(member, roleId) {
+  return Boolean(member?.roles?.cache?.has?.(roleId));
+}
+
 async function updateManagementRoster(guild, tier = 'senior', roleId = null) {
   const setting = settingsFor(guild.id);
   const track = managementTrack(setting, tier, roleId);
@@ -1218,10 +1259,11 @@ async function syncManagementCompanionRole(guild, memberList = null) {
   const track = managementTrack(setting, 'senior');
   if (!track.roleId || !track.companionRoleId) return { configured: false, granted: 0, failed: 0 };
   if (track.roleId === track.companionRoleId) throw new Error('主管理身份组和配套身份组不能相同。');
-  const [mainRole, companionRole, botMember, members] = await Promise.all([
+  const [mainRole, companionRole, botMember, fetchedMembers] = await Promise.all([
     guild.roles.fetch(track.roleId), guild.roles.fetch(track.companionRoleId), guild.members.fetchMe(),
     memberList ? Promise.resolve(memberList) : guild.members.fetch(),
   ]);
+  const members = await fetchManagementMemberMap(guild, fetchedMembers);
   if (!mainRole || !companionRole || companionRole.managed || companionRole.id === guild.id) {
     throw new Error('主管理或配套身份组无效。');
   }
@@ -1229,9 +1271,9 @@ async function syncManagementCompanionRole(guild, memberList = null) {
   if (companionRole.position >= botMember.roles.highest.position) throw new Error('机器人身份组必须高于配套身份组。');
   let granted = 0;
   let failed = 0;
-  const holders = members.filter((member) => !member.user.bot && member.roles.cache.has(mainRole.id));
+  const holders = [...members.values()].filter((member) => !member.user.bot && memberHasCachedRole(member, mainRole.id));
   for (const member of holders) {
-    if (member.roles.cache.has(companionRole.id)) continue;
+    if (memberHasCachedRole(member, companionRole.id)) continue;
     try {
       await member.roles.add(companionRole, '自动同步主管理配套身份组');
       granted += 1;
@@ -1273,14 +1315,14 @@ async function syncManagementRole(guild, tier = 'senior', memberList = null, rol
   const role = await guild.roles.fetch(track.roleId);
   if (!role) return false;
   // Requires the privileged Server Members Intent in the Developer Portal.
-  const members = memberList || await guild.members.fetch();
+  const members = await fetchManagementMemberMap(guild, memberList);
   if (tier === 'senior' && track.companionRoleId) {
     await syncManagementCompanionRole(guild, members).catch((error) => logFailure('主管理配套身份组同步失败。', error));
   }
   const now = Date.now();
   const terms = track.terms;
   const activeTerms = terms.filter((term) => !term.endedAt && !term.isBot);
-  const presentIds = new Set(members.filter((member) => !member.user.bot && member.roles.cache.has(role.id)).map((member) => member.id));
+  const presentIds = new Set([...members.values()].filter((member) => !member.user.bot && memberHasCachedRole(member, role.id)).map((member) => member.id));
   const newlyDetected = [];
   const removed = [];
   let changed = false;
@@ -1808,6 +1850,7 @@ client.on('interactionCreate', async (interaction) => {
       logFailure('处罚确认交互无法应答，未执行本次操作。', error);
       return;
     }
+    await interaction.editReply({ components: [] }).catch((error) => logFailure('处罚确认面板无法立即锁定；服务端确认编号仍会阻止重复执行。', error));
     let pending = await readPendingPunishment(token).catch((error) => { logFailure('读取待确认处罚失败。', error); return null; });
     let recoveredFromMessage = false;
     if (!pending) {
@@ -1836,21 +1879,29 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.editReply({ content: '这次处罚确认已超过 1 分钟，请重新运行 `/处罚`。', embeds: [], components: [] });
       return;
     }
-    const claim = await claimPendingPunishment(token, recoveredFromMessage ? pending : null);
+    let claim;
+    try { claim = await claimPendingPunishment(token, recoveredFromMessage ? pending : null); }
+    catch (error) {
+      logFailure('处罚确认锁定未能保存；本次没有执行处罚。', error);
+      await interaction.editReply({ content: '无法安全锁定这张确认卡，因此没有执行处罚。请重新运行 `/处罚` 或 `/永封`。', embeds: [], components: [] }).catch(() => {});
+      return;
+    }
     if (!claim) {
       pendingPunishments.delete(token);
-      await interaction.editReply({ content: '这次处罚确认已处理，请重新运行 `/处罚`。', embeds: [], components: [] });
+      const busy = pending && activePunishmentLocks.has(pending.userId);
+      await interaction.editReply({ content: busy ? '这个目标正在执行另一笔处罚，本确认卡已锁定；请稍后重新运行 `/处罚` 或 `/永封`。' : '这次处罚确认已处理，请重新运行 `/处罚` 或 `/永封`。', embeds: [], components: [] });
       return;
     }
     const claimedRequest = claim.request;
     pendingPunishments.delete(token);
     if (action === 'punishment-cancel') {
       claimedPunishments.delete(token);
+      activePunishmentLocks.delete(claimedRequest.userId);
       await interaction.editReply({ content: '已取消处罚，没有执行任何操作。', embeds: [], components: [] });
       return;
     }
     try {
-      const summary = await executePunishmentRequest(interaction, claimedRequest);
+      const summary = await executePunishmentRequest(interaction, claimedRequest, true);
       await interaction.editReply({ content: summary, embeds: [], components: [], allowedMentions: { parse: [] } });
     } catch (error) {
       logFailure('/处罚 确认执行失败。', error);
@@ -2173,15 +2224,15 @@ client.on('interactionCreate', async (interaction) => {
           await saveGuildData();
           let summary;
           try {
-            const members = await interaction.guild.members.fetch();
+            const members = await fetchManagementMemberMap(interaction.guild);
             let removedPrevious = 0;
             let failedPrevious = 0;
             if (previousRoleId && previousRoleId !== role.id) {
               const previousRole = await interaction.guild.roles.fetch(previousRoleId).catch(() => null);
               if (previousRole && !previousRole.managed && previousRole.position < botMember.roles.highest.position) {
-                const currentManagers = members.filter((member) => !member.user.bot && member.roles.cache.has(track.roleId));
+                const currentManagers = [...members.values()].filter((member) => !member.user.bot && memberHasCachedRole(member, track.roleId));
                 for (const member of currentManagers) {
-                  if (!member.roles.cache.has(previousRole.id)) continue;
+                  if (!memberHasCachedRole(member, previousRole.id)) continue;
                   try {
                     await member.roles.remove(previousRole, '更换主管理配套身份组');
                     removedPrevious += 1;
