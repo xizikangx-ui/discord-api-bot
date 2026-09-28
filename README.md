@@ -91,6 +91,14 @@ pm2 startup
 
 `pm2 startup` 会打印一条需要执行的系统命令，按提示运行。查看日志：`pm2 logs discord-api-bot`。更新代码后：`pm2 restart discord-api-bot`。
 
+### Railway
+
+Railway 不会自动提供仓库里被忽略的 `.env` 文件。部署使用 Railway 项目的 **Variables**，不要把 Token 或加密密钥提交到 GitHub。启动脚本会在 `.env` 存在时读取它；不存在时直接使用 Railway 注入的环境变量。
+
+在服务的 **Variables** 中添加 `DISCORD_TOKEN`、`DISCORD_CLIENT_ID`、`DISCORD_GUILD_IDS`、`DISCORD_STORAGE_CHANNEL_ID` 和 `DATA_ENCRYPTION_KEY`。如果启用双向处罚，再添加 `DISCORD_PUNISHMENT_GUILD_IDS`。每个变量的值从你本机已有的 `.env` 复制；不要把密钥发到聊天或日志。Railway 无需本地代理时，不要设置指向 `127.0.0.1` 的 `HTTP_PROXY` / `HTTPS_PROXY`。
+
+保存变量并重新部署后，日志应越过 `node: .env: not found`，继续出现指令注册及 Discord 登录信息。启动部署只运行一个服务实例；不要同时开多个副本或多个 Bot 进程使用同一 Token。
+
 ### Windows 自己的电脑
 
 在 PowerShell 项目目录运行 `npm start`，窗口保持运行即可。要持续在线，电脑必须开机且网络可用；更可靠的方式是部署到 VPS 或支持常驻进程的主机。不要把 `.env` 上传到公开仓库。
