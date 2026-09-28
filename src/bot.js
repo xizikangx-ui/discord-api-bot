@@ -254,8 +254,9 @@ const commands = [
     .setName('处罚').setDescription('警告或禁言成员')
     .addStringOption((o) => o.setName('方式').setDescription('选择处罚方式').setRequired(true)
       .addChoices({ name: '仅警告', value: 'warning' }, { name: '仅禁言', value: 'timeout' }, { name: '警告并禁言', value: 'both' }))
-    .addUserOption((o) => o.setName('成员').setDescription('被处罚成员').setRequired(true))
     .addStringOption((o) => o.setName('原因').setDescription('处罚原因').setRequired(true).setMaxLength(400))
+    .addUserOption((o) => o.setName('成员').setDescription('从当前服务器选择成员（与用户 ID 二选一）').setRequired(false))
+    .addStringOption((o) => o.setName('user_id').setDescription('目标在另一互通服务器时填用户 ID 或提及（与成员二选一）').setRequired(false).setMaxLength(32))
     .addIntegerOption((o) => o.setName('禁言天数').setDescription('禁言时长（1 到 90 天；仅禁言或警告并禁言时填写）').setRequired(false).setMinValue(1).setMaxValue(90))
     .addIntegerOption((o) => o.setName('警告天数').setDescription('警告身份组保留天数（1 到 90；留空则不自动移除）').setRequired(false).setMinValue(1).setMaxValue(90)),
   new SlashCommandBuilder()
@@ -637,24 +638,31 @@ async function ensureManagementAnnouncementThread(guild, tier = 'senior', roleId
   return thread;
 }
 
-async function postPunishment(guild, { user, moderator, mode, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId, replacedCaseId = null }) {
-  const setting = settingsFor(guild.id);
-  if (!setting.logChannelId) return { primarySent: false, auditSent: !setting.auditChannelId };
-  const channel = await guild.channels.fetch(setting.logChannelId).catch(() => null);
-  if (!channel?.isTextBased()) return { primarySent: false, auditSent: !setting.auditChannelId };
+function punishmentNoticeEmbed({ user, moderator, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId, replacedCaseId = null,
+  executedGuildNames = null, absentGuildNames = [], noticeOnly = false }) {
   const action = hasBan ? '封禁并踢出' : hasWarning ? '处罚通知' : '禁言处罚';
-  const embed = new EmbedBuilder().setColor(hasBan ? 0x992D22 : timeoutDays ? 0xE67E22 : 0xF1C40F)
-    .setTitle(`${hasBan ? '⛔' : hasWarning ? '⚠️' : '🔇'} ${action}`)
+  return new EmbedBuilder().setColor(hasBan ? 0x992D22 : timeoutDays ? 0xE67E22 : 0xF1C40F)
+    .setTitle(noticeOnly ? '📣 处罚通知（本服仅公示）' : `${hasBan ? '⛔' : hasWarning ? '⚠️' : '🔇'} ${action}`)
     .addFields(
       { name: '成员', value: `<@${user.id}>`, inline: true },
       { name: '管理员', value: `<@${moderator.id}>`, inline: true },
+      ...(noticeOnly ? [{ name: '本服执行结果', value: '目标不在本服务器，本服未执行警告或禁言。' }] : []),
+      ...(executedGuildNames ? [{ name: '实际执行服务器', value: executedGuildNames.join('、') }] : []),
+      ...(absentGuildNames.length ? [{ name: '未执行（目标不在服）', value: absentGuildNames.join('、') }] : []),
       { name: '原因', value: reason.slice(0, 1024) },
       ...(timeoutDays ? [{ name: '禁言时长', value: `${timeoutDays} 天`, inline: true }] : []),
       ...(hasWarning ? [{ name: '警告', value: warningDays ? `${warningDays} 天` : '不自动移除', inline: true }] : []),
       { name: '处罚 ID', value: caseId, inline: false },
       ...(replacedCaseId ? [{ name: '覆盖处罚', value: replacedCaseId, inline: false }] : []),
     ).setThumbnail(user.displayAvatarURL({ size: 128 })).setTimestamp();
-  return sendPunishmentEmbed(guild, embed);
+}
+
+async function postPunishment(guild, details) {
+  const setting = settingsFor(guild.id);
+  if (!setting.logChannelId) return { primarySent: false, auditSent: !setting.auditChannelId };
+  const channel = await guild.channels.fetch(setting.logChannelId).catch(() => null);
+  if (!channel?.isTextBased()) return { primarySent: false, auditSent: !setting.auditChannelId };
+  return sendPunishmentEmbed(guild, punishmentNoticeEmbed(details));
 }
 
 async function postPunishmentRevocation(guild, record, moderator) {
@@ -711,17 +719,35 @@ async function validatePunishmentRequest(interaction, request) {
   const guildIds = isPairedGuild ? pairedGuildIds : [interaction.guildId];
   const guilds = await Promise.all(guildIds.map((id) => client.guilds.fetch(id)));
   const contexts = [];
+  const absentGuilds = [];
   for (const guild of guilds) {
-    let member;
-    try { member = await guild.members.fetch(user.id); }
-    catch {
-      if (!hasBan) throw new Error(`目标成员不在服务器“${guild.name}”中，未执行处罚。`);
-      // Discord permits banning a user by ID even when they have already left this guild.
-      // For a synchronized ban, keep this guild in the transaction and ban the ID there too.
-      member = null;
+    let member = null;
+    try { member = await guild.members.fetch({ user: user.id, force: true, cache: false }); }
+    catch (error) {
+      if ((error.code ?? error.rawError?.code) !== 10007) throw error;
     }
-    const botMember = await guild.members.fetchMe();
     const setting = settingsFor(guild.id);
+    // Both sides need a working public notice channel, even when punishment applies on only one side.
+    if (!setting.logChannelId) throw new Error(`尚未为“${guild.name}”配置处罚记录频道。请先在该服务器运行“/处罚面板”。`);
+    const logChannel = await guild.channels.fetch(setting.logChannelId).catch(() => null);
+    if (!logChannel?.isTextBased()) throw new Error(`“${guild.name}”的处罚记录频道不可用，未执行处罚。`);
+    const logPermissions = logChannel.permissionsFor(client.user);
+    if (!logPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+      throw new Error(`机器人在“${guild.name}”的处罚记录频道缺少查看、发送消息或嵌入链接权限，未执行处罚。`);
+    }
+    if (setting.auditChannelId) {
+      const auditChannel = await guild.channels.fetch(setting.auditChannelId).catch(() => null);
+      const auditPermissions = auditChannel?.isTextBased() ? auditChannel.permissionsFor(client.user) : null;
+      if (!auditPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+        throw new Error(`机器人在“${guild.name}”的留痕频道缺少查看、发送消息或嵌入链接权限，未执行处罚。`);
+      }
+    }
+    if (!member && !hasBan) {
+      absentGuilds.push(guild);
+      continue;
+    }
+    // Discord can ban a user by ID even when they are not a guild member.
+    const botMember = await guild.members.fetchMe();
     const previousCase = guildData.punishmentCases.find((item) => item.guildId === guild.id && item.userId === user.id && item.status === 'active');
     const botNeedsRoles = hasWarning || Boolean(previousCase?.hasWarning && !hasWarning && !hasBan);
     const botNeedsModeration = hasTimeout || Boolean(previousCase?.hasTimeout && !hasTimeout && !hasBan);
@@ -738,20 +764,6 @@ async function validatePunishmentRequest(interaction, request) {
     if (member && member.roles.highest.position >= botMember.roles.highest.position) {
       throw new Error(`机器人身份组必须高于目标成员在“${guild.name}”中的最高身份组，未执行处罚。`);
     }
-    if (!setting.logChannelId) throw new Error(`尚未为“${guild.name}”配置处罚记录频道。请先在该服务器运行“/处罚面板”。`);
-    const logChannel = await guild.channels.fetch(setting.logChannelId).catch(() => null);
-    if (!logChannel?.isTextBased()) throw new Error(`“${guild.name}”的处罚记录频道不可用，未执行处罚。`);
-    const logPermissions = logChannel.permissionsFor(client.user);
-    if (!logPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
-      throw new Error(`机器人在“${guild.name}”的处罚记录频道缺少查看、发送消息或嵌入链接权限，未执行处罚。`);
-    }
-    if (setting.auditChannelId) {
-      const auditChannel = await guild.channels.fetch(setting.auditChannelId).catch(() => null);
-      const auditPermissions = auditChannel?.isTextBased() ? auditChannel.permissionsFor(client.user) : null;
-      if (!auditPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
-        throw new Error(`机器人在“${guild.name}”的留痕频道缺少查看、发送消息或嵌入链接权限，未执行处罚。`);
-      }
-    }
     let warningRole = null;
     if (setting.warningRoleId) {
       warningRole = await guild.roles.fetch(setting.warningRoleId).catch(() => null);
@@ -763,8 +775,21 @@ async function validatePunishmentRequest(interaction, request) {
     }
     contexts.push({ guild, member, botMember, setting, warningRole, previousCase, hasWarning, hasTimeout, hasBan });
   }
-  const originContext = contexts.find((context) => context.guild.id === interaction.guildId);
-  return { ...originContext, user, contexts, hasWarning, hasTimeout, hasBan };
+  if (!contexts.length) throw new Error('目标成员不在任一可处罚服务器中，未执行处罚。');
+  const sourceChannel = interaction.channel || await interaction.guild.channels.fetch(interaction.channelId).catch(() => null);
+  const sourceBotMember = await interaction.guild.members.fetchMe();
+  const sourcePermissions = sourceChannel?.permissionsFor(sourceBotMember);
+  const sendPermission = sourceChannel?.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+  if (!sourceChannel?.isTextBased() || sourceChannel.type === ChannelType.GuildForum
+      || sourceChannel.guildId !== interaction.guildId
+      || !sourcePermissions?.has([PermissionFlagsBits.ViewChannel, sendPermission, PermissionFlagsBits.EmbedLinks])) {
+    throw new Error('机器人无法在当前频道公示处罚通知；请确认机器人有查看频道、发送消息和嵌入链接权限。');
+  }
+  const displayContext = contexts.find((context) => context.guild.id === interaction.guildId && context.member)
+    || contexts.find((context) => context.member)
+    || contexts.find((context) => context.guild.id === interaction.guildId)
+    || contexts[0];
+  return { ...displayContext, user, contexts, absentGuilds, hasWarning, hasTimeout, hasBan };
 }
 
 async function executePunishmentRequest(interaction, request, targetLockHeld = false) {
@@ -780,7 +805,7 @@ async function executePunishmentRequest(interaction, request, targetLockHeld = f
 }
 
 async function executePunishmentRequestUnlocked(interaction, request) {
-  const { user, contexts, hasWarning, hasTimeout, hasBan } = await validatePunishmentRequest(interaction, request);
+  const { user, contexts, absentGuilds, hasWarning, hasTimeout, hasBan } = await validatePunishmentRequest(interaction, request);
   const { mode, reason, timeoutDays, warningDays } = request;
   const caseId = randomBytes(6).toString('hex');
   const applied = [];
@@ -848,6 +873,15 @@ async function executePunishmentRequestUnlocked(interaction, request) {
       userId: user.id, moderatorId: interaction.user.id, mode, reason, hasWarning, warningRoleId: warningRole?.id || null,
       warningDays: warningDays || null, hasTimeout, timeoutDays: timeoutDays || null, hasBan, status: 'active', createdAt: now });
   }
+  for (const guild of absentGuilds) {
+    for (const previousCase of guildData.punishmentCases.filter((item) => item.guildId === guild.id && item.userId === user.id && item.status === 'active')) {
+      previousCase.status = 'superseded';
+      previousCase.supersededBy = caseId;
+    }
+    longTimeouts = longTimeouts.filter((job) => !(job.guildId === guild.id && job.userId === user.id));
+    guildData.warningExpirations = guildData.warningExpirations.filter((item) => !(item.guildId === guild.id && item.userId === user.id));
+    guildData.warningFollowups = guildData.warningFollowups.filter((item) => !(item.guildId === guild.id && item.userId === user.id));
+  }
   if (hasWarning && contexts.some((context) => context.setting.secondWarningReminder)) {
     guildData.warningFollowups.push({ id: `${caseId}-${user.id}`, caseId, guildId: interaction.guildId, userId: user.id,
       guildName: contexts.map((context) => context.guild.name).join('、'), reason, dueAt: now + DAY });
@@ -856,11 +890,46 @@ async function executePunishmentRequestUnlocked(interaction, request) {
   let persistenceFailed = false;
   try { await savePlatformStorage(); }
   catch (error) { persistenceFailed = true; logFailure('双向处罚已应用，但状态没有写入 Discord 私密存储。', error); }
-  const logResults = await Promise.all(contexts.map(({ guild, previousCase }) => postPunishment(guild, {
-    user, moderator: interaction.user, mode, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId, replacedCaseId: previousCase?.id || null,
+  const executedGuildNames = contexts.map((item) => item.guild.name);
+  const absentGuildNames = absentGuilds.map((guild) => guild.name);
+  const logTargets = [
+    ...contexts.map(({ guild, previousCase }) => ({ guild, previousCase, noticeOnly: false })),
+    ...absentGuilds.map((guild) => ({ guild, previousCase: null, noticeOnly: true })),
+  ];
+  const logResults = await Promise.all(logTargets.map(async ({ guild, previousCase, noticeOnly }) => ({
+    guildId: guild.id,
+    ...(await postPunishment(guild, {
+      user, moderator: interaction.user, mode, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId,
+      replacedCaseId: previousCase?.id || null, executedGuildNames, absentGuildNames, noticeOnly,
+    })),
   })));
   const failedLogs = logResults.filter((logged) => !logged.primarySent || !logged.auditSent).length;
-  const summary = [`处罚已同步至 ${contexts.length} 个服务器，编号：\`${caseId}\`。`, ...(hasBan ? ['目标已在两边封禁并移出服务器；撤销可使用此处罚编号。'] : []), ...(hasWarning ? [`两边的警告身份组${warningDays ? `将在 ${warningDays} 天后自动移除` : '不会自动移除'}。`] : []), ...(hasTimeout ? [`两边均已禁言 ${timeoutDays} 天${timeoutDays > 28 ? '，并保存自动续期计划' : ''}。`] : []), ...(hasWarning && contexts.some((context) => context.setting.secondWarningReminder) ? ['已安排 24 小时后的二次私信提醒。'] : []), ...(cleanupFailures.length ? [`旧处罚清理在以下服务器失败：${[...new Set(cleanupFailures)].join('、')}。`] : []), ...(failedLogs ? [`有 ${failedLogs} 个服务器的处罚记录或留痕频道写入失败，请检查对应面板和频道权限。`] : []), ...(persistenceFailed ? ['但同步状态写入 Discord 私密存储失败；请先保持 Bot 运行并检查存储频道连接，再重试保存。'] : [])];
+  const sourceLog = logResults.find((item) => item.guildId === interaction.guildId);
+  const sourceSetting = settingsFor(interaction.guildId);
+  const alreadyAnnounced = sourceLog && (interaction.channelId === sourceSetting.logChannelId
+    ? sourceLog.primarySent : interaction.channelId === sourceSetting.auditChannelId && sourceLog.auditSent);
+  let announcedInCurrentChannel = Boolean(alreadyAnnounced);
+  if (!announcedInCurrentChannel) {
+    try {
+      const channel = interaction.channel || await interaction.guild.channels.fetch(interaction.channelId);
+      const replacedCaseIds = [...new Set(contexts.map((item) => item.previousCase?.id).filter(Boolean))].join('、');
+      await channel.send({ embeds: [punishmentNoticeEmbed({ user, moderator: interaction.user, reason, timeoutDays, hasWarning, hasBan,
+        warningDays, caseId, replacedCaseId: replacedCaseIds || null,
+        executedGuildNames, absentGuildNames, noticeOnly: absentGuilds.some((guild) => guild.id === interaction.guildId) })],
+      allowedMentions: { parse: [] } });
+      announcedInCurrentChannel = true;
+    } catch (error) { logFailure('当前频道处罚公示发送失败。', error); }
+  }
+  const summary = [`已在“${executedGuildNames.join('、')}”执行处罚，编号：\`${caseId}\`。`,
+    ...(hasBan ? ['目标已被封禁并移出对应服务器；撤销可使用此处罚编号。'] : []),
+    ...(hasWarning ? [`警告身份组${warningDays ? `将在 ${warningDays} 天后自动移除` : '不会自动移除'}。`] : []),
+    ...(hasTimeout ? [`已禁言 ${timeoutDays} 天${timeoutDays > 28 ? '，并保存自动续期计划' : ''}。`] : []),
+    ...(absentGuilds.length ? [`目标不在“${absentGuildNames.join('、')}”，该服未执行警告或禁言，已向该服公示。`] : []),
+    ...(hasWarning && contexts.some((context) => context.setting.secondWarningReminder) ? ['已安排 24 小时后的二次私信提醒。'] : []),
+    ...(cleanupFailures.length ? [`旧处罚清理在以下服务器失败：${[...new Set(cleanupFailures)].join('、')}。`] : []),
+    ...(failedLogs ? [`有 ${failedLogs} 个服务器的处罚记录或留痕频道写入失败，请检查对应面板和频道权限。`] : []),
+    ...(!announcedInCurrentChannel ? ['当前频道公示发送失败；处罚本身已执行，请检查该频道的 Bot 权限。'] : []),
+    ...(persistenceFailed ? ['同步状态写入 Discord 私密存储失败；请先保持 Bot 运行并检查存储频道连接，再重试保存。'] : [])];
   return summary.join('\n');
 }
 
@@ -2754,26 +2823,21 @@ client.on('interactionCreate', async (interaction) => {
       const hasBan = mode === 'ban';
       const hasWarning = !hasBan && mode !== 'timeout';
       const hasTimeout = !hasBan && mode !== 'warning';
-      let user;
-      if (isPermanentBan) {
-        const selectedUser = interaction.options.getUser('成员');
-        const rawUserId = interaction.options.getString('user_id')?.trim();
-        if (Boolean(selectedUser) === Boolean(rawUserId)) {
-          await interaction.editReply('请在“成员”和“用户 ID”中任选一项填写。服务器外用户请填写用户 ID 或用户提及。');
+      const selectedUser = interaction.options.getUser('成员');
+      const rawUserId = interaction.options.getString('user_id')?.trim();
+      if (Boolean(selectedUser) === Boolean(rawUserId)) {
+        await interaction.editReply('请在“成员”和“用户 ID”中任选一项填写。目标只在另一互通服务器时请填写用户 ID 或用户提及。');
+        return;
+      }
+      let user = selectedUser;
+      if (rawUserId) {
+        const match = rawUserId.match(/^(?:<@!?(\d{17,20})>|(\d{17,20}))$/);
+        if (!match) {
+          await interaction.editReply('用户 ID 格式不正确。请粘贴 17 到 20 位数字 ID，或用户提及。');
           return;
         }
-        if (selectedUser) user = selectedUser;
-        else {
-          const match = rawUserId.match(/^(?:<@!?(\d{17,20})>|(\d{17,20}))$/);
-          if (!match) {
-            await interaction.editReply('用户 ID 格式不正确。请粘贴 17 到 20 位数字 ID，或用户提及。');
-            return;
-          }
-          try { user = await client.users.fetch(match[1] || match[2]); }
-          catch { await interaction.editReply('无法通过这个 ID 找到 Discord 用户，请检查 ID 是否正确。'); return; }
-        }
-      } else {
-        user = interaction.options.getUser('成员', true);
+        try { user = await client.users.fetch(match[1] || match[2]); }
+        catch { await interaction.editReply('无法通过这个 ID 找到 Discord 用户，请检查 ID 是否正确。'); return; }
       }
       const reason = interaction.options.getString('原因', true);
       const timeoutDays = isPermanentBan ? null : interaction.options.getInteger('禁言天数');
@@ -2797,7 +2861,7 @@ client.on('interactionCreate', async (interaction) => {
         const context = await validatePunishmentRequest(interaction, request);
         const token = randomBytes(8).toString('hex');
         const createdAt = Date.now();
-        const pendingRequest = { ...request, userId: context.user.id, guildId: context.guild.id, moderatorId: interaction.user.id, createdAt };
+        const pendingRequest = { ...request, userId: context.user.id, guildId: interaction.guildId, moderatorId: interaction.user.id, createdAt };
         await savePendingPunishment(token, pendingRequest);
         console.log('处罚确认已保存到 Discord 私密存储。');
         pendingPunishments.set(token, pendingRequest);
@@ -2825,7 +2889,7 @@ client.on('interactionCreate', async (interaction) => {
           if (hours < 48) return `${hours} 小时`;
           return `${Math.ceil(hours / 24)} 天`;
         };
-        const otherGuildStatus = context.contexts.filter((item) => item.guild.id !== interaction.guildId).map((item) => {
+        const otherGuildStatus = context.contexts.filter((item) => item.guild.id !== context.guild.id).map((item) => {
           const existing = item.previousCase;
           const expires = guildData.warningExpirations.find((entry) => entry.guildId === item.guild.id && entry.userId === user.id
             && entry.roleId === item.warningRole?.id && entry.expiresAt > createdAt);
@@ -2844,7 +2908,9 @@ client.on('interactionCreate', async (interaction) => {
           '请核对处罚内容，确认后才会执行：',
           `目标成员：<@${user.id}>`,
           `处罚方式：${modeLabel}`,
-          `同步服务器：${context.contexts.map((item) => item.guild.name).join('、')}`,
+          `执行范围：${isPermanentBan ? '按 ID 在互通服务器封禁' : context.absentGuilds.length ? '单边执行，另一边仅公示' : context.contexts.length > 1 ? '双边同步执行' : '当前服务器执行'}`,
+          `实际执行服务器：${context.contexts.map((item) => item.guild.name).join('、')}`,
+          ...(context.absentGuilds.length ? [`仅公示服务器：${context.absentGuilds.map((guild) => guild.name).join('、')}（目标不在该服，不执行警告或禁言）`] : []),
           ...(hasWarning ? [`警告身份组：${context.warningRole}` , `警告时长：${warningDays ? `${warningDays} 天` : '不自动移除'}`] : []),
           ...(hasTimeout ? [`禁言时长：${timeoutDays} 天`] : []),
           ...(hasBan ? [`封禁效果：目标将从${context.contexts.length > 1 ? '两个服务器' : '当前服务器'}移出；撤销处罚可按编号解封。`] : []),
@@ -2882,9 +2948,11 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       const caseId = interaction.options.getString('处罚编号', true).trim();
-      const record = guildData.punishmentCases.find((item) => item.guildId === interaction.guildId && item.id === caseId);
+      const pairedGuildIds = punishmentGuildIds();
+      const searchableGuildIds = pairedGuildIds.includes(interaction.guildId) ? pairedGuildIds : [interaction.guildId];
+      const record = guildData.punishmentCases.find((item) => searchableGuildIds.includes(item.guildId) && item.id === caseId);
       if (!record) {
-        await interaction.editReply('没有找到这个服务器中对应的处罚 ID。旧版本产生的处罚记录无法按 ID 撤销，请先用新版重新处罚。');
+        await interaction.editReply('没有找到当前服务器或互通服务器中对应的处罚 ID。旧版本产生的处罚记录无法按 ID 撤销，请先用新版重新处罚。');
         return;
       }
       if (record.status !== 'active') {
@@ -2940,7 +3008,7 @@ client.on('interactionCreate', async (interaction) => {
       const invokingContext = revokeContexts.find((item) => item.guild.id === interaction.guildId);
       if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
         const caller = await interaction.guild.members.fetch(interaction.user.id);
-        if (invokingContext.member && invokingContext.member.roles.highest.position >= caller.roles.highest.position) {
+        if (invokingContext?.member && invokingContext.member.roles.highest.position >= caller.roles.highest.position) {
           await interaction.editReply('只能撤销身份组层级低于自己的成员处罚。');
           return;
         }
