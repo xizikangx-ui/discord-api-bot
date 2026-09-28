@@ -23,9 +23,9 @@
 
 ## 保存位置与保留时间
 
-管理组任期、处罚、提醒和服务器配置保存在部署机器项目目录下的 `data/guild-settings.json`；长时间禁言续期任务保存在 `data/long-timeouts.json`。待确认处罚会暂存于 `data/pending-punishments/`。这些文件不应提交到 GitHub。它们由部署者控制的设备或服务器持有，访问权限取决于该机器的文件系统和备份设置。
+管理组任期、处罚、提醒和服务器配置保存在部署机器项目目录下的 `data/guild-settings.json`；长时间禁言续期任务保存在 `data/long-timeouts.json`。待确认处罚会暂存于 `data/pending-punishments/`。新版使用部署者在 `.env` 中配置的 `DATA_ENCRYPTION_KEY`，以 AES-256-GCM 加密这些 JSON 文件；首次启动新版时会将现有明文 JSON 文件迁移为加密格式。密钥不应提交到 GitHub，需与数据备份分开妥善保管；丢失密钥会导致加密数据无法恢复。文件和密钥均由部署者控制的设备或服务器持有，其他备份的安全性也由部署者负责。
 
-当前代码没有统一的自动清理期限来删除历史处罚案、管理组任期、公示配置或提醒记录。它们会在部署者手动清理运行数据、卸载并删除数据文件，或代码按功能处理过期任务时移除。部署者应限制文件访问权限、妥善保护备份，并在不再需要时删除数据。运行日志可能由部署者使用的终端、进程管理器或云服务另行保存；其保留规则由部署者决定。
+当前代码没有统一的自动清理期限来删除历史处罚案、管理组任期、公示配置或提醒记录。它们会在部署者手动清理运行数据、卸载并删除数据文件，或代码按功能处理过期任务时移除。加密可保护静态文件内容，但不会自动限制保留时间。部署者应限制文件访问权限、妥善保护密钥和备份，并在不再需要时删除数据。运行日志可能由部署者使用的终端、进程管理器或云服务另行保存；其保留规则由部署者决定。
 
 ## 信息共享
 
@@ -44,4 +44,4 @@ Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应�
 
 ## English summary
 
-This self-hosted bot processes Discord IDs, configured role membership, appointment history, moderation cases and reminder settings to provide the features administrators enable. It uses the Server Members Intent for configured management rosters. It does not enable Message Content or Presence intents and does not scan ordinary channel messages. Text explicitly submitted through `/提问`, together with a bounded in-memory conversation history, is sent to the API endpoint selected by the operator. Persistent operational data is stored in local `data/` files controlled by the operator; the current code does not automatically purge historical cases or tenure records. Contact the operator at the address above for privacy or deletion requests. The operator must verify this policy against their actual deployment before publication.
+This self-hosted bot processes Discord IDs, configured role membership, appointment history, moderation cases and reminder settings to provide the features administrators enable. It uses the Server Members Intent for configured management rosters. It does not enable Message Content or Presence intents and does not scan ordinary channel messages. Text explicitly submitted through the bot's AI question interaction, together with a bounded in-memory conversation history, is sent to the API endpoint selected by the operator. The updated code encrypts persistent JSON data files in the local `data/` directory with AES-256-GCM using a deployment-specific key stored in `.env`; the operator must protect and back up that key separately. Historical cases and tenure records are not automatically purged on a fixed schedule. Contact the operator at the address above for privacy or deletion requests. The operator must verify this policy against their actual deployment before publication.

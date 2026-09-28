@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { randomBytes } = require('node:crypto');
+const { randomBytes, createCipheriv, createDecipheriv } = require('node:crypto');
 const proxyUrl = process.env.DISCORD_PROXY_URL || process.env.HTTPS_PROXY;
 if (proxyUrl) {
   // discord.js uses the `ws` package on Node.js; pass it an explicit CONNECT agent.
@@ -36,6 +36,13 @@ if (missing.length) {
   process.exit(1);
 }
 
+const encodedDataEncryptionKey = process.env.DATA_ENCRYPTION_KEY || '';
+const dataEncryptionKey = Buffer.from(encodedDataEncryptionKey, 'base64');
+if (dataEncryptionKey.length !== 32 || dataEncryptionKey.toString('base64') !== encodedDataEncryptionKey.trim()) {
+  console.error('DATA_ENCRYPTION_KEY must be a Base64-encoded 32-byte key. See README.md for setup instructions.');
+  process.exit(1);
+}
+
 const DAY = 24 * 60 * 60 * 1000;
 const MAX_TIMEOUT = 28 * DAY;
 const TIMEOUT_REFRESH = 27 * DAY;
@@ -49,6 +56,7 @@ const timeoutFile = path.join(__dirname, '..', 'data', 'long-timeouts.json');
 const guildDataFile = path.join(__dirname, '..', 'data', 'guild-settings.json');
 const pendingPunishmentsDir = path.join(__dirname, '..', 'data', 'pending-punishments');
 const PUNISHMENT_CONFIRM_TTL = 15 * 60 * 1000;
+const ENCRYPTED_JSON_FORMAT = 'discord-api-bot-encrypted-json';
 let longTimeouts = [];
 let guildData = { settings: {}, reminders: [], warningFollowups: [], warningExpirations: [], punishmentCases: [] };
 
@@ -57,19 +65,65 @@ function pendingPunishmentPath(token) {
   return path.join(pendingPunishmentsDir, `${token}.json`);
 }
 
+function encryptJson(value) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', dataEncryptionKey, iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+  return JSON.stringify({
+    format: ENCRYPTED_JSON_FORMAT,
+    version: 1,
+    algorithm: 'aes-256-gcm',
+    iv: iv.toString('base64'),
+    authTag: cipher.getAuthTag().toString('base64'),
+    ciphertext: ciphertext.toString('base64'),
+  });
+}
+
+function decryptJson(envelope) {
+  if (envelope?.format !== ENCRYPTED_JSON_FORMAT) return { value: envelope, encrypted: false };
+  if (envelope.version !== 1 || envelope.algorithm !== 'aes-256-gcm') {
+    throw new Error('Unsupported encrypted data format.');
+  }
+  const iv = Buffer.from(envelope.iv, 'base64');
+  const authTag = Buffer.from(envelope.authTag, 'base64');
+  const ciphertext = Buffer.from(envelope.ciphertext, 'base64');
+  if (iv.length !== 12 || authTag.length !== 16 || ciphertext.length === 0) {
+    throw new Error('Encrypted data file is invalid or incomplete.');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', dataEncryptionKey, iv);
+  decipher.setAuthTag(authTag);
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+  return { value: JSON.parse(plaintext), encrypted: true };
+}
+
+async function writeEncryptedJson(file, value) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  await fs.writeFile(temp, encryptJson(value), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  await fs.rename(temp, file);
+}
+
+async function readEncryptedJson(file) {
+  const raw = await fs.readFile(file, 'utf8');
+  const { value, encrypted } = decryptJson(JSON.parse(raw));
+  if (!encrypted) {
+    await writeEncryptedJson(file, value);
+    console.log(`Migrated a legacy data file to encrypted storage: ${path.basename(file)}`);
+  }
+  return value;
+}
+
 async function savePendingPunishment(token, request) {
   const file = pendingPunishmentPath(token);
   if (!file) throw new Error('无效的处罚确认编号。');
   await fs.mkdir(pendingPunishmentsDir, { recursive: true });
-  const temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(request), { encoding: 'utf8', flag: 'wx' });
-  await fs.rename(temp, file);
+  await writeEncryptedJson(file, request);
 }
 
 async function readPendingPunishment(token) {
   const file = pendingPunishmentPath(token);
   if (!file) return null;
-  try { return JSON.parse(await fs.readFile(file, 'utf8')); }
+  try { return await readEncryptedJson(file); }
   catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
 }
 
@@ -83,9 +137,10 @@ async function claimPendingPunishment(token) {
   try {
     lockHandle = await fs.open(lock, 'wx');
     await lockHandle.close();
+    const request = await readEncryptedJson(file);
     await fs.rename(file, claimed);
     await fs.rename(claimed, processing);
-    return { request: JSON.parse(await fs.readFile(processing, 'utf8')), claimed: processing, lock };
+    return { request, claimed: processing, lock };
   } catch (error) {
     await fs.unlink(claimed).catch(() => {});
     await fs.unlink(lock).catch(() => {});
@@ -237,32 +292,27 @@ function splitMessage(text, maxLength = 1900) {
 }
 
 async function saveTimeouts() {
-  await fs.mkdir(path.dirname(timeoutFile), { recursive: true });
-  const temp = `${timeoutFile}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(longTimeouts, null, 2), 'utf8');
-  await fs.rename(temp, timeoutFile);
+  await writeEncryptedJson(timeoutFile, longTimeouts);
 }
 
 async function loadTimeouts() {
   try {
-    longTimeouts = JSON.parse(await fs.readFile(timeoutFile, 'utf8'));
+    longTimeouts = await readEncryptedJson(timeoutFile);
     if (!Array.isArray(longTimeouts)) longTimeouts = [];
   } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Could not read saved timeout schedule:', error);
-    longTimeouts = [];
+    if (error.code === 'ENOENT') {
+      longTimeouts = [];
+      return;
+    }
+    throw new Error(`Could not read encrypted timeout data. Keep DATA_ENCRYPTION_KEY unchanged and restore a valid backup if necessary. ${error.message}`);
   }
 }
 
 let guildSaveQueue = Promise.resolve();
-let guildSaveVersion = 0;
 async function saveGuildData() {
-  await fs.mkdir(path.dirname(guildDataFile), { recursive: true });
-  const snapshot = JSON.stringify(guildData, null, 2);
-  const version = ++guildSaveVersion;
+  const snapshot = JSON.parse(JSON.stringify(guildData));
   const write = guildSaveQueue.catch(() => {}).then(async () => {
-    const temp = `${guildDataFile}.${process.pid}.${version}.tmp`;
-    await fs.writeFile(temp, snapshot, 'utf8');
-    await fs.rename(temp, guildDataFile);
+    await writeEncryptedJson(guildDataFile, snapshot);
   });
   guildSaveQueue = write;
   await write;
@@ -270,11 +320,26 @@ async function saveGuildData() {
 
 async function loadGuildData() {
   try {
-    const saved = JSON.parse(await fs.readFile(guildDataFile, 'utf8'));
+    const saved = await readEncryptedJson(guildDataFile);
     guildData = { settings: saved.settings || {}, reminders: saved.reminders || [], warningFollowups: saved.warningFollowups || [], warningExpirations: saved.warningExpirations || [], punishmentCases: saved.punishmentCases || [] };
   } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Could not read guild settings:', error.message);
-    guildData = { settings: {}, reminders: [], warningFollowups: [], warningExpirations: [], punishmentCases: [] };
+    if (error.code === 'ENOENT') {
+      guildData = { settings: {}, reminders: [], warningFollowups: [], warningExpirations: [], punishmentCases: [] };
+      return;
+    }
+    throw new Error(`Could not read encrypted guild data. Keep DATA_ENCRYPTION_KEY unchanged and restore a valid backup if necessary. ${error.message}`);
+  }
+}
+
+async function migratePendingPunishments() {
+  await fs.mkdir(pendingPunishmentsDir, { recursive: true });
+  const entries = await fs.readdir(pendingPunishmentsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^[a-f0-9]{16}(?:\..+)?\.(?:json|processing)$/.test(entry.name)) continue;
+    const token = entry.name.slice(0, 16);
+    const lock = `${pendingPunishmentPath(token)}.lock`;
+    try { await fs.access(lock); continue; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await readEncryptedJson(path.join(pendingPunishmentsDir, entry.name));
   }
 }
 
@@ -947,8 +1012,6 @@ client.on('error', (error) => console.error('Discord 客户端错误:', error.me
 client.once('clientReady', async () => {
   clearTimeout(readyWatchdog);
   console.log(`Logged in as ${client.user.tag}`);
-  await loadTimeouts();
-  await loadGuildData();
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -1796,6 +1859,9 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 async function main() {
+  await loadTimeouts();
+  await loadGuildData();
+  await migratePendingPunishments();
   await registerCommands();
   console.log('指令注册成功，正在登录 Discord……');
   readyWatchdog = setTimeout(() => {

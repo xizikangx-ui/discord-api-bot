@@ -60,6 +60,13 @@ npm start
 - `API_BASE_URL`：API 根地址，例如 `https://api.openai.com/v1`
 - `API_KEY`：API 密钥
 - `API_MODEL`：服务商支持的模型 ID
+- `DATA_ENCRYPTION_KEY`：本部署专用的 32 字节 Base64 密钥，用于 AES-256-GCM 加密 `data/` 中的 JSON 文件。生成方式：
+
+  ```powershell
+  node -p "require('node:crypto').randomBytes(32).toString('base64')"
+  ```
+
+  将输出填入 `.env` 的 `DATA_ENCRYPTION_KEY`。不要公开或丢失该密钥；迁移数据或恢复备份时必须使用同一个密钥。首次启动新版会将现有明文 JSON 文件加密后再连接 Discord。
 
 启动成功后，在服务器输入 `/提问` 并填写“问题”。管理指令也会在 Bot 启动时注册。切勿把密钥写进 `src/bot.js` 或发到 Discord。
 
