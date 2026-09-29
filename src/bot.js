@@ -196,11 +196,23 @@ function recoverPunishmentFromConfirmationMessage(interaction) {
 const commands = [
   ...['处罚', '永封', '删帖', '锁定并关闭'].map((name) =>
     new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.Message)),
+  ...['处罚', '永封'].map((name) =>
+    new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.User)),
+  ...(() => {
+    const command = new SlashCommandBuilder()
+      .setName('说话').setDescription('让机器人以自己的身份在当前频道或子区发言')
+      .addStringOption((o) => o.setName('内容').setDescription('机器人要发送的消息（与图片至少填写一项）').setRequired(false).setMaxLength(1900));
+    for (const name of ['图片1', '图片2', '图片3', '图片4', '图片5']) {
+      command.addAttachmentOption((o) => o.setName(name).setDescription('可选图片附件').setRequired(false));
+    }
+    command
+      .addStringOption((o) => o.setName('图片链接').setDescription('可填多个 HTTPS 图片链接，用空格或换行分隔').setRequired(false).setMaxLength(1800))
+      .addStringOption((o) => o.setName('回复消息链接').setDescription('可选：粘贴当前频道/子区中要回复的消息链接').setRequired(false).setMaxLength(200));
+    return [command];
+  })(),
   new SlashCommandBuilder()
-    .setName('说话').setDescription('让机器人以自己的身份在当前频道或子区发言')
-    .addStringOption((o) => o.setName('内容').setDescription('机器人要发送的消息（与图片至少填写一项）').setRequired(false).setMaxLength(1900))
-    .addAttachmentOption((o) => o.setName('图片').setDescription('上传要由机器人发送的图片').setRequired(false))
-    .addStringOption((o) => o.setName('回复消息链接').setDescription('可选：粘贴当前频道/子区中要回复的消息链接').setRequired(false).setMaxLength(200)),
+    .setName('说话转发').setDescription('让机器人把一条本服务器可见的消息转发到当前频道或子区')
+    .addStringOption((o) => o.setName('消息链接').setDescription('粘贴本服务器消息的 Discord 链接').setRequired(true).setMaxLength(200)),
   new SlashCommandBuilder()
     .setName('编辑说话').setDescription('通过消息链接编辑机器人之前发送的消息')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
@@ -2502,21 +2514,24 @@ client.on('interactionCreate', async (interaction) => {
   }
   const messageCommand = interaction.isMessageContextMenuCommand()
     && ['处罚', '永封', '删帖', '锁定并关闭'].includes(interaction.commandName);
+  const userCommand = interaction.isUserContextMenuCommand()
+    && ['处罚', '永封'].includes(interaction.commandName);
   const punishmentForm = interaction.isModalSubmit()
     && interaction.customId.startsWith('message-punish:');
-  if (!interaction.isChatInputCommand() && !messageCommand && !punishmentForm) return;
+  if (!interaction.isChatInputCommand() && !messageCommand && !userCommand && !punishmentForm) return;
   let commandName = interaction.commandName;
   let options = interaction.options;
   try {
-    if (messageCommand && ['处罚', '永封'].includes(commandName)) {
+    if ((messageCommand || userCommand) && ['处罚', '永封'].includes(commandName)) {
       if (!isConfiguredManagementMember(interaction)) {
         await interaction.reply({ content: '您不具备该权限。', flags: MessageFlags.Ephemeral });
         return;
       }
       const ban = commandName === '永封';
+      const targetUserId = userCommand ? interaction.targetUser.id : interaction.targetMessage.author.id;
       const modal = new ModalBuilder()
-        .setCustomId(`message-punish:${ban ? 'ban' : 'punish'}:${interaction.targetMessage.author.id}:${interaction.user.id}`)
-        .setTitle(`${commandName}消息作者`);
+        .setCustomId(`message-punish:${ban ? 'ban' : 'punish'}:${targetUserId}:${interaction.user.id}`)
+        .setTitle(`${commandName}${userCommand ? '成员' : '消息作者'}`);
       const field = (id, label, required, max, value) => {
         const input = new TextInputBuilder().setCustomId(id).setLabel(label)
           .setStyle(TextInputStyle.Short).setRequired(required).setMaxLength(max);
@@ -3147,21 +3162,47 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       const content = options.getString('内容') || '';
-      const picture = options.getAttachment('图片');
-      if (!content.trim() && !picture) {
-        await interaction.editReply('请至少填写文字内容或上传一张图片。');
+      const pictures = ['图片1', '图片2', '图片3', '图片4', '图片5']
+        .map((name) => options.getAttachment(name)).filter(Boolean);
+      const pictureLinksInput = options.getString('图片链接') || '';
+      const pictureLinks = pictureLinksInput.trim() ? pictureLinksInput.trim().split(/\s+/u) : [];
+      if (!content.trim() && !pictures.length && !pictureLinks.length) {
+        await interaction.editReply('请至少填写文字内容、上传一张图片或提供一个图片链接。');
         return;
       }
-      if (picture && !/^image\/(png|jpeg|gif|webp|avif)$/i.test(picture.contentType || '')) {
+      if (pictures.length + pictureLinks.length > 10 || pictureLinks.length > 5) {
+        await interaction.editReply('一次最多发送 10 张图片，其中图片链接最多 5 个。');
+        return;
+      }
+      const invalidLink = pictureLinks.find((link) => {
+        try {
+          const url = new URL(link);
+          return url.protocol !== 'https:' || !url.hostname || url.username || url.password;
+        } catch { return true; }
+      });
+      if (invalidLink) {
+        await interaction.editReply('图片链接必须是有效的 HTTPS 网址；多个链接请用空格或换行分隔。');
+        return;
+      }
+      if (pictures.some((picture) => !/^image\/(png|jpeg|gif|webp|avif)(?:;|$)/i.test(picture.contentType || ''))) {
         await interaction.editReply('请上传 PNG、JPEG、GIF、WebP 或 AVIF 格式的图片。');
         return;
       }
-      if (picture && !botPermissions.has(PermissionFlagsBits.AttachFiles)) {
+      if (pictures.length && !botPermissions.has(PermissionFlagsBits.AttachFiles)) {
         await interaction.editReply('机器人在当前频道或子区缺少“附加文件”权限。');
         return;
       }
-      if (picture && interaction.attachmentSizeLimit && picture.size > interaction.attachmentSizeLimit) {
+      if (pictures.some((picture) => interaction.attachmentSizeLimit && picture.size > interaction.attachmentSizeLimit)) {
         await interaction.editReply('图片超过当前服务器的附件大小限制，请压缩后重试。');
+        return;
+      }
+      if (pictureLinks.length && !botPermissions.has(PermissionFlagsBits.EmbedLinks)) {
+        await interaction.editReply('机器人在当前频道或子区缺少“嵌入链接”权限，无法预览图片链接。');
+        return;
+      }
+      const messageContent = [content.trim(), ...pictureLinks].filter(Boolean).join('\n');
+      if (messageContent.length > 2000) {
+        await interaction.editReply('文字和图片链接合并后超过 Discord 的 2000 字符限制，请删减后重试。');
         return;
       }
       const mentionsEveryone = /@(everyone|here)\b/i.test(content);
@@ -3218,10 +3259,85 @@ client.on('interactionCreate', async (interaction) => {
         }
         replyOptions = { reply: { messageReference: sourceMessage.id, failIfNotExists: false } };
       }
-      await target.send({ content: content || undefined, ...replyOptions,
-        ...(picture ? { files: [{ attachment: picture.url, name: picture.name }] } : {}),
+      await target.send({ content: messageContent || undefined, ...replyOptions,
+        ...(pictures.length ? { files: pictures.map((picture) => ({ attachment: picture.url, name: picture.name })) } : {}),
         allowedMentions: { parse: ['users', 'roles', ...(mentionsEveryone ? ['everyone'] : [])], repliedUser: false } });
       await interaction.editReply(replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。');
+      return;
+    }
+
+    if (commandName === '说话转发') {
+      const target = interaction.channel;
+      if (!target?.isTextBased() || !target.guildId || target.guildId !== interaction.guildId || target.type === ChannelType.GuildForum) {
+        await interaction.editReply('请在本服务器的文字频道或已打开的帖子内使用此指令。');
+        return;
+      }
+      const targetBotMember = await interaction.guild.members.fetchMe();
+      const targetPermissions = target.permissionsFor(targetBotMember);
+      const targetSendPermission = target.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+      if (!targetPermissions?.has(PermissionFlagsBits.ViewChannel) || !targetPermissions.has(targetSendPermission)) {
+        await interaction.editReply('机器人在当前频道或子区缺少查看频道或发送消息的权限。');
+        return;
+      }
+
+      const link = options.getString('消息链接', true).trim();
+      let linkUrl;
+      try { linkUrl = new URL(link); } catch {
+        await interaction.editReply('消息链接格式不正确，请复制 Discord 的“复制消息链接”。');
+        return;
+      }
+      const allowedHosts = new Set(['discord.com', 'www.discord.com', 'discordapp.com', 'www.discordapp.com', 'canary.discord.com', 'ptb.discord.com']);
+      const parsed = parseDiscordMessageLink(link);
+      if (linkUrl.protocol !== 'https:' || !allowedHosts.has(linkUrl.hostname) || !parsed?.messageId || parsed.guildId !== interaction.guildId) {
+        await interaction.editReply('请提供指向本服务器具体消息的 HTTPS Discord 链接。');
+        return;
+      }
+
+      let sourceChannel = await interaction.guild.channels.fetch(parsed.channelId).catch(() => null);
+      if (parsed.threadId) {
+        const parentChannel = sourceChannel;
+        const linkedThread = await interaction.guild.channels.fetch(parsed.threadId).catch(() => null);
+        if (!parentChannel || !linkedThread?.isThread?.() || linkedThread.parentId !== parentChannel.id) {
+          await interaction.editReply('链接中的帖子不存在，或不属于这个服务器。');
+          return;
+        }
+        sourceChannel = linkedThread;
+      }
+      if (!sourceChannel?.isThread?.() && sourceChannel?.type === ChannelType.GuildForum) {
+        await interaction.editReply('请复制帖子内某条具体消息的链接，不能只提供论坛帖子链接。');
+        return;
+      }
+      if (!sourceChannel?.isTextBased?.() || !sourceChannel.messages || sourceChannel.guildId !== interaction.guildId) {
+        await interaction.editReply('链接没有指向可读取的本服务器文字频道或帖子。');
+        return;
+      }
+
+      const requester = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+      const requesterPermissions = requester && sourceChannel.permissionsFor(requester);
+      const sourceBotPermissions = sourceChannel.permissionsFor(targetBotMember);
+      const readPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory];
+      if (!requesterPermissions?.has(readPermissions)) {
+        await interaction.editReply('你没有查看源频道及其历史消息的权限，Bot 不会代你转发该消息。');
+        return;
+      }
+      if (!sourceBotPermissions?.has(readPermissions)) {
+        await interaction.editReply('机器人没有查看源频道及其历史消息的权限，无法转发该消息。');
+        return;
+      }
+
+      const sourceMessage = await sourceChannel.messages.fetch(parsed.messageId).catch(() => null);
+      if (!sourceMessage) {
+        await interaction.editReply('源消息不存在或当前无法读取，请确认链接指向一条具体消息。');
+        return;
+      }
+      try {
+        await sourceMessage.forward(target);
+      } catch (error) {
+        logFailure('消息转发失败。', error);
+        await interaction.editReply('消息读取成功，但 Discord 拒绝转发；请确认 Bot 可在目标频道发言，且源消息类型支持转发。');
+        return;
+      }
+      await interaction.editReply('已将这条消息转发到当前频道或子区。');
       return;
     }
 
