@@ -25,7 +25,7 @@ if (proxyUrl) {
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType,
   ContextMenuCommandBuilder, ApplicationCommandType,
-  PermissionFlagsBits, MessageFlags, ActionRowBuilder, ButtonBuilder,
+  PermissionFlagsBits, AuditLogEvent, MessageFlags, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ChannelSelectMenuBuilder, RoleSelectMenuBuilder, UserSelectMenuBuilder,
   ModalBuilder, LabelBuilder, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials,
 } = require('discord.js');
@@ -197,7 +197,7 @@ function recoverPunishmentFromConfirmationMessage(interaction) {
 }
 
 const commands = [
-  ...['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定', '解锁'].map((name) =>
+  ...['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定', '解锁', '管理解锁'].map((name) =>
     new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.Message)),
   ...['处罚', '永封'].map((name) =>
     new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.User)),
@@ -234,16 +234,22 @@ const commands = [
     .setName('处罚面板').setDescription('发送并配置本服务器的处罚面板')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
+    .setName('权限面板').setDescription('配置服务器及各频道的身份组权限，监控并恢复人工权限变更')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
     .setName('版务审批面板').setDescription('配置帖子操作和内容删除的审批流程')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
     .setName('管理删帖面板').setDescription('配置管理组删帖记录和办公室提醒')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
-    .setName('管理删帖').setDescription('发起管理组删帖并进行二次确认')
+    .setName('管理删帖').setDescription('发起需要三名主管理成员批准的删帖申请')
     .addStringOption((o) => o.setName('链接').setDescription('粘贴本服务器帖子内一条消息的链接').setRequired(true).setMaxLength(200)),
   new SlashCommandBuilder()
     .setName('解锁').setDescription('由主管理组成员解锁并重新开放一个帖子')
+    .addStringOption((o) => o.setName('链接').setDescription('粘贴本服务器帖子内一条消息的链接').setRequired(true).setMaxLength(200)),
+  new SlashCommandBuilder()
+    .setName('管理解锁').setDescription('由主管理组成员解锁并重新开放一个帖子')
     .addStringOption((o) => o.setName('链接').setDescription('粘贴本服务器帖子内一条消息的链接').setRequired(true).setMaxLength(200)),
   new SlashCommandBuilder()
     .setName('管理锁定').setDescription('由管理组成员直接锁定并关闭一个帖子')
@@ -554,6 +560,12 @@ async function saveGuildData() {
 
 function settingsFor(guildId) {
   guildData.settings[guildId] ||= { secondWarningReminder: false };
+  guildData.settings[guildId].permissionAlertChannelId ??= null;
+  guildData.settings[guildId].permissionRollbackEnabled ??= true;
+  guildData.settings[guildId].permissionEscalationEnabled ??= true;
+  guildData.settings[guildId].permissionEscalationRoleId ??= null;
+  guildData.settings[guildId].permissionStrikeCounts ||= {};
+  guildData.settings[guildId].permissionAllChannelRules ||= {};
   managementTrack(guildData.settings[guildId], 'senior');
   managementTrack(guildData.settings[guildId], 'middle');
   return guildData.settings[guildId];
@@ -1088,13 +1100,13 @@ function managementDeletePanelEmbed(guildId) {
   const setting = settingsFor(guildId);
   const managerRoleId = managementTrack(setting, 'senior').roleId;
   return new EmbedBuilder().setColor(0x5865F2).setTitle('管理组删帖面板')
-    .setDescription(`操作记录频道：${setting.managementDeleteApprovalChannelId ? `<#${setting.managementDeleteApprovalChannelId}>` : '尚未设置（可选）'}\n办公室提醒频道：${setting.managementDeleteOfficeChannelId ? `<#${setting.managementDeleteOfficeChannelId}>` : '尚未设置（可选）'}\n可用身份组：${managerRoleId ? `<@&${managerRoleId}>` : '请先在「管理组面板」设置主管理身份组'}\n\n主管理组成员通过右键消息「管理删帖」或使用 /管理删帖 后，会直接收到删除确认按钮。按钮等待 5 秒后启用；发起人确认后立即删除整个帖子，不再计票。取消或 5 分钟未确认都不会删除。办公室频道（如已设置）会收到提及管理组的操作提醒。\n\n管理组执行「管理锁定」时仍会先填写理由，成功后在操作所在频道公示操作人、理由和帖子链接。`);
+    .setDescription(`审批频道：${setting.managementDeleteApprovalChannelId ? `<#${setting.managementDeleteApprovalChannelId}>` : '尚未设置（必需）'}\n办公室提醒频道：${setting.managementDeleteOfficeChannelId ? `<#${setting.managementDeleteOfficeChannelId}>` : '尚未设置（可选）'}\n可用身份组：${managerRoleId ? `<@&${managerRoleId}>` : '请先在「管理组面板」设置主管理身份组'}\n\n主管理组成员通过右键消息「管理删帖」或使用 /管理删帖 发起；发起人计 1 票，需 3 名不同主管理组成员同意。第 3 票由最后一位审批者在 5 秒警示等待后再次确认，才会删除整个帖子。任何拒绝都会结束申请。办公室频道（如已设置）会在发起和最后确认阶段提及主管理组。\n\n管理组执行「管理锁定」时会先填写理由，成功后在操作所在频道公示操作人、理由和帖子链接；可使用右键「管理解锁」或 /管理解锁重新开放帖子。`);
 }
 
 function managementDeletePanel(guildId) {
   const setting = settingsFor(guildId);
   return [
-    new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`mgmtdeletecfg-approval:${guildId}`).setPlaceholder('选择管理组删帖操作记录频道（可选）').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+    new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`mgmtdeletecfg-approval:${guildId}`).setPlaceholder('选择管理组删帖审批频道（必需）').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`mgmtdeletecfg-office:${guildId}`).setPlaceholder('选择办公室提醒频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`mgmtdeletecfg-clear-approval:${guildId}`).setLabel('清除记录频道').setStyle(ButtonStyle.Secondary).setDisabled(!setting.managementDeleteApprovalChannelId),
@@ -1107,6 +1119,15 @@ function managementDeleteConfirmationComponents(proposalId, token, disabled = tr
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`mgmtdelete-confirm:${proposalId}:${token}`).setLabel('确认删除帖子').setStyle(ButtonStyle.Danger).setDisabled(disabled),
     new ButtonBuilder().setCustomId(`mgmtdelete-cancel:${proposalId}:${token}`).setLabel('取消').setStyle(ButtonStyle.Secondary),
+  )];
+}
+
+function managementDeleteVoteComponents(proposal) {
+  const votes = (proposal.managementVotes || []).filter((vote) => vote.choice === 'yes').length;
+  const required = proposal.managementVotesRequired || 3;
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`mgmtdelete-vote:yes:${proposal.id}`).setLabel(`同意删帖（${votes}/${required}）`).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`mgmtdelete-vote:no:${proposal.id}`).setLabel('拒绝').setStyle(ButtonStyle.Secondary),
   )];
 }
 
@@ -1130,11 +1151,16 @@ async function notifyManagementDeleteOffice(guild, proposal) {
   const jumpUrl = proposal.approvalChannelId && proposal.approvalMessageId
     ? `\n操作记录：https://discord.com/channels/${proposal.guildId}/${proposal.approvalChannelId}/${proposal.approvalMessageId}`
     : '';
+  const votes = (proposal.managementVotes || []).filter((vote) => vote.choice === 'yes').length;
   const notice = proposal.status === 'completed'
     ? '管理组已确认并完成删帖操作。'
     : proposal.status === 'failed'
       ? '管理组删帖执行失败，请查看操作记录。'
-      : '有管理组删帖操作待发起人二次确认（无需投票审批）。';
+      : proposal.status === 'rejected'
+        ? '管理组成员拒绝了删帖申请，帖子没有删除。'
+      : proposal.status === 'awaiting_management_confirmation'
+        ? `管理组已完成 ${votes}/${proposal.managementVotesRequired || 3} 票，等待最后一位审批者确认删除。`
+        : `有管理组删帖申请待审批，目前同意 ${votes}/${proposal.managementVotesRequired || 3} 票。`;
   await channel.send({
     content: `<@&${roleId}> ${notice}\n目标帖子：${proposal.targetLink}\n申请编号：${proposal.id}${jumpUrl}`,
     allowedMentions: { parse: [], roles: [roleId] },
@@ -1161,10 +1187,11 @@ function moderationVoteComponents(proposal) {
 function moderationProposalEmbed(proposal) {
   const operatorVotes = proposal.operatorVotes?.length || 0;
   const reviewerVotes = proposal.reviewerVotes?.length || 0;
+  const managementVotes = proposal.managementVotes?.filter((vote) => vote.choice === 'yes').length || 0;
   const phase = proposal.status === 'pending_management'
-    ? '旧版投票申请已停用，请重新发起并由发起人直接确认。'
+    ? `主管理组同意：${managementVotes}/${proposal.managementVotesRequired || 3}（发起人计 1 票；需不同成员）`
     : proposal.status === 'awaiting_management_confirmation'
-      ? '等待发起人二次确认；确认后删除整个帖子。'
+      ? `主管理组同意：${managementVotes}/${proposal.managementVotesRequired || 3}\n最后审批者：<@${proposal.finalApproverId || proposal.pendingManagementConfirmation?.userId || proposal.requesterId}>，等待最终确认。\n\n⚠️ 最终警示：确认后 Bot 会立即删除整个帖子及其中所有消息，无法恢复。按钮等待 5 秒后启用。`
       : proposal.status === 'pending_operator'
         ? `操作员同意：${operatorVotes}/${proposal.operatorVotesRequired}`
         : proposal.status === 'pending_reviewer'
@@ -1281,12 +1308,21 @@ async function createManagementDeleteProposal(interaction, link) {
     await interaction.editReply('尚未配置主管理身份组。请先运行 `/管理组面板` 选择管理组身份组。');
     return;
   }
-  const interactionRoles = interaction.member?.roles;
-  const hasManagerRole = interactionRoles?.cache?.has
-    ? interactionRoles.cache.has(managerRoleId)
-    : Array.isArray(interactionRoles) && interactionRoles.includes(managerRoleId);
-  if (!hasManagerRole) {
-    await interaction.editReply('只有主管理组成员可以发起或审批管理组删帖。');
+  const requester = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!requester?.roles.cache.has(managerRoleId)) {
+    await interaction.editReply('只有当前主管理组成员可以发起或审批管理组删帖。');
+    return;
+  }
+  if (!setting.managementDeleteApprovalChannelId) {
+    await interaction.editReply('尚未设置管理组删帖审批频道。请先运行 `/管理删帖面板`，选择一个 Bot 可发消息的审批频道。');
+    return;
+  }
+  const approvalChannel = await interaction.guild.channels.fetch(setting.managementDeleteApprovalChannelId).catch(() => null);
+  const botMember = await interaction.guild.members.fetchMe();
+  const approvalPermissions = approvalChannel?.permissionsFor(botMember);
+  if (!approvalChannel?.isTextBased?.() || !approvalChannel.send
+    || !approvalPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+    await interaction.editReply('管理组删帖审批频道不可用，或 Bot 缺少查看、发送消息和嵌入链接权限。请在 `/管理删帖面板` 重新配置。');
     return;
   }
   const parsed = parseDiscordMessageLink(link);
@@ -1294,52 +1330,49 @@ async function createManagementDeleteProposal(interaction, link) {
     await interaction.editReply('请提供本服务器帖子内一条消息的 Discord 链接。');
     return;
   }
-  // Retire matching proposals created by the old voting workflow so a stale
-  // vote card cannot block a fresh direct-confirmation request.
-  let retiredLegacyProposal = false;
-  const targetKey = moderationProposalResourceKey({ guildId: interaction.guildId, channelId: parsed.channelId, threadId: parsed.threadId, messageId: parsed.messageId, deleteTargetType: 'thread' });
-  for (const item of guildData.moderationProposals || []) {
-    const isLegacyVoteProposal = item.status === 'pending_management'
-      || (item.status === 'awaiting_management_confirmation'
-        && (item.managementVotesRequired || Array.isArray(item.managementVotes)));
-    if (item.guildId !== interaction.guildId || item.kind !== 'management-delete' || !isLegacyVoteProposal
-      || moderationProposalResourceKey(item) !== targetKey) continue;
-    item.status = 'cancelled';
-    item.failure = '管理组删帖现为发起人直接确认，旧投票申请已停用';
-    item.pendingManagementConfirmation = null;
-    retiredLegacyProposal = true;
-  }
-  if (retiredLegacyProposal) {
-    await saveGuildData();
-    for (const item of guildData.moderationProposals || []) {
-      if (item.guildId === interaction.guildId && item.kind === 'management-delete' && item.status === 'cancelled'
-        && item.failure === '管理组删帖现为发起人直接确认，旧投票申请已停用' && moderationProposalResourceKey(item) === targetKey) {
-        await updateManagementDeleteApprovalCard(interaction.guild, item).catch(() => {});
-      }
-    }
-  }
   const proposal = {
     id: randomBytes(6).toString('hex'), guildId: interaction.guildId, kind: 'management-delete',
     requesterId: interaction.user.id, targetLink: link, channelId: parsed.channelId, threadId: parsed.threadId, messageId: parsed.messageId,
     action: 'delete-thread', actionLabel: '删除整个帖子', deleteTargetType: 'thread',
-    status: 'awaiting_management_confirmation', managementRoleId: managerRoleId,
+    status: 'pending_management', managementRoleId: managerRoleId, managementVotesRequired: 3,
+    managementVotes: [{ userId: interaction.user.id, choice: 'yes', votedAt: Date.now(), requesterVote: true }],
     createdAt: Date.now(),
   };
-  const now = proposal.createdAt;
-  const token = randomBytes(8).toString('hex');
-  proposal.pendingManagementConfirmation = { token, userId: interaction.user.id, confirmAfter: now + 5000, expiresAt: now + 5 * 60 * 1000 };
   try {
     const target = await resolveModerationTarget(interaction.guild, proposal);
     if (!target.channel.isThread()) throw new Error('链接没有指向帖子。请复制帖子内一条消息的链接，或直接复制帖子链接。');
+    // Store a canonical thread identity so links copied from the parent forum,
+    // from inside a thread, and from a thread message all deduplicate alike.
+    proposal.channelId = target.channel.parentId || target.channel.id;
+    proposal.threadId = target.channel.id;
+    proposal.messageId = null;
   } catch (error) {
     await interaction.editReply(`目标无法用于管理组删帖：${error.message}`);
     return;
   }
+  const targetKey = moderationProposalResourceKey(proposal);
+
+  // Invalidate pre-three-person, one-click management delete confirmations.
+  // Leaving their buttons alive would let an old card bypass the current rule.
+  const legacyConfirmations = (guildData.moderationProposals || []).filter((item) =>
+    item.guildId === interaction.guildId && item.kind === 'management-delete'
+    && item.status === 'awaiting_management_confirmation'
+    && (!item.managementVotesRequired || (item.managementVotes || []).filter((vote) => vote.choice === 'yes').length < 3));
+  for (const legacy of legacyConfirmations) {
+    resetManagementDeleteConfirmation(legacy, 'cancelled');
+    legacy.failure = '旧版单人确认流程已作废；请重新发起三人管理组审批。';
+  }
+  if (legacyConfirmations.length) {
+    await saveGuildData();
+    await Promise.all(legacyConfirmations.map((legacy) => updateManagementDeleteApprovalCard(interaction.guild, legacy).catch(() => {})));
+  }
   const duplicate = (guildData.moderationProposals || []).find((item) => item.guildId === interaction.guildId
     && isOpenModerationProposal(item) && Date.now() - item.createdAt < MODERATION_PROPOSAL_TTL
-    && moderationProposalResourceKey(item) === targetKey);
+    && (moderationProposalResourceKey(item) === targetKey
+      || (item.kind === 'management-delete'
+        && [item.threadId, item.messageId, item.channelId].includes(proposal.threadId))));
   if (duplicate) {
-    await interaction.editReply(`这个帖子已有未完成的操作申请（编号：${duplicate.id}），请勿重复发起。`);
+    await interaction.editReply(`这个帖子已有未完成的操作申请（编号：${duplicate.id}），当前同意 ${duplicate.managementVotes?.filter((vote) => vote.choice === 'yes').length || 0}/${duplicate.managementVotesRequired || 3} 票；请到审批频道继续处理。`);
     return;
   }
   const targetClaim = `${interaction.guildId}:${targetKey}`;
@@ -1352,43 +1385,22 @@ async function createManagementDeleteProposal(interaction, link) {
     guildData.moderationProposals ||= [];
     guildData.moderationProposals.push(proposal);
     await saveGuildData();
-
-    // The record channel is optional and informational; it never blocks the
-    // confirmation flow or counts votes.
-    if (setting.managementDeleteApprovalChannelId) {
-      const approvalChannel = await interaction.guild.channels.fetch(setting.managementDeleteApprovalChannelId).catch(() => null);
-      const approvalPermissions = approvalChannel?.permissionsFor(await interaction.guild.members.fetchMe());
-      if (approvalChannel?.isTextBased?.() && approvalChannel.send
-        && approvalPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
-        try {
-          proposal.approvalChannelId = approvalChannel.id;
-          const approvalMessage = await approvalChannel.send({ embeds: [moderationProposalEmbed(proposal)], components: [], allowedMentions: { parse: [] } });
-          proposal.approvalMessageId = approvalMessage.id;
-          await saveGuildData();
-        } catch (error) {
-          logFailure('管理组删帖操作记录发送失败。', error);
-        }
-      } else {
-        logFailure('管理组删帖记录频道不可用或 Bot 权限不足；继续显示直接确认。', new Error(`频道 ${setting.managementDeleteApprovalChannelId}`));
-      }
-    }
-
     try {
-      await interaction.editReply({
-        content: `⚠️ 删除警示：你确认后，Bot 会立即删除整个帖子及其中的消息，此操作无法恢复。确定吗？\n\n申请编号：${proposal.id}\n为避免误触，确认按钮将在 5 秒后启用；5 分钟内未确认会自动失效。`,
-        components: managementDeleteConfirmationComponents(proposal.id, token, true),
+      proposal.approvalChannelId = approvalChannel.id;
+      const approvalMessage = await approvalChannel.send({
+        embeds: [moderationProposalEmbed(proposal)],
+        components: managementDeleteVoteComponents(proposal),
+        allowedMentions: { parse: [] },
       });
+      proposal.approvalMessageId = approvalMessage.id;
+      await saveGuildData();
+      await notifyManagementDeleteOffice(interaction.guild, proposal).catch((error) => logFailure('管理组删帖办公室提醒发送失败。', error));
+      await interaction.editReply(`管理组删帖申请已提交至 <#${approvalChannel.id}>。发起人已计 1 票，需 3 名不同主管理组成员同意（申请编号：${proposal.id}）。`);
     } catch (error) {
-      resetManagementDeleteConfirmation(proposal);
-      proposal.failure = '确认面板发送失败，帖子没有删除';
-      await saveGuildData().catch((saveError) => logFailure('确认面板失败后的管理组删帖状态保存失败。', saveError));
-      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
+      guildData.moderationProposals = guildData.moderationProposals.filter((item) => item.id !== proposal.id);
+      await saveGuildData().catch((saveError) => logFailure('管理组删帖申请发送失败后的状态清理失败。', saveError));
       throw error;
     }
-    // Ephemeral interaction replies cannot be edited with channel Message.edit;
-    // keep the original interaction webhook for the 5-second enable and expiry.
-    scheduleManagementDeleteConfirmation(proposal, interaction);
-
   } finally {
     activeModerationTargetClaims.delete(targetClaim);
   }
@@ -1589,37 +1601,71 @@ async function updateManagementDeleteApprovalCard(guild, proposal) {
   if (!message) return false;
   await message.edit({
     embeds: [moderationProposalEmbed(proposal)],
-    components: [],
+    components: proposal.status === 'pending_management'
+      ? managementDeleteVoteComponents(proposal)
+      : proposal.status === 'awaiting_management_confirmation' && proposal.pendingManagementConfirmation
+        ? managementDeleteConfirmationComponents(proposal.id, proposal.pendingManagementConfirmation.token,
+          Date.now() < proposal.pendingManagementConfirmation.confirmAfter)
+        : [],
   });
   return true;
+}
+
+function schedulePersistedManagementDeleteConfirmations() {
+  const now = Date.now();
+  const retired = [];
+  let changed = false;
+  for (const proposal of guildData.moderationProposals || []) {
+    if (proposal.kind !== 'management-delete' || proposal.status !== 'awaiting_management_confirmation') continue;
+    const yesVoterIds = new Set((proposal.managementVotes || []).filter((vote) => vote.choice === 'yes').map((vote) => vote.userId));
+    const pending = proposal.pendingManagementConfirmation;
+    if (!proposal.managementVotesRequired || yesVoterIds.size < 3 || !proposal.finalApproverId || pending?.userId !== proposal.finalApproverId) {
+      resetManagementDeleteConfirmation(proposal, 'cancelled');
+      proposal.failure = '旧版单人确认卡不符合三人审批规则，已自动作废；请重新发起。';
+      retired.push(proposal);
+      changed = true;
+      continue;
+    }
+    pending.confirmAfter = Number(pending.confirmAfter || now);
+    pending.expiresAt = Number(pending.expiresAt || now + 5 * 60 * 1000);
+    scheduleManagementDeleteConfirmation(proposal, null);
+  }
+  if (changed) {
+    saveGuildData()
+      .then(() => Promise.all(retired.map((proposal) => client.guilds.fetch(proposal.guildId)
+        .then((guild) => updateManagementDeleteApprovalCard(guild, proposal))
+        .catch((error) => logFailure('旧版管理组删帖确认卡作废失败。', error)))))
+      .catch((error) => logFailure('旧版管理组删帖确认流程作废状态保存失败。', error));
+  }
 }
 
 function scheduleManagementDeleteConfirmation(proposal, confirmationInteraction) {
   const proposalId = proposal.id;
   const token = proposal.pendingManagementConfirmation.token;
-  const guildId = proposal.guildId;
   const enableAt = proposal.pendingManagementConfirmation.confirmAfter;
   const expiresAt = proposal.pendingManagementConfirmation.expiresAt;
   const enableTimer = setTimeout(() => {
-    const current = (guildData.moderationProposals || []).find((item) => item.guildId === guildId && item.id === proposalId);
+    const current = (guildData.moderationProposals || []).find((item) => item.guildId === proposal.guildId && item.id === proposalId);
     if (current?.status === 'awaiting_management_confirmation' && current.pendingManagementConfirmation?.token === token) {
-      confirmationInteraction.editReply({
-        content: '5 秒等待已结束。确定删除后，Bot 会立即删除整个帖子，且无法恢复。',
-        components: managementDeleteConfirmationComponents(proposalId, token, false),
-      }).catch((error) => logFailure('管理组删帖确认按钮启用失败。', error));
+      client.guilds.fetch(proposal.guildId).then((guild) => updateManagementDeleteApprovalCard(guild, current))
+        .catch((error) => logFailure('管理组删帖最终确认按钮启用失败。', error));
+      if (confirmationInteraction) confirmationInteraction.editReply({
+        content: '5 秒等待已结束。请前往审批卡完成最终确认。',
+        components: [],
+      }).catch((error) => logFailure('管理组删帖确认提示更新失败。', error));
     }
   }, Math.max(0, enableAt - Date.now()));
   enableTimer.unref?.();
 
   const expireTimer = setTimeout(async () => {
-    const current = (guildData.moderationProposals || []).find((item) => item.guildId === guildId && item.id === proposalId);
+    const current = (guildData.moderationProposals || []).find((item) => item.guildId === proposal.guildId && item.id === proposalId);
     if (current?.status !== 'awaiting_management_confirmation' || current.pendingManagementConfirmation?.token !== token) return;
     resetManagementDeleteConfirmation(current, 'expired');
     try {
       await saveGuildData();
-      const guild = await client.guilds.fetch(guildId);
+      const guild = await client.guilds.fetch(proposal.guildId);
       await updateManagementDeleteApprovalCard(guild, current);
-      await confirmationInteraction.editReply({ content: '最终确认已过期，帖子没有删除。请重新发起管理组删帖操作。', components: [] }).catch(() => {});
+      if (confirmationInteraction) await confirmationInteraction.editReply({ content: '最终确认已过期，帖子没有删除。请重新发起管理组删帖操作。', components: [] }).catch(() => {});
     } catch (error) {
       logFailure('管理组删帖确认过期清理失败。', error);
     }
@@ -1633,7 +1679,11 @@ function resetManagementDeleteConfirmation(proposal, status = 'cancelled') {
 }
 
 async function handleManagementDeleteVote(interaction) {
-  const [, , proposalId] = interaction.customId.split(':');
+  const [, choice, proposalId] = interaction.customId.split(':');
+  if (!['yes', 'no'].includes(choice)) {
+    await interaction.reply({ content: '无效的投票操作。', flags: MessageFlags.Ephemeral }).catch(() => {});
+    return;
+  }
   const lockKey = `${interaction.guildId}:${proposalId}`;
   if (activeManagementDeleteVotes.has(lockKey)) {
     await interaction.reply({ content: '这项审批正在处理另一张投票，请稍后重试。', flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1643,18 +1693,65 @@ async function handleManagementDeleteVote(interaction) {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const proposal = (guildData.moderationProposals || []).find((item) => item.id === proposalId && item.guildId === interaction.guildId && item.kind === 'management-delete');
-    if (proposal && (proposal.status === 'pending_management'
-      || (proposal.status === 'awaiting_management_confirmation' && (proposal.managementVotesRequired || Array.isArray(proposal.managementVotes))))) {
-      proposal.status = 'cancelled';
-      proposal.failure = '旧版投票入口已停用';
-      proposal.pendingManagementConfirmation = null;
-      await saveGuildData();
-      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('旧版管理组删帖卡停用失败。', error));
-      await interaction.message.edit({ embeds: [moderationProposalEmbed(proposal)], components: [] }).catch(() => {});
-    } else {
-      await interaction.message.edit({ components: [] }).catch(() => {});
+    if (!proposal || proposal.status !== 'pending_management') {
+      await interaction.editReply('这项管理组删帖审批已处理、过期或不在投票阶段。').catch(() => {});
+      return;
     }
-    await interaction.editReply('管理组删帖不再计票，旧投票按钮已停用。请重新发起 /管理删帖，由发起人直接确认。').catch(() => {});
+    // Migrate still-open requests from the older configurable-vote schema to
+    // the fixed three-person policy before accepting another approval.
+    proposal.managementVotesRequired = 3;
+    proposal.managementVotes ||= [];
+    if (!proposal.managementVotes.some((vote) => vote.userId === proposal.requesterId)) {
+      proposal.managementVotes.unshift({ userId: proposal.requesterId, choice: 'yes', votedAt: proposal.createdAt, requesterVote: true });
+    }
+    if (Date.now() - proposal.createdAt > MODERATION_PROPOSAL_TTL) {
+      proposal.status = 'expired';
+      await saveGuildData();
+      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
+      await interaction.editReply('这项管理组删帖审批已超过 24 小时，不能再投票。').catch(() => {});
+      return;
+    }
+    const setting = settingsFor(interaction.guildId);
+    const currentManagerRoleId = managementTrack(setting, 'senior').roleId;
+    const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+    if (!member || !currentManagerRoleId || currentManagerRoleId !== proposal.managementRoleId || !member.roles.cache.has(currentManagerRoleId)) {
+      await interaction.editReply('只有当前主管理组成员可以审批此删帖申请。').catch(() => {});
+      return;
+    }
+    proposal.managementVotes ||= [];
+    if (proposal.managementVotes.some((vote) => vote.userId === interaction.user.id)) {
+      await interaction.editReply('你已经对此帖子投过票，不能重复计票。').catch(() => {});
+      return;
+    }
+    proposal.managementVotes.push({ userId: interaction.user.id, choice, votedAt: Date.now() });
+    if (choice === 'no') {
+      proposal.status = 'rejected';
+      proposal.failure = '主管理组成员拒绝了删帖申请';
+      await saveGuildData();
+      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('拒绝后的管理组删帖卡更新失败。', error));
+      await notifyManagementDeleteOffice(interaction.guild, proposal).catch((error) => logFailure('管理组删帖结果提醒发送失败。', error));
+      await interaction.editReply('已记录拒绝票，申请已结束，帖子没有删除。').catch(() => {});
+      return;
+    }
+    const yesVotes = proposal.managementVotes.filter((vote) => vote.choice === 'yes').length;
+    if (yesVotes >= (proposal.managementVotesRequired || 3)) {
+      const now = Date.now();
+      const token = randomBytes(8).toString('hex');
+      proposal.status = 'awaiting_management_confirmation';
+      proposal.finalApproverId = interaction.user.id;
+      proposal.pendingManagementConfirmation = { token, userId: interaction.user.id, confirmAfter: now + 5000, expiresAt: now + 5 * 60 * 1000 };
+      await saveGuildData();
+      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('第三票后的管理组删帖确认卡更新失败。', error));
+      scheduleManagementDeleteConfirmation(proposal, null);
+      await notifyManagementDeleteOffice(interaction.guild, proposal).catch((error) => logFailure('管理组删帖最终确认提醒发送失败。', error));
+      const approvalUrl = proposal.approvalChannelId && proposal.approvalMessageId
+        ? `\n最终确认卡：https://discord.com/channels/${proposal.guildId}/${proposal.approvalChannelId}/${proposal.approvalMessageId}` : '';
+      await interaction.editReply(`已记录第 3 张同意票。请由你作为最后审批者，在审批频道的警示卡等待 5 秒后点击最终确认；确认后帖子会立即被删除，无法恢复。${approvalUrl}`).catch(() => {});
+      return;
+    }
+    await saveGuildData();
+    await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('管理组删帖投票卡更新失败。', error));
+    await interaction.editReply(`已记录同意票：${yesVotes}/${proposal.managementVotesRequired || 3}。帖子尚未删除。`).catch(() => {});
   } catch (error) {
     logFailure('管理组删帖投票处理失败。', error);
     if (interaction.deferred || interaction.replied) {
@@ -1707,11 +1804,15 @@ async function handleManagementDeleteConfirmation(interaction) {
       return;
     }
     const member = await interaction.guild.members.fetch(interaction.user.id);
-    if (!proposal.managementRoleId || !member.roles.cache.has(proposal.managementRoleId)) {
+    const configuredManagerRoleId = managementTrack(settingsFor(interaction.guildId), 'senior').roleId;
+    const yesVotes = proposal.managementVotes?.filter((vote) => vote.choice === 'yes') || [];
+    if (!proposal.managementRoleId || configuredManagerRoleId !== proposal.managementRoleId
+      || !member.roles.cache.has(proposal.managementRoleId) || interaction.user.id !== proposal.finalApproverId
+      || yesVotes.length < (proposal.managementVotesRequired || 3)) {
       resetManagementDeleteConfirmation(proposal);
       await saveGuildData();
       await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
-      await interaction.editReply({ content: '你的主管理身份组已变更，确认失效；帖子没有删除。', components: [] }).catch(() => {});
+      await interaction.editReply({ content: '最终审批者身份组或三人审批条件已失效；帖子没有删除。', components: [] }).catch(() => {});
       return;
     }
     proposal.pendingManagementConfirmation = null;
@@ -2264,8 +2365,566 @@ function isConfiguredManagementMember(interaction) {
   return [...managementRoleIds].some((roleId) => memberRoleIds.has(roleId));
 }
 
+const permissionGroups = {
+  administration: {
+    label: '服务器管理',
+    keys: ['Administrator', 'ManageGuild', 'ManageRoles', 'ManageChannels', 'ViewAuditLog', 'ViewGuildInsights', 'ManageWebhooks', 'ManageEmojisAndStickers', 'ManageGuildExpressions', 'ManageEvents', 'CreateEvents', 'ManageThreads', 'KickMembers', 'BanMembers', 'ModerateMembers', 'ManageNicknames', 'ChangeNickname', 'CreateInstantInvite', 'ViewCreatorMonetizationAnalytics', 'CreateGuildExpressions'],
+  },
+  text: {
+    label: '文字与论坛',
+    keys: ['ViewChannel', 'SendMessages', 'SendMessagesInThreads', 'ReadMessageHistory', 'ManageMessages', 'PinMessages', 'AddReactions', 'EmbedLinks', 'AttachFiles', 'MentionEveryone', 'UseExternalEmojis', 'UseExternalStickers', 'CreatePublicThreads', 'CreatePrivateThreads', 'UseApplicationCommands', 'UseExternalApps', 'SendTTSMessages', 'SendVoiceMessages', 'SendPolls', 'BypassSlowmode'],
+  },
+  voice: {
+    label: '语音与舞台',
+    keys: ['Connect', 'Speak', 'Stream', 'PrioritySpeaker', 'MuteMembers', 'DeafenMembers', 'MoveMembers', 'UseVAD', 'RequestToSpeak', 'UseEmbeddedActivities', 'UseSoundboard', 'UseExternalSounds', 'SetVoiceChannelStatus'],
+  },
+};
+
+// Build the panel from every permission flag shipped by the installed discord.js
+// API definitions. The hand-curated groups only provide readable organization;
+// they must never limit which Discord permissions the panel can expose.
+const allDiscordPermissionKeys = Object.keys(PermissionFlagsBits);
+const assignedPermissionKeys = new Set();
+for (const group of Object.values(permissionGroups)) {
+  group.keys = group.keys.filter((key) => allDiscordPermissionKeys.includes(key) && !assignedPermissionKeys.has(key));
+  for (const key of group.keys) assignedPermissionKeys.add(key);
+}
+const unassignedPermissionKeys = allDiscordPermissionKeys.filter((key) => !assignedPermissionKeys.has(key));
+for (let offset = 0, index = 1; offset < unassignedPermissionKeys.length; offset += 25, index += 1) {
+  permissionGroups['discovered_' + index] = {
+    label: unassignedPermissionKeys.length > 25 ? '其他权限（自动发现 ' + index + '）' : '其他权限（自动发现）',
+    keys: unassignedPermissionKeys.slice(offset, offset + 25),
+  };
+}
+
+const permissionLabels = {
+  CreateInstantInvite: '创建邀请', KickMembers: '踢出成员', BanMembers: '封禁成员',
+  Administrator: '管理员（绕过频道限制）', ManageChannels: '管理频道', ManageGuild: '管理服务器',
+  AddReactions: '添加表情反应', ViewAuditLog: '查看审计日志', PrioritySpeaker: '优先发言',
+  Stream: '视频/直播', ViewChannel: '查看频道', SendMessages: '发送消息',
+  SendTTSMessages: '发送 TTS 消息', ManageMessages: '管理消息', EmbedLinks: '嵌入链接',
+  AttachFiles: '附加文件', ReadMessageHistory: '读取消息历史', MentionEveryone: '提及 @everyone',
+  UseExternalEmojis: '使用外部表情', ViewGuildInsights: '查看服务器数据分析', Connect: '连接语音',
+  Speak: '语音发言', MuteMembers: '语音静音成员', DeafenMembers: '语音拒听成员',
+  MoveMembers: '移动语音成员', UseVAD: '使用语音活动检测', ChangeNickname: '修改自己的昵称',
+  ManageNicknames: '管理昵称', ManageRoles: '管理身份组', ManageWebhooks: '管理 Webhook',
+  ManageEmojisAndStickers: '管理表情和贴纸', ManageGuildExpressions: '管理表情、贴纸和音效',
+  UseApplicationCommands: '使用应用命令', RequestToSpeak: '申请舞台发言',
+  ManageEvents: '管理活动', ManageThreads: '管理帖子', CreatePublicThreads: '创建公开帖子',
+  CreatePrivateThreads: '创建私密帖子', UseExternalStickers: '使用外部贴纸',
+  SendMessagesInThreads: '在帖子中发言', UseEmbeddedActivities: '使用应用活动',
+  ModerateMembers: '管理超时', ViewCreatorMonetizationAnalytics: '查看创作者收益数据',
+  UseSoundboard: '使用音效板', CreateGuildExpressions: '创建表情、贴纸和音效',
+  CreateEvents: '创建活动', UseExternalSounds: '使用外部音效', SendVoiceMessages: '发送语音消息',
+  SetVoiceChannelStatus: '设置语音频道状态', SendPolls: '发送投票', UseExternalApps: '使用外部应用',
+  PinMessages: '置顶消息', BypassSlowmode: '绕过慢速模式',
+};
+
+function permissionLabel(key) {
+  return permissionLabels[key] || key.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+}
+
+// These permissions exist only at server/member level and cannot be meaningfully
+// set as per-channel overwrites. All other installed Discord permission flags
+// remain available in channel scopes, including flags added by newer discord.js.
+const serverOnlyPermissionKeys = new Set([
+  'Administrator', 'KickMembers', 'BanMembers', 'ManageGuild', 'ViewAuditLog',
+  'ViewGuildInsights', 'ChangeNickname', 'ManageNicknames', 'ModerateMembers',
+  'ViewCreatorMonetizationAnalytics', 'CreateEvents', 'CreateGuildExpressions', 'ManageGuildExpressions',
+]);
+const permissionPanelSessions = new Map();
+const permissionKeyToCategory = new Map(Object.entries(permissionGroups).flatMap(([category, group]) => group.keys.map((key) => [key, category])));
+
+function channelPermissionsFor(channel, categoryKey) {
+  if (!channel?.permissionOverwrites || !permissionGroups[categoryKey]) return [];
+  // Overwrites are stored as permission bitsets, not separate text/voice lists.
+  // Expose every non-server-only bit for each channel so newer flags and less
+  // common channel types are not silently omitted from the control panel.
+  return permissionGroups[categoryKey].keys.filter((key) => !serverOnlyPermissionKeys.has(key));
+}
+
+function permissionPanelEmbed(guild, session = {}) {
+  const setting = settingsFor(guild.id);
+  const role = session.roleId ? guild.roles.cache.get(session.roleId) : null;
+  const scopeLabel = session.scope === 'guild' ? '服务器身份组权限'
+    : session.scope === 'all' ? '所有现有频道（并应用到新频道）'
+      : session.scope === 'channel' ? (session.channelId ? '<#' + session.channelId + '>' : '选择单个频道') : '请选择范围';
+  const category = permissionGroups[session.category || 'administration'];
+  let current = '尚未选择身份组';
+  if (role && session.scope === 'guild') {
+    const currentKeys = category.keys.filter((key) => role.permissions.has(PermissionFlagsBits[key]));
+    current = currentKeys.map(permissionLabel).join('、') || '此分类当前没有已授予的权限';
+  } else if (role && session.scope === 'all') {
+    current = '全频道当前权限可能各不相同。批量操作会覆盖所选权限，并保存同一规则供新建频道使用。';
+  } else if (role && session.channelId) {
+    const channel = guild.channels.cache.get(session.channelId);
+    const keys = channel ? channelPermissionsFor(channel, session.category || 'administration') : [];
+    const overwrite = channel?.permissionOverwrites?.cache?.get(role.id);
+    const allowed = keys.filter((key) => overwrite?.allow.has(PermissionFlagsBits[key])).map(permissionLabel);
+    const denied = keys.filter((key) => overwrite?.deny.has(PermissionFlagsBits[key])).map(permissionLabel);
+    current = '允许：' + (allowed.join('、') || '无') + '\n拒绝：' + (denied.join('、') || '无') + '\n未覆盖的权限沿用服务器/分类设置。';
+  } else if (role && session.scope && session.scope !== 'guild') {
+    current = '选择频道后可查看该身份组当前允许、拒绝和继承的权限。';
+  }
+  const description = '已读取本服务器 ' + guild.channels.cache.size + ' 个频道/分类、' + guild.roles.cache.size + ' 个身份组和 ' + allDiscordPermissionKeys.length + ' 项 Discord 权限定义。权限清单从当前 discord.js/Discord API 权限位自动枚举，不限于 Bot 命令使用的权限。选择身份组、权限范围、分类和权限，再点按钮应用。\n\n'
+    + '身份组：' + (role ? '<@&' + role.id + '>' : '尚未选择') + '\n范围：' + scopeLabel + '\n权限分类：' + category.label
+    + '\n\n**当前权限概览**\n' + current.slice(0, 900)
+    + '\n\n频道权限遵循 Discord 合并规则：管理员身份组会绕过频道覆盖；成员持有多个身份组时，频道允许/拒绝会按 Discord 规则合并；帖子继承父频道权限。'
+    + '\n高危权限审计：' + (setting.permissionAlertChannelId ? '<#' + setting.permissionAlertChannelId + '>' : '未设置告警频道')
+    + '\n非 Bot 变更恢复：' + (setting.permissionRollbackEnabled ? '开启（审计事件到达后快速恢复，无法阻止保存瞬间生效）' : '关闭')
+    + '\n高危违规私信/处置策略：' + (setting.permissionEscalationEnabled ? '开启（前两次私信提醒；第三次移除可管理身份组并发放指定身份组）' : '关闭')
+    + '\n第三次处置身份组：' + (setting.permissionEscalationRoleId ? '<@&' + setting.permissionEscalationRoleId + '>' : '未配置');
+  return new EmbedBuilder().setColor(0x5865F2).setTitle('服务器权限鉴定与配置面板').setDescription(description);
+}
+
+function permissionPanelComponents(session) {
+  if (session.waitingFor === 'channel' || session.waitingFor === 'alert') {
+    const customId = session.waitingFor === 'alert' ? 'permission-alert-channel:' + session.token : 'permission-channel:' + session.token;
+    const select = new ChannelSelectMenuBuilder().setCustomId(customId)
+      .setPlaceholder(session.waitingFor === 'alert' ? '选择高危权限告警频道或子区' : '选择要单独配置的频道')
+      .setMinValues(1).setMaxValues(1)
+      .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia,
+        ChannelType.GuildVoice, ChannelType.GuildStageVoice, ChannelType.GuildCategory, ChannelType.PublicThread,
+        ChannelType.PrivateThread, ChannelType.AnnouncementThread);
+    const rows = [new ActionRowBuilder().addComponents(select)];
+    if (session.waitingFor === 'alert') {
+      const setting = settingsFor(session.guild.id);
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('permission-toggle-rollback:' + session.token)
+          .setLabel('非 Bot 变更自动恢复：' + (setting.permissionRollbackEnabled ? '开' : '关'))
+          .setStyle(setting.permissionRollbackEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('permission-toggle-escalation:' + session.token)
+          .setLabel('违规提醒/身份组处置：' + (setting.permissionEscalationEnabled ? '开' : '关'))
+          .setStyle(setting.permissionEscalationEnabled ? ButtonStyle.Danger : ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('permission-back:' + session.token).setLabel('返回权限面板').setStyle(ButtonStyle.Secondary),
+      ));
+      rows.push(new ActionRowBuilder().addComponents(
+        new RoleSelectMenuBuilder().setCustomId('permission-sanction-role:' + session.token)
+          .setPlaceholder(setting.permissionEscalationRoleId ? '第三次处置身份组：已配置' : '选择第三次处置后要发放的身份组')
+          .setMinValues(1).setMaxValues(1),
+      ));
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('permission-clear-sanction-role:' + session.token)
+          .setLabel('清除第三次处置身份组').setStyle(ButtonStyle.Secondary).setDisabled(!setting.permissionEscalationRoleId),
+      ));
+    } else {
+      rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('permission-back:' + session.token).setLabel('返回权限面板').setStyle(ButtonStyle.Secondary)));
+    }
+    return rows;
+  }
+  let permissionKeys = permissionGroups[session.category || 'administration'].keys;
+  if (session.scope === 'all') {
+    permissionKeys = permissionKeys.filter((key) => !serverOnlyPermissionKeys.has(key));
+  } else if (session.scope && session.scope !== 'guild' && session.channelId) {
+    permissionKeys = channelPermissionsFor(session.guild.channels.cache.get(session.channelId) || { type: ChannelType.GuildText }, session.category || 'administration');
+  }
+  const roleSelect = new RoleSelectMenuBuilder().setCustomId('permission-role:' + session.token).setPlaceholder('选择要配置的身份组').setMinValues(1).setMaxValues(1);
+  const scopeSelect = new StringSelectMenuBuilder().setCustomId('permission-scope:' + session.token).setPlaceholder('选择权限范围').addOptions(
+    { label: '服务器身份组权限', value: 'guild', description: '修改身份组本身的服务器权限' },
+    { label: '所有频道', value: 'all', description: '覆盖全部现有频道，并应用到新频道' },
+    { label: '单独频道', value: 'channel', description: '为身份组设置单个频道覆盖' },
+  );
+  const categorySelect = new StringSelectMenuBuilder().setCustomId('permission-category:' + session.token).setPlaceholder('选择权限分类').addOptions(
+    Object.entries(permissionGroups).map(([value, group]) => ({ label: group.label, value, description: group.keys.length + ' 项权限' })),
+  );
+  const flagsSelect = new StringSelectMenuBuilder().setCustomId('permission-flags:' + session.token)
+    .setPlaceholder(permissionKeys.length ? '选择要调整的权限（可多选）' : '此频道类型没有该分类的权限')
+    .setMinValues(0).setMaxValues(Math.min(25, permissionKeys.length || 1))
+    .addOptions(permissionKeys.slice(0, 25).map((key) => ({
+      label: permissionLabel(key), value: key,
+      description: session.scope === 'guild' ? '服务器身份组权限' : '频道权限覆盖',
+      default: (session.selectedPermissions || []).includes(key),
+    })))
+    .setDisabled(!permissionKeys.length);
+  return [
+    new ActionRowBuilder().addComponents(roleSelect),
+    new ActionRowBuilder().addComponents(scopeSelect),
+    new ActionRowBuilder().addComponents(categorySelect),
+    new ActionRowBuilder().addComponents(flagsSelect),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('permission-allow:' + session.token).setLabel(session.scope === 'guild' ? '授予所选权限' : '允许所选权限').setStyle(ButtonStyle.Success).setDisabled(!session.roleId),
+      new ButtonBuilder().setCustomId('permission-deny:' + session.token).setLabel(session.scope === 'guild' ? '移除所选权限' : '拒绝所选权限').setStyle(ButtonStyle.Danger).setDisabled(!session.roleId),
+      new ButtonBuilder().setCustomId('permission-reset:' + session.token).setLabel(session.scope === 'guild' ? '移除所选权限' : '恢复继承').setStyle(ButtonStyle.Secondary).setDisabled(!session.roleId),
+      new ButtonBuilder().setCustomId('permission-pick-channel:' + session.token).setLabel('选择单独频道').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('permission-pick-alert:' + session.token).setLabel('告警/扳回规则').setStyle(ButtonStyle.Primary),
+    ),
+  ];
+}
+
+function channelKindsForBulkPermission(channel) {
+  return !channel.isThread?.() && channel.permissionOverwrites && [
+    ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia,
+    ChannelType.GuildVoice, ChannelType.GuildStageVoice, ChannelType.GuildCategory,
+  ].includes(channel.type);
+}
+
+async function applyPermissionPanelAction(guild, session, action, actorId) {
+  const setting = settingsFor(guild.id);
+  const role = session.roleId ? await guild.roles.fetch(session.roleId).catch(() => null) : null;
+  const botMember = await guild.members.fetchMe();
+  if (!role || role.managed || role.position >= botMember.roles.highest.position) throw new Error('该身份组由集成管理、不可修改，或层级不低于 Bot。');
+  if (!session.selectedPermissions?.length) throw new Error('请先在权限列表中选择至少一项。');
+  if (!botMember.permissions.has(PermissionFlagsBits.Administrator) && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) throw new Error('Bot 缺少“管理身份组”权限。');
+  const reason = '服务器权限面板操作人 ' + actorId;
+  const selected = session.selectedPermissions.filter((key) => PermissionFlagsBits[key]);
+  if (!selected.length) throw new Error('所选权限无效。');
+  if (session.scope === 'guild') {
+    const current = role.permissions.bitfield;
+    const bits = selected.reduce((sum, key) => sum | PermissionFlagsBits[key], 0n);
+    const updated = action === 'allow' ? current | bits : current & ~bits;
+    await role.setPermissions(updated, reason);
+    return '已更新身份组 ' + role.name + ' 的服务器权限：' + selected.map(permissionLabel).join('、');
+  }
+  const patch = Object.fromEntries(selected.map((key) => [key, action === 'allow' ? true : action === 'deny' ? false : null]));
+  if (session.scope === 'all') {
+    setting.permissionAllChannelRules[role.id] ||= {};
+    for (const key of selected) {
+      if (action === 'reset') delete setting.permissionAllChannelRules[role.id][key];
+      else setting.permissionAllChannelRules[role.id][key] = action === 'allow';
+    }
+    if (!Object.keys(setting.permissionAllChannelRules[role.id]).length) delete setting.permissionAllChannelRules[role.id];
+    await saveGuildData();
+    const channels = await guild.channels.fetch();
+    let updatedCount = 0;
+    const failures = [];
+    for (const channel of channels.values()) {
+      if (!channelKindsForBulkPermission(channel)) continue;
+      const channelKeys = selected.filter((key) => channelPermissionsFor(channel, permissionKeyToCategory.get(key) || session.category).includes(key));
+      if (!channelKeys.length) continue;
+      try {
+        await channel.permissionOverwrites.edit(role.id, Object.fromEntries(channelKeys.map((key) => [key, patch[key]])), reason);
+        updatedCount += 1;
+      } catch (error) {
+        failures.push(channel.name + ': ' + (error.message || '失败'));
+      }
+    }
+    await saveGuildData();
+    if (failures.length) return '全频道规则已保存并将应用到新频道；本次成功更新 ' + updatedCount + ' 个频道/分类，' + failures.length + ' 个失败：' + failures.slice(0, 3).join('；');
+    return '已为身份组 ' + role.name + ' 在 ' + updatedCount + ' 个现有频道/分类设置权限；规则也会应用到新建频道。';
+  }
+  if (session.scope !== 'channel' || !session.channelId) throw new Error('请先选择单独频道，或将范围改为“所有频道”。');
+  const channel = await guild.channels.fetch(session.channelId).catch(() => null);
+  if (!channelKindsForBulkPermission(channel)) throw new Error('所选频道不存在，或该频道类型不支持单独权限覆盖。');
+  const applicable = selected.filter((key) => channelPermissionsFor(channel, permissionKeyToCategory.get(key) || session.category).includes(key));
+  if (!applicable.length) throw new Error('这些权限不适用于所选频道类型。');
+  await channel.permissionOverwrites.edit(role.id, Object.fromEntries(applicable.map((key) => [key, patch[key]])), reason);
+  return '已更新身份组 ' + role.name + ' 在 <#' + channel.id + '> 的权限：' + applicable.map(permissionLabel).join('、');
+}
+
+async function handlePermissionPanelInteraction(interaction) {
+  if (!(interaction.isButton() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() || interaction.isStringSelectMenu())
+    || !interaction.customId.startsWith('permission-')) return false;
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: '权限面板只能在服务器内使用。', flags: MessageFlags.Ephemeral }).catch(() => {});
+    return true;
+  }
+  const token = interaction.customId.split(':')[1];
+  const session = permissionPanelSessions.get(token);
+  if (!session || session.guildId !== interaction.guildId || session.creatorId !== interaction.user.id
+    || Date.now() - session.updatedAt > 30 * 60 * 1000) {
+    permissionPanelSessions.delete(token);
+    await interaction.reply({ content: '这个权限面板已过期，请重新运行“/权限面板”。', flags: MessageFlags.Ephemeral }).catch(() => {});
+    return true;
+  }
+  if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以配置权限面板。', flags: MessageFlags.Ephemeral }).catch(() => {});
+    return true;
+  }
+  session.updatedAt = Date.now();
+  try {
+    if (interaction.isRoleSelectMenu() && interaction.customId.startsWith('permission-role:')) {
+      session.roleId = interaction.values[0];
+      session.selectedPermissions = [];
+      await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isRoleSelectMenu() && interaction.customId.startsWith('permission-sanction-role:')) {
+      const role = await interaction.guild.roles.fetch(interaction.values[0]).catch(() => null);
+      const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe();
+      if (!role || role.id === interaction.guildId || role.managed || role.position >= botMember.roles.highest.position
+        || (!botMember.permissions.has(PermissionFlagsBits.Administrator) && !botMember.permissions.has(PermissionFlagsBits.ManageRoles))) {
+        throw new Error('处置身份组必须是 Bot 有权限管理的普通身份组，并且层级低于 Bot。');
+      }
+      const setting = settingsFor(interaction.guildId);
+      setting.permissionEscalationRoleId = role.id;
+      await saveGuildData();
+      await interaction.update({ content: '第三次违规后发放的身份组已保存。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('permission-scope:')) {
+      session.scope = interaction.values[0];
+      session.channelId = null;
+      session.selectedPermissions = [];
+      session.waitingFor = session.scope === 'channel' ? 'channel' : null;
+      const text = session.waitingFor ? '选择一个频道或分类。' : '';
+      await interaction.update({ content: text, embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('permission-category:')) {
+      session.category = interaction.values[0];
+      session.selectedPermissions = [];
+      await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('permission-flags:')) {
+      session.selectedPermissions = interaction.values;
+      await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-pick-channel:')) {
+      session.scope = 'channel';
+      session.channelId = null;
+      session.waitingFor = 'channel';
+      await interaction.update({ content: '选择要单独配置的频道。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-pick-alert:')) {
+      session.waitingFor = 'alert';
+      await interaction.update({ content: '选择你新建的告警频道或子区。请确保 Bot 可查看并发送消息。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-toggle-rollback:')) {
+      const setting = settingsFor(interaction.guildId);
+      setting.permissionRollbackEnabled = !setting.permissionRollbackEnabled;
+      await saveGuildData();
+      await interaction.update({ content: '非 Bot 权限变更自动恢复已' + (setting.permissionRollbackEnabled ? '开启' : '关闭') + '。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-toggle-escalation:')) {
+      const setting = settingsFor(interaction.guildId);
+      setting.permissionEscalationEnabled = !setting.permissionEscalationEnabled;
+      await saveGuildData();
+      await interaction.update({ content: '高危权限违规私信提醒及第三次身份组处置策略已' + (setting.permissionEscalationEnabled ? '开启' : '关闭') + '。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-clear-sanction-role:')) {
+      const setting = settingsFor(interaction.guildId);
+      setting.permissionEscalationRoleId = null;
+      await saveGuildData();
+      await interaction.update({ content: '第三次处置身份组已清除。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-back:')) {
+      session.waitingFor = null;
+      await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isChannelSelectMenu() && interaction.customId.startsWith('permission-alert-channel:')) {
+      const channel = await interaction.guild.channels.fetch(interaction.values[0]).catch(() => null);
+      const botMember = await interaction.guild.members.fetchMe();
+      const sendPermission = channel?.isThread?.() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+      if (!channel || channel.guildId !== interaction.guildId || !channel.isTextBased?.()
+        || !channel.permissionsFor(botMember)?.has([PermissionFlagsBits.ViewChannel, sendPermission, PermissionFlagsBits.EmbedLinks])) {
+        throw new Error('告警目标必须是本服务器中 Bot 可查看、发送消息和嵌入链接的文字频道或子区。');
+      }
+      settingsFor(interaction.guildId).permissionAlertChannelId = channel.id;
+      await saveGuildData();
+      session.waitingFor = null;
+      await interaction.update({ content: '权限警告频道已设置为 <#' + channel.id + '>。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isChannelSelectMenu() && interaction.customId.startsWith('permission-channel:')) {
+      const channel = await interaction.guild.channels.fetch(interaction.values[0]).catch(() => null);
+      if (!channel || channel.guildId !== interaction.guildId || !channelKindsForBulkPermission(channel)) {
+        throw new Error('请选择本服务器中支持权限覆盖的频道或分类。');
+      }
+      session.channelId = channel.id;
+      session.scope = 'channel';
+      session.waitingFor = null;
+      session.selectedPermissions = [];
+      await interaction.update({ content: '已选择 <#' + channel.id + '>。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && ['permission-allow:', 'permission-deny:', 'permission-reset:'].some((prefix) => interaction.customId.startsWith(prefix))) {
+      const action = interaction.customId.startsWith('permission-allow:') ? 'allow'
+        : interaction.customId.startsWith('permission-deny:') ? (session.scope === 'guild' ? 'remove' : 'deny') : 'reset';
+      await interaction.deferUpdate();
+      const result = await applyPermissionPanelAction(interaction.guild, session, action === 'remove' ? 'deny' : action, interaction.user.id);
+      await interaction.editReply({ content: result, embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    await interaction.reply({ content: '这个权限面板操作无法识别，请重新运行“/权限面板”。', flags: MessageFlags.Ephemeral }).catch(() => {});
+    return true;
+  } catch (error) {
+    logFailure('权限面板操作失败。', error);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({ content: '设置未完成：' + error.message, flags: MessageFlags.Ephemeral }).catch(() => {});
+    } else {
+      await interaction.reply({ content: '设置未完成：' + error.message, flags: MessageFlags.Ephemeral }).catch(() => {});
+    }
+    return true;
+  }
+}
+
+const guardedPermissionKeys = ['Administrator', 'ManageGuild', 'ManageRoles', 'ManageChannels', 'ManageThreads', 'ManageWebhooks'];
+const escalationPermissionKeys = new Set(guardedPermissionKeys);
+
+function permissionInteger(value) {
+  try { return BigInt(value || 0); } catch { return 0n; }
+}
+
+function changedPermissionBits(oldValue, newValue) {
+  return permissionInteger(oldValue) ^ permissionInteger(newValue);
+}
+
+function permissionNamesForBits(bits) {
+  return Object.keys(PermissionFlagsBits).filter((key) => (bits & PermissionFlagsBits[key]) !== 0n);
+}
+
+async function restoreRolePermissionChanges(guild, entry, permissionChange) {
+  const oldBits = permissionInteger(permissionChange.old);
+  const newBits = permissionInteger(permissionChange.new);
+  const changed = oldBits ^ newBits;
+  if (!changed || !settingsFor(guild.id).permissionRollbackEnabled || entry.executorId === client.user.id) return { changed, restored: 0n };
+  if (!entry.targetId) return { changed, restored: 0n, error: '审计日志缺少目标身份组 ID' };
+  const role = guild.roles.cache.get(entry.targetId) || await guild.roles.fetch(entry.targetId).catch(() => null);
+  const botMember = guild.members.me || await guild.members.fetchMe();
+  if (!role || role.managed || role.position >= botMember.roles.highest.position) {
+    return { changed, restored: 0n, error: '目标身份组在 Bot 层级之上、由集成管理或无法读取' };
+  }
+  const current = role.permissions.bitfield;
+  const restored = (current & ~changed) | (oldBits & changed);
+  await role.setPermissions(restored, '恢复 Bot 面板之外的身份组权限变更；审计编号 ' + entry.id);
+  return { changed, restored: changed };
+}
+
+async function restoreChannelOverwriteChanges(guild, entry, overwriteChanges) {
+  const allowChange = overwriteChanges.find((change) => change.key === 'allow');
+  const denyChange = overwriteChanges.find((change) => change.key === 'deny');
+  const create = entry.action === AuditLogEvent.ChannelOverwriteCreate;
+  const remove = entry.action === AuditLogEvent.ChannelOverwriteDelete;
+  const oldAllow = allowChange ? permissionInteger(allowChange.old) : (create ? 0n : null);
+  const newAllow = allowChange ? permissionInteger(allowChange.new) : (remove ? 0n : null);
+  const oldDeny = denyChange ? permissionInteger(denyChange.old) : (create ? 0n : null);
+  const newDeny = denyChange ? permissionInteger(denyChange.new) : (remove ? 0n : null);
+  if (oldAllow === null || newAllow === null || oldDeny === null || newDeny === null) {
+    return { changed: 0n, restored: 0n, error: '审计日志没有包含完整的 allow/deny 前后值' };
+  }
+  const changed = (oldAllow ^ newAllow) | (oldDeny ^ newDeny);
+  if (!changed || !settingsFor(guild.id).permissionRollbackEnabled || entry.executorId === client.user.id) return { changed, restored: 0n };
+  const overwriteTarget = entry.extra?.id ? entry.extra : null;
+  const channel = entry.targetId
+    ? (guild.channels.cache.get(entry.targetId) || await guild.channels.fetch(entry.targetId).catch(() => null))
+    : null;
+  const botMember = guild.members.me || await guild.members.fetchMe();
+  if (!overwriteTarget || !channel?.permissionOverwrites || !channel.permissionsFor(botMember)?.has(PermissionFlagsBits.ManageRoles)) {
+    return { changed, restored: 0n, error: '无法读取权限覆盖目标/频道，或 Bot 缺少“管理身份组”权限' };
+  }
+  const patch = {};
+  for (const key of permissionNamesForBits(changed)) {
+    const bit = PermissionFlagsBits[key];
+    patch[key] = (oldAllow & bit) !== 0n ? true : (oldDeny & bit) !== 0n ? false : null;
+  }
+  await channel.permissionOverwrites.edit(overwriteTarget.id, patch, '恢复 Bot 面板之外的频道权限变更；审计编号 ' + entry.id);
+  return { changed, restored: changed };
+}
+
+async function sendPermissionAlert(guild, embed) {
+  const setting = settingsFor(guild.id);
+  if (!setting.permissionAlertChannelId) {
+    console.warn('服务器 ' + guild.id + ' 未设置权限告警频道；变更已在控制台记录。');
+    return false;
+  }
+  const channel = await guild.channels.fetch(setting.permissionAlertChannelId).catch(() => null);
+  const botMember = await guild.members.fetchMe();
+  const sendPermission = channel?.isThread?.() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
+  const permissions = channel?.permissionsFor(botMember);
+  if (!channel?.isTextBased?.() || !channel.send || !permissions?.has([PermissionFlagsBits.ViewChannel, sendPermission, PermissionFlagsBits.EmbedLinks])) {
+    throw new Error('权限告警频道不可用，或 Bot 缺少查看、发送消息和嵌入链接权限。');
+  }
+  if (channel.isThread?.() && channel.archived) {
+    if (channel.locked && !permissions.has(PermissionFlagsBits.ManageThreads)) throw new Error('告警子区已锁定且 Bot 缺少“管理帖子”权限，无法重新打开。');
+    await channel.setArchived(false, '发布服务器权限变更警告');
+  }
+  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  return true;
+}
+
+async function applyPermissionEscalationRoleSanction(guild, executorId, setting, auditEntryId) {
+  const roleId = setting.permissionEscalationRoleId;
+  if (!roleId) return '未配置第三次处置身份组，无法执行身份组处置。';
+
+  const [member, role] = await Promise.all([
+    guild.members.fetch(executorId).catch(() => null),
+    guild.roles.fetch(roleId).catch(() => null),
+  ]);
+  const botMember = guild.members.me || await guild.members.fetchMe();
+  if (!member) return '操作者不在服务器，无法调整身份组。';
+  if (member.id === guild.ownerId) return '操作者是服务器所有者，Discord 不允许 Bot 调整其身份组。';
+  if (!role || role.id === guild.id || role.managed || role.position >= botMember.roles.highest.position) {
+    return '配置的处置身份组已失效、由集成管理或层级不低于 Bot，未能发放。';
+  }
+  if (!botMember.permissions.has(PermissionFlagsBits.Administrator) && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    return 'Bot 缺少“管理身份组”权限，未能执行身份组处置。';
+  }
+
+  const removableRoleIds = member.roles.cache
+    .filter((memberRole) => memberRole.id !== guild.id && memberRole.id !== role.id
+      && !memberRole.managed && memberRole.position < botMember.roles.highest.position)
+    .map((memberRole) => memberRole.id);
+  const unmanageableCount = member.roles.cache.filter((memberRole) => memberRole.id !== guild.id
+    && memberRole.id !== role.id && (memberRole.managed || memberRole.position >= botMember.roles.highest.position)).size;
+
+  let removalError = null;
+  if (removableRoleIds.length) {
+    try {
+      await member.roles.remove(removableRoleIds, '第 3 次触发服务器管理权限警告策略；审计编号 ' + auditEntryId);
+    } catch (error) {
+      removalError = error?.rawError?.message || error?.message || '移除身份组失败';
+    }
+  }
+
+  let assignmentError = null;
+  if (!member.roles.cache.has(role.id)) {
+    try {
+      await member.roles.add(role, '第 3 次触发服务器管理权限警告策略；审计编号 ' + auditEntryId);
+    } catch (error) {
+      assignmentError = error?.rawError?.message || error?.message || '发放处置身份组失败';
+    }
+  }
+
+  const result = [];
+  if (!removalError) result.push('已移除 ' + removableRoleIds.length + ' 个 Bot 可管理的身份组');
+  else result.push('移除身份组失败：' + removalError);
+  if (!assignmentError) result.push('已发放处置身份组 <@&' + role.id + '>');
+  else result.push('发放处置身份组失败：' + assignmentError);
+  if (unmanageableCount) result.push(unmanageableCount + ' 个由集成管理或层级高于 Bot 的身份组无法移除');
+  return result.join('；') + '。';
+}
+
+async function applyPermissionViolationPolicy(guild, entry, changedProtectedPermissions, restoreResult) {
+  const setting = settingsFor(guild.id);
+  if (!setting.permissionEscalationEnabled || !entry.executorId || entry.executorId === client.user?.id || !changedProtectedPermissions.length) return null;
+
+  let user = entry.executor || null;
+  if (!user) user = await client.users.fetch(entry.executorId).catch(() => null);
+  const counts = setting.permissionStrikeCounts;
+  const previous = Number(counts[entry.executorId]?.count || 0);
+  const strike = previous + 1;
+  counts[entry.executorId] = { count: strike, lastAt: Date.now(), lastAuditEntryId: entry.id };
+  await saveGuildData();
+  const serverName = guild.name || '该服务器';
+  const changedLabels = changedProtectedPermissions.map(permissionLabel).join('、');
+  const rollbackText = restoreResult?.restored
+    ? 'Bot 已将权限恢复到操作前状态。'
+    : restoreResult?.error
+      ? 'Bot 自动恢复失败：' + restoreResult.error + '。请立即联系 ADMIN 处理。'
+      : '自动扳回未执行；请立即联系 ADMIN 检查面板中的自动恢复设置。';
+  const dmText = strike < 3
+    ? '检测到你在「' + serverName + '」修改了受保护的服务器管理/频道管理权限（' + changedLabels + '）。' + rollbackText + '请联系服务器 ADMIN，由其在“/权限面板”中把权限设为所需的 X（允许、拒绝或继承）；请勿直接修改。当前为第 ' + strike + ' 次提醒。' + (strike === 2 ? '再次触发将移除你所有可管理身份组并发放配置的处置身份组。' : '')
+    : '检测到你在「' + serverName + '」第 3 次修改受保护的服务器管理/频道管理权限（' + changedLabels + '）。' + rollbackText + 'Bot 将尝试移除你所有可管理的身份组，并发放服务器权限面板配置的处置身份组。';
+  const dmSent = Boolean(user && await user.send({ content: dmText, allowedMentions: { parse: [] } }).then(() => true).catch(() => false));
+
+  if (strike < 3) {
+    return { strike, dmSent, action: '已记录第 ' + strike + ' 次违规' + (dmSent ? '并私信警告' : '；私信发送失败') + '。' };
+  }
+
+  const sanctionResult = await applyPermissionEscalationRoleSanction(guild, entry.executorId, setting, entry.id);
+  return { strike, dmSent, action: '第 3 次违规，' + sanctionResult + (dmSent ? '' : '私信发送失败。') };
+}
+
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessageReactions],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildModeration],
   partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
 });
 let readyWatchdog;
@@ -2275,6 +2934,132 @@ client.on('shardDisconnect', (event, shardId) => {
   console.error(`Discord 网关已断开（错误代码 ${event.code}）。`);
 });
 client.on('error', (error) => logFailure('Discord 客户端错误。', error));
+const handledPermissionAuditEntries = new Set();
+client.on('guildAuditLogEntryCreate', async (entry, guild) => {
+  if (handledPermissionAuditEntries.has(entry.id)) return;
+  handledPermissionAuditEntries.add(entry.id);
+  if (handledPermissionAuditEntries.size > 2000) handledPermissionAuditEntries.clear();
+  try {
+    if (entry.executorId === client.user?.id) return;
+    let changedBits = 0n;
+    let targetDescription = '';
+    let restoreResult = { changed: 0n, restored: 0n };
+    let roleForLog = null;
+    let channelForLog = null;
+    let overwriteTargetForLog = null;
+    if (entry.action === AuditLogEvent.RoleUpdate) {
+      const permissionChange = entry.changes.find((change) => change.key === 'permissions');
+      if (!permissionChange) return;
+      changedBits = changedPermissionBits(permissionChange.old, permissionChange.new);
+      if (!changedBits) return;
+      // Restore immediately from the audit entry's before/after values. Delay
+      // all actor and display-name lookups until the permission is back in place.
+      try {
+        restoreResult = await restoreRolePermissionChanges(guild, entry, permissionChange);
+      } catch (error) {
+        restoreResult = { changed: changedBits, restored: 0n, error: error?.rawError?.message || error?.message || 'Discord API 恢复失败' };
+      }
+      roleForLog = guild.roles.cache.get(entry.targetId) || null;
+    } else if ([AuditLogEvent.ChannelOverwriteCreate, AuditLogEvent.ChannelOverwriteUpdate, AuditLogEvent.ChannelOverwriteDelete].includes(entry.action)) {
+      const permissionChanges = entry.changes.filter((change) => change.key === 'allow' || change.key === 'deny');
+      if (!permissionChanges.length) return;
+      const allowChange = permissionChanges.find((change) => change.key === 'allow');
+      const denyChange = permissionChanges.find((change) => change.key === 'deny');
+      const create = entry.action === AuditLogEvent.ChannelOverwriteCreate;
+      const remove = entry.action === AuditLogEvent.ChannelOverwriteDelete;
+      const oldAllow = allowChange ? permissionInteger(allowChange.old) : (create ? 0n : null);
+      const newAllow = allowChange ? permissionInteger(allowChange.new) : (remove ? 0n : null);
+      const oldDeny = denyChange ? permissionInteger(denyChange.old) : (create ? 0n : null);
+      const newDeny = denyChange ? permissionInteger(denyChange.new) : (remove ? 0n : null);
+      if (oldAllow === null || newAllow === null || oldDeny === null || newDeny === null) {
+        console.warn('频道权限审计记录缺少 allow/deny 前后值，无法计算变更范围；审计编号 ' + entry.id);
+        return;
+      }
+      changedBits = (oldAllow ^ newAllow) | (oldDeny ^ newDeny);
+      if (!changedBits) return;
+      try {
+        restoreResult = await restoreChannelOverwriteChanges(guild, entry, permissionChanges);
+      } catch (error) {
+        restoreResult = { changed: changedBits, restored: 0n, error: error?.rawError?.message || error?.message || 'Discord API 恢复失败' };
+      }
+      channelForLog = guild.channels.cache.get(entry.targetId) || null;
+      overwriteTargetForLog = entry.extra;
+    } else return;
+
+    const permissionNames = permissionNamesForBits(changedBits);
+    const criticalNames = permissionNames.filter((key) => guardedPermissionKeys.includes(key));
+    let escalation = null;
+    let escalationError = null;
+    try {
+      escalation = await applyPermissionViolationPolicy(
+        guild,
+        entry,
+        permissionNames.filter((key) => escalationPermissionKeys.has(key)),
+        restoreResult,
+      );
+    } catch (error) {
+      escalationError = error?.rawError?.message || error?.message || '操作者警告策略执行失败';
+      logFailure('权限违规计数或操作者处置失败。', error);
+    }
+    if (entry.action === AuditLogEvent.RoleUpdate) {
+      targetDescription = roleForLog
+        ? '身份组：' + roleForLog.name + '（<@&' + roleForLog.id + '>）'
+        : '身份组 ID：' + entry.targetId;
+    } else {
+      const principal = overwriteTargetForLog?.id
+        ? ((overwriteTargetForLog.type === 1 || overwriteTargetForLog.user) ? '成员 ID：' + overwriteTargetForLog.id : '身份组：<@&' + overwriteTargetForLog.id + '>')
+        : '身份组或成员覆盖';
+      targetDescription = '频道：' + (channelForLog ? '<#' + channelForLog.id + '>' : entry.targetId) + '\n对象：' + principal;
+    }
+    const executorLabel = entry.executor?.tag || entry.executor?.username || (entry.executorId ? '<@' + entry.executorId + '>' : '未知操作者');
+    const restoreText = restoreResult.error
+      ? '自动恢复失败：' + restoreResult.error
+      : restoreResult.restored ? '已快速恢复到操作前的权限值。'
+        : settingsFor(guild.id).permissionRollbackEnabled ? '未执行恢复。' : '自动恢复已关闭。';
+    const embed = new EmbedBuilder()
+      .setColor(criticalNames.length ? 0xED4245 : 0xF0B132)
+      .setTitle(criticalNames.length ? '高危管理权限变更警告' : '服务器权限变更提醒')
+      .setDescription('操作者：' + executorLabel + '\n' + targetDescription
+        + '\n操作：' + entry.actionType
+        + '\n变更权限：' + permissionNames.map(permissionLabel).join('、')
+        + (criticalNames.length ? '\n高危项目：' + criticalNames.map(permissionLabel).join('、') : '')
+        + '\n处理结果：' + restoreText
+        + (escalation ? '\n违规次数：' + escalation.strike + '/3\n升级处置：' + escalation.action : '')
+        + (escalationError ? '\n违规处置策略错误：' + escalationError : '')
+        + '\n审计编号：' + entry.id
+        + (entry.reason ? '\n原操作理由：' + entry.reason : ''))
+      .setTimestamp(entry.createdAt);
+    await sendPermissionAlert(guild, embed);
+    console.warn('服务器 ' + guild.id + ' 检测到非本 Bot 发起的权限变更；审计编号 ' + entry.id + '；' + restoreText);
+  } catch (error) {
+    logFailure('权限变更监控、恢复或公告失败。', error);
+  }
+});
+client.on('channelCreate', async (channel) => {
+  if (!channel.guild || !channelKindsForBulkPermission(channel)) return;
+  const setting = guildData.settings[channel.guild.id];
+  const rules = setting?.permissionAllChannelRules || {};
+  if (!Object.keys(rules).length) return;
+  try {
+    const botMember = await channel.guild.members.fetchMe();
+    if (!botMember.permissions.has(PermissionFlagsBits.Administrator) && !botMember.permissions.has(PermissionFlagsBits.ManageRoles)) return;
+    for (const [roleId, configured] of Object.entries(rules)) {
+      const role = await channel.guild.roles.fetch(roleId).catch(() => null);
+      if (!role || role.position >= botMember.roles.highest.position || role.managed) continue;
+      const patch = {};
+      for (const [key, allow] of Object.entries(configured)) {
+        if (allow === null || !PermissionFlagsBits[key]) continue;
+        const category = permissionKeyToCategory.get(key);
+        if (category && channelPermissionsFor(channel, category).includes(key)) patch[key] = allow;
+      }
+      if (Object.keys(patch).length) {
+        await channel.permissionOverwrites.edit(role.id, patch, '应用权限面板全频道规则到新频道');
+      }
+    }
+  } catch (error) {
+    logFailure('新频道自动应用权限面板规则失败。', error);
+  }
+});
 client.on('messageReactionAdd', async (incomingReaction, user) => {
   if (user.id === client.user?.id || user.bot) return;
   try {
@@ -2318,6 +3103,7 @@ client.once('clientReady', async () => {
     process.exit(1);
     return;
   }
+  schedulePersistedManagementDeleteConfirmations();
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -2376,6 +3162,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
   console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
+  if (await handlePermissionPanelInteraction(interaction)) return;
   if (interaction.isModalSubmit() && interaction.customId.startsWith('mgmt-reason:')) {
     const token = interaction.customId.split(':')[1];
     const pending = pendingManagementActions.get(token);
@@ -3120,7 +3907,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
   const messageCommand = interaction.isMessageContextMenuCommand()
-    && ['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定', '解锁'].includes(interaction.commandName);
+    && ['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定', '解锁', '管理解锁'].includes(interaction.commandName);
   const userCommand = interaction.isUserContextMenuCommand()
     && ['处罚', '永封'].includes(interaction.commandName);
   const punishmentForm = interaction.isModalSubmit()
@@ -3252,6 +4039,33 @@ client.on('interactionCreate', async (interaction) => {
       getUser: () => null,
     };
 
+    if (commandName === '权限面板') {
+      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+        await interaction.editReply('需要“管理服务器”权限才能配置权限面板。');
+        return;
+      }
+      await interaction.guild.channels.fetch();
+      await interaction.guild.roles.fetch();
+      const session = {
+        token: randomBytes(8).toString('hex'),
+        guild: interaction.guild,
+        guildId: interaction.guildId,
+        creatorId: interaction.user.id,
+        scope: 'guild',
+        category: 'administration',
+        selectedPermissions: [],
+        updatedAt: Date.now(),
+      };
+      permissionPanelSessions.set(session.token, session);
+      const message = await interaction.editReply({
+        content: '权限配置仅在此处对你可见。',
+        embeds: [permissionPanelEmbed(interaction.guild, session)],
+        components: permissionPanelComponents(session),
+      });
+      session.messageId = message.id;
+      return;
+    }
+
     if (commandName === '处罚面板') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
         await interaction.reply({ content: '需要“管理服务器”权限才能配置处罚面板。', flags: MessageFlags.Ephemeral });
@@ -3277,7 +4091,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       await interaction.editReply('管理组删帖设置保存在本服务器的加密配置中。独立面板已发送到当前频道。');
-      await interaction.followUp({ content: '可选设置删帖操作记录频道和办公室提醒频道。主管理身份组从 `/管理组面板` 读取；删帖由发起人直接二次确认，不走投票。',
+      await interaction.followUp({ content: '可选设置删帖操作记录频道和办公室提醒频道。主管理身份组从 `/管理组面板` 读取；发起人计 1 票，需 3 名不同主管理组成员同意，第三票后由最后审批者等待 5 秒再确认。',
         embeds: [managementDeletePanelEmbed(interaction.guildId)], components: managementDeletePanel(interaction.guildId) });
       return;
     }
@@ -3294,12 +4108,14 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === '管理删帖') {
-      await createManagementDeleteProposal(interaction, options.getString('链接', true).trim());
+      const link = messageCommand ? interaction.targetMessage.url : options.getString('链接', true).trim();
+      await createManagementDeleteProposal(interaction, link);
       return;
     }
 
-    if (commandName === '解锁') {
-      await executeManagementThreadUnlock(interaction, options.getString('链接', true).trim());
+    if (['解锁', '管理解锁'].includes(commandName)) {
+      const link = messageCommand ? interaction.targetMessage.url : options.getString('链接', true).trim();
+      await executeManagementThreadUnlock(interaction, link);
       return;
     }
 
@@ -4092,7 +4908,10 @@ client.on('interactionCreate', async (interaction) => {
       console.error('这次交互可能已超时，或已被另一个 Bot 进程确认。请确保相同 Token 只运行一个 Bot 实例。');
       return;
     }
-    const message = '操作失败。请检查机器人权限、身份组层级和控制台错误信息。';
+    const managementCommands = ['管理删帖', '管理锁定', '管理解锁', '解锁'];
+    const message = managementCommands.includes(commandName)
+      ? `${commandName}执行失败：${error.message || '未知错误'}。请检查管理组身份组、审批/公示频道配置和 Bot 权限。`
+      : '操作失败。请检查机器人权限、身份组层级和控制台错误信息。';
     if (interaction.deferred || interaction.replied) await interaction.editReply({ content: message, allowedMentions: { parse: [] } }).catch(() => {});
     else await interaction.reply({ content: message, flags: MessageFlags.Ephemeral }).catch(() => {});
   }
