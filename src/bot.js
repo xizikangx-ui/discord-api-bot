@@ -638,17 +638,12 @@ async function ensureManagementAnnouncementThread(guild, tier = 'senior', roleId
   return thread;
 }
 
-function punishmentNoticeEmbed({ user, moderator, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId, replacedCaseId = null,
-  executedGuildNames = null, absentGuildNames = [], noticeOnly = false }) {
-  const action = hasBan ? '封禁并踢出' : hasWarning ? '处罚通知' : '禁言处罚';
+function punishmentNoticeEmbed({ user, moderator, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId, replacedCaseId = null }) {
   return new EmbedBuilder().setColor(hasBan ? 0x992D22 : timeoutDays ? 0xE67E22 : 0xF1C40F)
-    .setTitle(noticeOnly ? '📣 处罚通知（本服仅公示）' : `${hasBan ? '⛔' : hasWarning ? '⚠️' : '🔇'} ${action}`)
+    .setTitle(hasBan ? '⛔ 封禁并踢出' : '⚠️ 处罚通知')
     .addFields(
       { name: '成员', value: `<@${user.id}>`, inline: true },
       { name: '管理员', value: `<@${moderator.id}>`, inline: true },
-      ...(noticeOnly ? [{ name: '本服执行结果', value: '目标不在本服务器，本服未执行警告或禁言。' }] : []),
-      ...(executedGuildNames ? [{ name: '实际执行服务器', value: executedGuildNames.join('、') }] : []),
-      ...(absentGuildNames.length ? [{ name: '未执行（目标不在服）', value: absentGuildNames.join('、') }] : []),
       { name: '原因', value: reason.slice(0, 1024) },
       ...(timeoutDays ? [{ name: '禁言时长', value: `${timeoutDays} 天`, inline: true }] : []),
       ...(hasWarning ? [{ name: '警告', value: warningDays ? `${warningDays} 天` : '不自动移除', inline: true }] : []),
@@ -893,14 +888,14 @@ async function executePunishmentRequestUnlocked(interaction, request) {
   const executedGuildNames = contexts.map((item) => item.guild.name);
   const absentGuildNames = absentGuilds.map((guild) => guild.name);
   const logTargets = [
-    ...contexts.map(({ guild, previousCase }) => ({ guild, previousCase, noticeOnly: false })),
-    ...absentGuilds.map((guild) => ({ guild, previousCase: null, noticeOnly: true })),
+    ...contexts.map(({ guild, previousCase }) => ({ guild, previousCase })),
+    ...absentGuilds.map((guild) => ({ guild, previousCase: null })),
   ];
-  const logResults = await Promise.all(logTargets.map(async ({ guild, previousCase, noticeOnly }) => ({
+  const logResults = await Promise.all(logTargets.map(async ({ guild, previousCase }) => ({
     guildId: guild.id,
     ...(await postPunishment(guild, {
       user, moderator: interaction.user, mode, reason, timeoutDays, hasWarning, hasBan, warningDays, caseId,
-      replacedCaseId: previousCase?.id || null, executedGuildNames, absentGuildNames, noticeOnly,
+      replacedCaseId: previousCase?.id || null,
     })),
   })));
   const failedLogs = logResults.filter((logged) => !logged.primarySent || !logged.auditSent).length;
@@ -914,8 +909,7 @@ async function executePunishmentRequestUnlocked(interaction, request) {
       const channel = interaction.channel || await interaction.guild.channels.fetch(interaction.channelId);
       const replacedCaseIds = [...new Set(contexts.map((item) => item.previousCase?.id).filter(Boolean))].join('、');
       await channel.send({ embeds: [punishmentNoticeEmbed({ user, moderator: interaction.user, reason, timeoutDays, hasWarning, hasBan,
-        warningDays, caseId, replacedCaseId: replacedCaseIds || null,
-        executedGuildNames, absentGuildNames, noticeOnly: absentGuilds.some((guild) => guild.id === interaction.guildId) })],
+        warningDays, caseId, replacedCaseId: replacedCaseIds || null })],
       allowedMentions: { parse: [] } });
       announcedInCurrentChannel = true;
     } catch (error) { logFailure('当前频道处罚公示发送失败。', error); }
