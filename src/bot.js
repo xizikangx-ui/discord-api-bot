@@ -24,6 +24,7 @@ if (proxyUrl) {
 }
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType,
+  ContextMenuCommandBuilder, ApplicationCommandType,
   PermissionFlagsBits, MessageFlags, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ChannelSelectMenuBuilder, RoleSelectMenuBuilder, UserSelectMenuBuilder,
   ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials,
@@ -193,9 +194,12 @@ function recoverPunishmentFromConfirmationMessage(interaction) {
 }
 
 const commands = [
+  ...['处罚', '永封', '删帖', '锁定并关闭'].map((name) =>
+    new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.Message)),
   new SlashCommandBuilder()
     .setName('说话').setDescription('让机器人以自己的身份在当前频道或子区发言')
-    .addStringOption((o) => o.setName('内容').setDescription('机器人要发送的消息').setRequired(true).setMaxLength(1900))
+    .addStringOption((o) => o.setName('内容').setDescription('机器人要发送的消息（与图片至少填写一项）').setRequired(false).setMaxLength(1900))
+    .addAttachmentOption((o) => o.setName('图片').setDescription('上传要由机器人发送的图片').setRequired(false))
     .addStringOption((o) => o.setName('回复消息链接').setDescription('可选：粘贴当前频道/子区中要回复的消息链接').setRequired(false).setMaxLength(200)),
   new SlashCommandBuilder()
     .setName('编辑说话').setDescription('通过消息链接编辑机器人之前发送的消息')
@@ -2496,8 +2500,37 @@ client.on('interactionCreate', async (interaction) => {
     }
     return;
   }
-  if (!interaction.isChatInputCommand()) return;
+  const messageCommand = interaction.isMessageContextMenuCommand()
+    && ['处罚', '永封', '删帖', '锁定并关闭'].includes(interaction.commandName);
+  const punishmentForm = interaction.isModalSubmit()
+    && interaction.customId.startsWith('message-punish:');
+  if (!interaction.isChatInputCommand() && !messageCommand && !punishmentForm) return;
+  let commandName = interaction.commandName;
+  let options = interaction.options;
   try {
+    if (messageCommand && ['处罚', '永封'].includes(commandName)) {
+      if (!isConfiguredManagementMember(interaction)) {
+        await interaction.reply({ content: '您不具备该权限。', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const ban = commandName === '永封';
+      const modal = new ModalBuilder()
+        .setCustomId(`message-punish:${ban ? 'ban' : 'punish'}:${interaction.targetMessage.author.id}:${interaction.user.id}`)
+        .setTitle(`${commandName}消息作者`);
+      const field = (id, label, required, max, value) => {
+        const input = new TextInputBuilder().setCustomId(id).setLabel(label)
+          .setStyle(TextInputStyle.Short).setRequired(required).setMaxLength(max);
+        if (value) input.setValue(value);
+        return new ActionRowBuilder().addComponents(input);
+      };
+      modal.addComponents(field('reason', '原因', true, 400));
+      if (!ban) modal.addComponents(
+        field('mode', '方式：仅警告 / 仅禁言 / 警告并禁言', true, 20, '警告并禁言'),
+        field('timeout', '禁言天数（1–90；有禁言时必填）', false, 2),
+        field('warning', '警告天数（1–90；留空不自动移除）', false, 2));
+      await interaction.showModal(modal);
+      return;
+    }
     // Each command interaction is acknowledged immediately. discord.js invokes
     // this async listener independently for every interaction, so slow API work
     // below does not put other commands into a shared queue.
@@ -2510,7 +2543,50 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '处罚面板') {
+    // Route all entry points through the same authorization, confirmation and approval code.
+    let values;
+    if (punishmentForm) {
+      const match = interaction.customId.match(/^message-punish:(ban|punish):(\d{17,20}):(\d{17,20})$/);
+      if (!match || match[3] !== interaction.user.id) {
+        await interaction.editReply('此表单不属于你，请重新从消息菜单发起。');
+        return;
+      }
+      commandName = match[1] === 'ban' ? '永封' : '处罚';
+      values = { user_id: match[2], 原因: interaction.fields.getTextInputValue('reason').trim() };
+      if (!values.原因) { await interaction.editReply('请填写处罚原因。'); return; }
+      if (commandName === '处罚') {
+        const mode = interaction.fields.getTextInputValue('mode').trim();
+        values.方式 = new Map([
+          ['仅警告', 'warning'], ['仅禁言', 'timeout'], ['警告并禁言', 'both'],
+          ['warning', 'warning'], ['timeout', 'timeout'], ['both', 'both'],
+        ]).get(mode);
+        if (!values.方式) { await interaction.editReply('处罚方式请填写：仅警告、仅禁言或警告并禁言。'); return; }
+        for (const [id, name] of [['timeout', '禁言天数'], ['warning', '警告天数']]) {
+          const input = interaction.fields.getTextInputValue(id).trim();
+          if (input && (!/^\d{1,2}$/.test(input) || Number(input) < 1 || Number(input) > 90)) {
+            await interaction.editReply(`${name}必须为 1 到 90 的整数。`);
+            return;
+          }
+          values[name] = input ? Number(input) : null;
+        }
+      }
+    } else if (messageCommand) {
+      values = { 链接: interaction.targetMessage.url };
+      if (commandName === '删帖') {
+        commandName = '内容删除申请';
+        values.目标类型 = 'thread';
+      } else {
+        commandName = '帖子操作申请';
+        values.操作 = 'lock-close';
+      }
+    }
+    if (values) options = {
+      getString: (name) => values[name] ?? null,
+      getInteger: (name) => values[name] ?? null,
+      getUser: () => null,
+    };
+
+    if (commandName === '处罚面板') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
         await interaction.reply({ content: '需要“管理服务器”权限才能配置处罚面板。', flags: MessageFlags.Ephemeral });
         return;
@@ -2519,7 +2595,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '版务审批面板') {
+    if (commandName === '版务审批面板') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
         await interaction.editReply('需要“管理服务器”权限才能配置版务审批。');
         return;
@@ -2529,7 +2605,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '反应清理面板') {
+    if (commandName === '反应清理面板') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
         await interaction.editReply('需要“管理服务器”权限才能配置表情反应清理。');
         return;
@@ -2540,9 +2616,9 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '帖子操作申请' || interaction.commandName === '内容删除申请') {
+    if (commandName === '帖子操作申请' || commandName === '内容删除申请') {
       const setting = settingsFor(interaction.guildId);
-      const link = interaction.options.getString('链接', true).trim();
+      const link = options.getString('链接', true).trim();
       const parsed = parseDiscordMessageLink(link);
       if (!parsed || parsed.guildId !== interaction.guildId) {
         await interaction.editReply('链接格式不正确。请复制本服务器的频道/子区链接、帖子链接，或具体消息的 Discord 链接。');
@@ -2557,8 +2633,8 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply('只有已配置的操作员身份组成员可以提交版务申请。');
         return;
       }
-      const isThreadAction = interaction.commandName === '帖子操作申请';
-      const action = isThreadAction ? interaction.options.getString('操作', true) : interaction.options.getString('目标类型', true);
+      const isThreadAction = commandName === '帖子操作申请';
+      const action = isThreadAction ? options.getString('操作', true) : options.getString('目标类型', true);
       const actionLabel = isThreadAction
         ? ({ lock: '锁定帖子', close: '关闭帖子', 'lock-close': '锁定并关闭帖子' })[action]
         : action === 'thread' ? '删除整个帖子' : '删除指定消息';
@@ -2650,7 +2726,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '管理组面板') {
+    if (commandName === '管理组面板') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
         await interaction.editReply('需要“管理服务器”权限才能配置管理组面板。');
         return;
@@ -2664,7 +2740,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '中层管理面板') {
+    if (commandName === '中层管理面板') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
         await interaction.editReply('需要“管理服务器”权限才能配置中层管理面板。');
         return;
@@ -2673,9 +2749,9 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '管理组名单' || interaction.commandName === '中层管理名单') {
-      const tier = interaction.commandName === '中层管理名单' ? 'middle' : 'senior';
-      const roleId = tier === 'middle' ? interaction.options.getRole('身份组', true).id : null;
+    if (commandName === '管理组名单' || commandName === '中层管理名单') {
+      const tier = commandName === '中层管理名单' ? 'middle' : 'senior';
+      const roleId = tier === 'middle' ? options.getRole('身份组', true).id : null;
       const setting = settingsFor(interaction.guildId);
       const track = managementTrack(setting, tier, roleId);
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
@@ -2693,9 +2769,9 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '管理组卸任' || interaction.commandName === '中层管理卸任') {
-      const tier = interaction.commandName === '中层管理卸任' ? 'middle' : 'senior';
-      const roleId = tier === 'middle' ? interaction.options.getRole('身份组', true).id : null;
+    if (commandName === '管理组卸任' || commandName === '中层管理卸任') {
+      const tier = commandName === '中层管理卸任' ? 'middle' : 'senior';
+      const roleId = tier === 'middle' ? options.getRole('身份组', true).id : null;
       const setting = settingsFor(interaction.guildId);
       const track = managementTrack(setting, tier, roleId);
       if (!track.roleId || !track.channelId) {
@@ -2715,7 +2791,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       const endedAt = Date.now();
       const activeTerm = track.terms.find((term) => term.userId === member.id && !term.endedAt);
-      const reason = interaction.options.getString('理由')?.trim() || '';
+      const reason = options.getString('理由')?.trim() || '';
       const rolesToRemove = [role];
       if (tier === 'senior' && track.companionRoleId) {
         const companionRole = await interaction.guild.roles.fetch(track.companionRoleId);
@@ -2743,20 +2819,20 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '定时提醒') {
+    if (commandName === '定时提醒') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
         await interaction.editReply('需要“管理服务器”权限才能管理定时提醒。');
         return;
       }
-      const subcommand = interaction.options.getSubcommand();
+      const subcommand = options.getSubcommand();
       if (subcommand === '添加') {
-        const channel = interaction.options.getChannel('频道', true);
-        const minutes = interaction.options.getInteger('分钟后');
-        const seconds = interaction.options.getInteger('秒后');
-        const repeat = interaction.options.getInteger('重复间隔分钟', true);
-        const user = interaction.options.getUser('提及成员');
-        const usersText = interaction.options.getString('提及多人')?.trim() || '';
-        const role = interaction.options.getRole('提及身份组');
+        const channel = options.getChannel('频道', true);
+        const minutes = options.getInteger('分钟后');
+        const seconds = options.getInteger('秒后');
+        const repeat = options.getInteger('重复间隔分钟', true);
+        const user = options.getUser('提及成员');
+        const usersText = options.getString('提及多人')?.trim() || '';
+        const role = options.getRole('提及身份组');
         if ((minutes === null) === (seconds === null)) { await interaction.editReply('“分钟后”和“秒后”必须填写一个，而且只能填写一个；5 秒是最短首次提醒时间。'); return; }
         if ([Boolean(user), Boolean(usersText), Boolean(role)].filter(Boolean).length > 1) { await interaction.editReply('一次提醒只能选择单个成员、多人列表或一个身份组中的一种提及方式。'); return; }
         if (repeat > 0 && repeat < 10) { await interaction.editReply('重复间隔至少需要 10 分钟，或填写 0 表示只提醒一次。'); return; }
@@ -2786,7 +2862,7 @@ client.on('interactionCreate', async (interaction) => {
         const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         const firstDelayMs = minutes !== null ? minutes * 60_000 : seconds * 1000;
         guildData.reminders.push({ id, guildId: interaction.guildId, channelId: channel.id, userIds: uniqueUserIds,
-          roleId: role?.id || null, content: interaction.options.getString('内容', true), nextAt: Date.now() + firstDelayMs, intervalMs: repeat * 60_000 });
+          roleId: role?.id || null, content: options.getString('内容', true), nextAt: Date.now() + firstDelayMs, intervalMs: repeat * 60_000 });
         await saveGuildData();
         const firstDelayText = minutes !== null ? `${minutes} 分钟` : `${seconds} 秒`;
         await interaction.editReply(`已创建提醒，编号：\`${id}\`。首次提醒将在 ${firstDelayText} 后发送${repeat ? `，之后每 ${repeat} 分钟重复` : '，且只发送一次'}。`);
@@ -2798,7 +2874,7 @@ client.on('interactionCreate', async (interaction) => {
           return `编号：\`${item.id}\` · <#${item.channelId}> · <t:${Math.floor(item.nextAt / 1000)}:R> · ${item.intervalMs ? `每 ${item.intervalMs / 60000} 分钟` : '一次'} · ${targets.join('、') || '无提及'} · ${item.content}`;
         }).join('\n') : '当前没有定时提醒。');
       } else {
-        const id = interaction.options.getString('编号', true);
+        const id = options.getString('编号', true);
         const before = guildData.reminders.length;
         guildData.reminders = guildData.reminders.filter((item) => !(item.guildId === interaction.guildId && item.id === id));
         await saveGuildData();
@@ -2807,18 +2883,18 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '处罚' || interaction.commandName === '永封') {
+    if (commandName === '处罚' || commandName === '永封') {
       if (!isConfiguredManagementMember(interaction)) {
         await interaction.editReply('您不具备该权限。');
         return;
       }
-      const isPermanentBan = interaction.commandName === '永封';
-      const mode = isPermanentBan ? 'ban' : interaction.options.getString('方式', true);
+      const isPermanentBan = commandName === '永封';
+      const mode = isPermanentBan ? 'ban' : options.getString('方式', true);
       const hasBan = mode === 'ban';
       const hasWarning = !hasBan && mode !== 'timeout';
       const hasTimeout = !hasBan && mode !== 'warning';
-      const selectedUser = interaction.options.getUser('成员');
-      const rawUserId = interaction.options.getString('user_id')?.trim();
+      const selectedUser = options.getUser('成员');
+      const rawUserId = options.getString('user_id')?.trim();
       if (Boolean(selectedUser) === Boolean(rawUserId)) {
         await interaction.editReply('请在“成员”和“用户 ID”中任选一项填写。目标只在另一互通服务器时请填写用户 ID 或用户提及。');
         return;
@@ -2833,9 +2909,9 @@ client.on('interactionCreate', async (interaction) => {
         try { user = await client.users.fetch(match[1] || match[2]); }
         catch { await interaction.editReply('无法通过这个 ID 找到 Discord 用户，请检查 ID 是否正确。'); return; }
       }
-      const reason = interaction.options.getString('原因', true);
-      const timeoutDays = isPermanentBan ? null : interaction.options.getInteger('禁言天数');
-      const warningDays = isPermanentBan ? null : interaction.options.getInteger('警告天数');
+      const reason = options.getString('原因', true);
+      const timeoutDays = isPermanentBan ? null : options.getInteger('禁言天数');
+      const warningDays = isPermanentBan ? null : options.getInteger('警告天数');
       if (hasTimeout && !timeoutDays) { await interaction.editReply('此处罚方式需要填写“禁言天数”。'); return; }
       if (!hasTimeout && timeoutDays) { await interaction.editReply('此处罚方式不能填写禁言天数，请更改处罚方式。'); return; }
       if (!hasWarning && warningDays) { await interaction.editReply('此处罚方式不能填写警告天数，请更改处罚方式。'); return; }
@@ -2936,12 +3012,12 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '撤销处罚') {
+    if (commandName === '撤销处罚') {
       if (!isConfiguredManagementMember(interaction)) {
         await interaction.editReply('您不具备该权限。');
         return;
       }
-      const caseId = interaction.options.getString('处罚编号', true).trim();
+      const caseId = options.getString('处罚编号', true).trim();
       const pairedGuildIds = punishmentGuildIds();
       const searchableGuildIds = pairedGuildIds.includes(interaction.guildId) ? pairedGuildIds : [interaction.guildId];
       const record = guildData.punishmentCases.find((item) => searchableGuildIds.includes(item.guildId) && item.id === caseId);
@@ -3053,7 +3129,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.commandName === '说话') {
+    if (commandName === '说话') {
       const target = interaction.channel;
       if (!target?.isTextBased() || !target.guildId || target.guildId !== interaction.guildId) {
         await interaction.editReply('请在本服务器的文字频道或子区中使用此指令。');
@@ -3070,7 +3146,24 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply(`机器人在当前${target.isThread() ? '子区' : '频道'}缺少“查看频道”或“${target.isThread() ? '在子区内发送消息' : '发送消息'}”权限。论坛帖子还需要机器人有权访问该帖子，且帖子未被锁定。`);
         return;
       }
-      const content = interaction.options.getString('内容', true);
+      const content = options.getString('内容') || '';
+      const picture = options.getAttachment('图片');
+      if (!content.trim() && !picture) {
+        await interaction.editReply('请至少填写文字内容或上传一张图片。');
+        return;
+      }
+      if (picture && !/^image\/(png|jpeg|gif|webp|avif)$/i.test(picture.contentType || '')) {
+        await interaction.editReply('请上传 PNG、JPEG、GIF、WebP 或 AVIF 格式的图片。');
+        return;
+      }
+      if (picture && !botPermissions.has(PermissionFlagsBits.AttachFiles)) {
+        await interaction.editReply('机器人在当前频道或子区缺少“附加文件”权限。');
+        return;
+      }
+      if (picture && interaction.attachmentSizeLimit && picture.size > interaction.attachmentSizeLimit) {
+        await interaction.editReply('图片超过当前服务器的附件大小限制，请压缩后重试。');
+        return;
+      }
       const mentionsEveryone = /@(everyone|here)\b/i.test(content);
       const mentionedRoleIds = [...content.matchAll(/<@&(\d{17,20})>/g)].map((match) => match[1]);
       if (mentionsEveryone && !hasPermission(interaction, PermissionFlagsBits.MentionEveryone)) {
@@ -3099,7 +3192,7 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
       }
-      const replyLink = interaction.options.getString('回复消息链接');
+      const replyLink = options.getString('回复消息链接');
       let replyOptions = {};
       if (replyLink) {
         let parsed;
@@ -3125,13 +3218,14 @@ client.on('interactionCreate', async (interaction) => {
         }
         replyOptions = { reply: { messageReference: sourceMessage.id, failIfNotExists: false } };
       }
-      await target.send({ content, ...replyOptions,
+      await target.send({ content: content || undefined, ...replyOptions,
+        ...(picture ? { files: [{ attachment: picture.url, name: picture.name }] } : {}),
         allowedMentions: { parse: ['users', 'roles', ...(mentionsEveryone ? ['everyone'] : [])], repliedUser: false } });
       await interaction.editReply(replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。');
       return;
     }
 
-    if (interaction.commandName === '编辑说话') {
+    if (commandName === '编辑说话') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageMessages)) {
         await interaction.editReply('你需要“管理消息”权限才能使用此指令。');
         return;
@@ -3141,7 +3235,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply('为了不在公开频道显示使用者，请在仅管理人员可见的私密频道中使用此指令。');
         return;
       }
-      const link = interaction.options.getString('消息链接', true);
+      const link = options.getString('消息链接', true);
       let parsed;
       try { parsed = new URL(link); } catch {
         await interaction.editReply('消息链接格式不正确，请复制 Discord 的“复制消息链接”。');
@@ -3172,19 +3266,19 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply('出于安全限制，只能编辑此机器人的消息。');
         return;
       }
-      await message.edit({ content: interaction.options.getString('新内容', true), allowedMentions: { parse: [] } });
+      await message.edit({ content: options.getString('新内容', true), allowedMentions: { parse: [] } });
       await interaction.editReply('已更新机器人消息。');
       return;
     }
 
-    if (interaction.commandName === '配置身份组') {
+    if (commandName === '配置身份组') {
       if (!hasPermission(interaction, PermissionFlagsBits.ManageRoles)) {
         await interaction.editReply('你需要“管理身份组”权限才能使用此指令。');
         return;
       }
-      const action = interaction.options.getSubcommand();
-      const user = interaction.options.getUser('成员', true);
-      const role = interaction.options.getRole('身份组', true);
+      const action = options.getSubcommand();
+      const user = options.getUser('成员', true);
+      const role = options.getRole('身份组', true);
       const guild = interaction.guild;
       const [member, botMember] = await Promise.all([guild.members.fetch(user.id), guild.members.fetchMe()]);
       if (role.id === guild.id || role.managed || role.position >= botMember.roles.highest.position) {
@@ -3205,7 +3299,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
   } catch (error) {
-    logFailure(`/${interaction.commandName} 执行失败（交互 ID ${interaction.id}，PID ${process.pid}）。`, error);
+    logFailure(`/${commandName} 执行失败（交互 ID ${interaction.id}，PID ${process.pid}）。`, error);
     if (error.code === 10062) {
       console.error('这次交互可能已超时，或已被另一个 Bot 进程确认。请确保相同 Token 只运行一个 Bot 实例。');
       return;
