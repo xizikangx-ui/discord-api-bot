@@ -197,7 +197,7 @@ function recoverPunishmentFromConfirmationMessage(interaction) {
 }
 
 const commands = [
-  ...['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定'].map((name) =>
+  ...['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定', '解锁'].map((name) =>
     new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.Message)),
   ...['处罚', '永封'].map((name) =>
     new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.User)),
@@ -237,10 +237,13 @@ const commands = [
     .setName('版务审批面板').setDescription('配置帖子操作和内容删除的审批流程')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
-    .setName('管理删帖面板').setDescription('配置管理组删帖审批和办公室提醒')
+    .setName('管理删帖面板').setDescription('配置管理组删帖记录和办公室提醒')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
-    .setName('管理删帖').setDescription('发起管理组投票，审批后删除整个帖子')
+    .setName('管理删帖').setDescription('发起管理组删帖并进行二次确认')
+    .addStringOption((o) => o.setName('链接').setDescription('粘贴本服务器帖子内一条消息的链接').setRequired(true).setMaxLength(200)),
+  new SlashCommandBuilder()
+    .setName('解锁').setDescription('由主管理组成员解锁并重新开放一个帖子')
     .addStringOption((o) => o.setName('链接').setDescription('粘贴本服务器帖子内一条消息的链接').setRequired(true).setMaxLength(200)),
   new SlashCommandBuilder()
     .setName('管理锁定').setDescription('由管理组成员直接锁定并关闭一个帖子')
@@ -1084,27 +1087,20 @@ function moderationApprovalPanel(guildId) {
 function managementDeletePanelEmbed(guildId) {
   const setting = settingsFor(guildId);
   const managerRoleId = managementTrack(setting, 'senior').roleId;
-  return new EmbedBuilder().setColor(0x5865F2).setTitle('管理组删帖审批面板')
-    .setDescription(`审批记录频道：${setting.managementDeleteApprovalChannelId ? `<#${setting.managementDeleteApprovalChannelId}>` : '尚未设置'}\n办公室提醒频道：${setting.managementDeleteOfficeChannelId ? `<#${setting.managementDeleteOfficeChannelId}>` : '尚未设置'}\n审批身份组：${managerRoleId ? `<@&${managerRoleId}>` : '请先在「管理组面板」设置主管理身份组'}\n同意票数：3 票（申请人计 1 票）\n\n主管理组成员可通过右键消息「管理删帖」或使用 /管理删帖 申请删除整个帖子。第三票需要经过 5 秒延时确认后才会执行。办公室频道会收到申请链接并提及管理组。管理组执行「管理锁定」时会先填写理由，成功后在操作所在频道公示操作人、理由和帖子链接。`);
+  return new EmbedBuilder().setColor(0x5865F2).setTitle('管理组删帖面板')
+    .setDescription(`操作记录频道：${setting.managementDeleteApprovalChannelId ? `<#${setting.managementDeleteApprovalChannelId}>` : '尚未设置（可选）'}\n办公室提醒频道：${setting.managementDeleteOfficeChannelId ? `<#${setting.managementDeleteOfficeChannelId}>` : '尚未设置（可选）'}\n可用身份组：${managerRoleId ? `<@&${managerRoleId}>` : '请先在「管理组面板」设置主管理身份组'}\n\n主管理组成员通过右键消息「管理删帖」或使用 /管理删帖 后，会直接收到删除确认按钮。按钮等待 5 秒后启用；发起人确认后立即删除整个帖子，不再计票。取消或 5 分钟未确认都不会删除。办公室频道（如已设置）会收到提及管理组的操作提醒。\n\n管理组执行「管理锁定」时仍会先填写理由，成功后在操作所在频道公示操作人、理由和帖子链接。`);
 }
 
 function managementDeletePanel(guildId) {
   const setting = settingsFor(guildId);
   return [
-    new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`mgmtdeletecfg-approval:${guildId}`).setPlaceholder('选择管理组删帖审批记录频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+    new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`mgmtdeletecfg-approval:${guildId}`).setPlaceholder('选择管理组删帖操作记录频道（可选）').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`mgmtdeletecfg-office:${guildId}`).setPlaceholder('选择办公室提醒频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`mgmtdeletecfg-clear-approval:${guildId}`).setLabel('清除审批频道').setStyle(ButtonStyle.Secondary).setDisabled(!setting.managementDeleteApprovalChannelId),
+      new ButtonBuilder().setCustomId(`mgmtdeletecfg-clear-approval:${guildId}`).setLabel('清除记录频道').setStyle(ButtonStyle.Secondary).setDisabled(!setting.managementDeleteApprovalChannelId),
       new ButtonBuilder().setCustomId(`mgmtdeletecfg-clear-office:${guildId}`).setLabel('清除办公室频道').setStyle(ButtonStyle.Secondary).setDisabled(!setting.managementDeleteOfficeChannelId),
     ),
   ];
-}
-
-function managementDeleteVoteComponents(proposal) {
-  return [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`mgmtdelete-vote:yes:${proposal.id}`).setLabel('同意删除').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`mgmtdelete-vote:no:${proposal.id}`).setLabel('拒绝').setStyle(ButtonStyle.Secondary),
-  )];
 }
 
 function managementDeleteConfirmationComponents(proposalId, token, disabled = true) {
@@ -1117,7 +1113,7 @@ function managementDeleteConfirmationComponents(proposalId, token, disabled = tr
 async function notifyManagementDeleteOffice(guild, proposal) {
   const setting = settingsFor(guild.id);
   const roleId = managementTrack(setting, 'senior').roleId;
-  if (!setting.managementDeleteOfficeChannelId || !roleId || !proposal.approvalMessageId) throw new Error('请在管理删帖面板设置办公室提醒频道，并在管理组面板设置主管理身份组。');
+  if (!setting.managementDeleteOfficeChannelId || !roleId) return false;
   const [channel, role, botMember] = await Promise.all([
     guild.channels.fetch(setting.managementDeleteOfficeChannelId).catch(() => null),
     guild.roles.fetch(roleId).catch(() => null),
@@ -1131,11 +1127,19 @@ async function notifyManagementDeleteOffice(guild, proposal) {
   if (!role.mentionable && !permissions.has(PermissionFlagsBits.MentionEveryone)) {
     throw new Error('请允许 Bot 在办公室提醒频道提及主管理身份组，或开启该身份组的“允许任何人提及”。');
   }
-  const jumpUrl = `https://discord.com/channels/${proposal.guildId}/${proposal.approvalChannelId}/${proposal.approvalMessageId}`;
+  const jumpUrl = proposal.approvalChannelId && proposal.approvalMessageId
+    ? `\n操作记录：https://discord.com/channels/${proposal.guildId}/${proposal.approvalChannelId}/${proposal.approvalMessageId}`
+    : '';
+  const notice = proposal.status === 'completed'
+    ? '管理组已确认并完成删帖操作。'
+    : proposal.status === 'failed'
+      ? '管理组删帖执行失败，请查看操作记录。'
+      : '有管理组删帖操作待发起人二次确认（无需投票审批）。';
   await channel.send({
-    content: `<@&${roleId}> 有新的管理组删帖审批，请在审批卡投票：${jumpUrl}\n目标帖子：${proposal.targetLink}\n申请编号：${proposal.id}`,
+    content: `<@&${roleId}> ${notice}\n目标帖子：${proposal.targetLink}\n申请编号：${proposal.id}${jumpUrl}`,
     allowedMentions: { parse: [], roles: [roleId] },
   });
+  return true;
 }
 
 function isOpenModerationProposal(proposal) {
@@ -1157,16 +1161,15 @@ function moderationVoteComponents(proposal) {
 function moderationProposalEmbed(proposal) {
   const operatorVotes = proposal.operatorVotes?.length || 0;
   const reviewerVotes = proposal.reviewerVotes?.length || 0;
-  const managementVotes = (proposal.managementVotes || []).filter((vote) => vote.choice === 'yes').length;
   const phase = proposal.status === 'pending_management'
-    ? `管理组同意：${managementVotes}/${proposal.managementVotesRequired || 3}\n申请人已计为 1 票。`
+    ? '旧版投票申请已停用，请重新发起并由发起人直接确认。'
     : proposal.status === 'awaiting_management_confirmation'
-      ? `管理组同意：${managementVotes}/${proposal.managementVotesRequired || 3}\n第三票已提出，等待投票成员完成最终确认。`
+      ? '等待发起人二次确认；确认后删除整个帖子。'
       : proposal.status === 'pending_operator'
         ? `操作员同意：${operatorVotes}/${proposal.operatorVotesRequired}`
         : proposal.status === 'pending_reviewer'
           ? `操作员同意：${operatorVotes}/${proposal.operatorVotesRequired}\n审核员同意：${reviewerVotes}/${proposal.reviewerVotesRequired}`
-          : `结果：${proposal.status === 'completed' ? '已执行' : proposal.status === 'failed' ? `执行失败：${proposal.failure || '请检查 Bot 权限'}` : proposal.status === 'rejected' ? '已拒绝' : proposal.status === 'executing' ? '审批通过，正在执行' : '已过期'}`;
+          : `结果：${proposal.status === 'completed' ? '已执行' : proposal.status === 'failed' ? `执行失败：${proposal.failure || '请检查 Bot 权限'}` : proposal.status === 'rejected' ? '已拒绝' : proposal.status === 'cancelled' ? '已取消' : proposal.status === 'executing' ? '确认通过，正在执行' : '已过期'}`;
   return new EmbedBuilder().setColor(proposal.status === 'completed' ? 0x2ECC71 : proposal.status === 'rejected' ? 0xE74C3C : 0xF1C40F)
     .setTitle(proposal.kind === 'thread-action' ? '帖子操作申请' : proposal.kind === 'management-delete' ? '管理组删帖申请' : '内容删除申请')
     .setDescription(`申请人：<@${proposal.requesterId}>\n目标：${proposal.targetLink}\n操作：${proposal.actionLabel}\n\n${phase}\n\n申请编号：${proposal.id}`)
@@ -1286,29 +1289,45 @@ async function createManagementDeleteProposal(interaction, link) {
     await interaction.editReply('只有主管理组成员可以发起或审批管理组删帖。');
     return;
   }
-  if (!setting.managementDeleteApprovalChannelId || !setting.managementDeleteOfficeChannelId) {
-    await interaction.editReply('管理组删帖还未配置完整。请管理员运行 `/管理删帖面板` 设置审批记录频道和办公室提醒频道。');
-    return;
-  }
   const parsed = parseDiscordMessageLink(link);
   if (!parsed || parsed.guildId !== interaction.guildId) {
     await interaction.editReply('请提供本服务器帖子内一条消息的 Discord 链接。');
     return;
   }
-  const approvalChannel = await interaction.guild.channels.fetch(setting.managementDeleteApprovalChannelId).catch(() => null);
-  const approvalPermissions = approvalChannel?.permissionsFor(await interaction.guild.members.fetchMe());
-  if (!approvalChannel?.isTextBased?.() || !approvalChannel.send
-    || !approvalPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
-    await interaction.editReply('管理组删帖审批频道不可用，或 Bot 缺少查看、发送消息和嵌入链接权限。请检查 `/管理删帖面板` 配置。');
-    return;
+  // Retire matching proposals created by the old voting workflow so a stale
+  // vote card cannot block a fresh direct-confirmation request.
+  let retiredLegacyProposal = false;
+  const targetKey = moderationProposalResourceKey({ guildId: interaction.guildId, channelId: parsed.channelId, threadId: parsed.threadId, messageId: parsed.messageId, deleteTargetType: 'thread' });
+  for (const item of guildData.moderationProposals || []) {
+    const isLegacyVoteProposal = item.status === 'pending_management'
+      || (item.status === 'awaiting_management_confirmation'
+        && (item.managementVotesRequired || Array.isArray(item.managementVotes)));
+    if (item.guildId !== interaction.guildId || item.kind !== 'management-delete' || !isLegacyVoteProposal
+      || moderationProposalResourceKey(item) !== targetKey) continue;
+    item.status = 'cancelled';
+    item.failure = '管理组删帖现为发起人直接确认，旧投票申请已停用';
+    item.pendingManagementConfirmation = null;
+    retiredLegacyProposal = true;
+  }
+  if (retiredLegacyProposal) {
+    await saveGuildData();
+    for (const item of guildData.moderationProposals || []) {
+      if (item.guildId === interaction.guildId && item.kind === 'management-delete' && item.status === 'cancelled'
+        && item.failure === '管理组删帖现为发起人直接确认，旧投票申请已停用' && moderationProposalResourceKey(item) === targetKey) {
+        await updateManagementDeleteApprovalCard(interaction.guild, item).catch(() => {});
+      }
+    }
   }
   const proposal = {
     id: randomBytes(6).toString('hex'), guildId: interaction.guildId, kind: 'management-delete',
     requesterId: interaction.user.id, targetLink: link, channelId: parsed.channelId, threadId: parsed.threadId, messageId: parsed.messageId,
     action: 'delete-thread', actionLabel: '删除整个帖子', deleteTargetType: 'thread',
-    status: 'pending_management', managementRoleId: managerRoleId, managementVotes: [], managementVotesRequired: 3,
-    createdAt: Date.now(), approvalChannelId: approvalChannel.id,
+    status: 'awaiting_management_confirmation', managementRoleId: managerRoleId,
+    createdAt: Date.now(),
   };
+  const now = proposal.createdAt;
+  const token = randomBytes(8).toString('hex');
+  proposal.pendingManagementConfirmation = { token, userId: interaction.user.id, confirmAfter: now + 5000, expiresAt: now + 5 * 60 * 1000 };
   try {
     const target = await resolveModerationTarget(interaction.guild, proposal);
     if (!target.channel.isThread()) throw new Error('链接没有指向帖子。请复制帖子内一条消息的链接，或直接复制帖子链接。');
@@ -1316,7 +1335,6 @@ async function createManagementDeleteProposal(interaction, link) {
     await interaction.editReply(`目标无法用于管理组删帖：${error.message}`);
     return;
   }
-  const targetKey = moderationProposalResourceKey(proposal);
   const duplicate = (guildData.moderationProposals || []).find((item) => item.guildId === interaction.guildId
     && isOpenModerationProposal(item) && Date.now() - item.createdAt < MODERATION_PROPOSAL_TTL
     && moderationProposalResourceKey(item) === targetKey);
@@ -1332,22 +1350,44 @@ async function createManagementDeleteProposal(interaction, link) {
   activeModerationTargetClaims.add(targetClaim);
   try {
     guildData.moderationProposals ||= [];
-    proposal.managementVotes = [{ userId: interaction.user.id, choice: 'yes', votedAt: proposal.createdAt, requesterVote: true }];
     guildData.moderationProposals.push(proposal);
+    await saveGuildData();
+
+    // The record channel is optional and informational; it never blocks the
+    // confirmation flow or counts votes.
+    if (setting.managementDeleteApprovalChannelId) {
+      const approvalChannel = await interaction.guild.channels.fetch(setting.managementDeleteApprovalChannelId).catch(() => null);
+      const approvalPermissions = approvalChannel?.permissionsFor(await interaction.guild.members.fetchMe());
+      if (approvalChannel?.isTextBased?.() && approvalChannel.send
+        && approvalPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+        try {
+          proposal.approvalChannelId = approvalChannel.id;
+          const approvalMessage = await approvalChannel.send({ embeds: [moderationProposalEmbed(proposal)], components: [], allowedMentions: { parse: [] } });
+          proposal.approvalMessageId = approvalMessage.id;
+          await saveGuildData();
+        } catch (error) {
+          logFailure('管理组删帖操作记录发送失败。', error);
+        }
+      } else {
+        logFailure('管理组删帖记录频道不可用或 Bot 权限不足；继续显示直接确认。', new Error(`频道 ${setting.managementDeleteApprovalChannelId}`));
+      }
+    }
+
+    let confirmationMessage;
     try {
-      await saveGuildData();
-      const approvalMessage = await approvalChannel.send({ embeds: [moderationProposalEmbed(proposal)], components: managementDeleteVoteComponents(proposal), allowedMentions: { parse: [] } });
-      proposal.approvalMessageId = approvalMessage.id;
-      await saveGuildData();
+      confirmationMessage = await interaction.editReply({
+        content: `⚠️ 删除警示：你确认后，Bot 会立即删除整个帖子及其中的消息，此操作无法恢复。确定吗？\n\n申请编号：${proposal.id}\n为避免误触，确认按钮将在 5 秒后启用；5 分钟内未确认会自动失效。`,
+        components: managementDeleteConfirmationComponents(proposal.id, token, true),
+      });
     } catch (error) {
-      guildData.moderationProposals = guildData.moderationProposals.filter((item) => item.id !== proposal.id);
-      await saveGuildData();
+      resetManagementDeleteConfirmation(proposal);
+      proposal.failure = '确认面板发送失败，帖子没有删除';
+      await saveGuildData().catch((saveError) => logFailure('确认面板失败后的管理组删帖状态保存失败。', saveError));
+      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
       throw error;
     }
-    let officeNoticeFailed = false;
-    try { await notifyManagementDeleteOffice(interaction.guild, proposal); }
-    catch (error) { officeNoticeFailed = true; logFailure('管理组删帖办公室提醒发送失败。', error); }
-    await interaction.editReply(`管理组删帖申请已提交到 <#${approvalChannel.id}>，申请编号：${proposal.id}。${officeNoticeFailed ? '办公室提醒未发送，请检查管理删帖面板的频道和提及权限。' : '办公室已收到 @管理组 提醒。'}`);
+    scheduleManagementDeleteConfirmation(proposal, confirmationMessage);
+
   } finally {
     activeModerationTargetClaims.delete(targetClaim);
   }
@@ -1391,6 +1431,63 @@ async function showManagementLockReasonModal(interaction, link) {
   const modal = new ModalBuilder().setCustomId(`management-lock-reason:${token}`).setTitle('管理组锁定帖子')
     .addComponents(new LabelBuilder().setLabel('锁定理由').setDescription('理由会与操作人和帖子链接一起公示。').setTextInputComponent(reasonInput));
   await interaction.showModal(modal);
+}
+
+async function executeManagementThreadUnlock(interaction, link) {
+  const setting = settingsFor(interaction.guildId);
+  const managerRoleId = managementTrack(setting, 'senior').roleId;
+  if (!managerRoleId) {
+    await interaction.editReply('尚未配置主管理身份组。请先运行 `/管理组面板` 配置管理组身份组。');
+    return;
+  }
+  const requester = await interaction.guild.members.fetch(interaction.user.id);
+  if (!requester.roles.cache.has(managerRoleId)) {
+    await interaction.editReply('只有主管理组成员可以解锁帖子。');
+    return;
+  }
+  const parsed = parseDiscordMessageLink(link);
+  if (!parsed || parsed.guildId !== interaction.guildId) {
+    await interaction.editReply('请提供本服务器帖子内一条消息的 Discord 链接。');
+    return;
+  }
+  const proposal = {
+    id: randomBytes(6).toString('hex'), guildId: interaction.guildId, kind: 'thread-action', action: 'unlock',
+    actionLabel: '解锁并重新开放帖子', requesterId: interaction.user.id, targetLink: link,
+    channelId: parsed.channelId, threadId: parsed.threadId, messageId: parsed.messageId, createdAt: Date.now(),
+  };
+  const target = await resolveModerationTarget(interaction.guild, proposal);
+  if (!target.channel.isThread()) throw new Error('链接没有指向一个仍存在的帖子或子区。');
+  const botMember = await interaction.guild.members.fetchMe();
+  const permissions = target.channel.permissionsFor(botMember);
+  if (!permissions?.has(PermissionFlagsBits.ManageThreads)) throw new Error('Bot 缺少“管理帖子”权限。');
+  const auditReason = `管理组解锁（${proposal.id}），操作人 ${interaction.user.id}`;
+  if (target.channel.archived) await target.channel.setArchived(false, auditReason);
+  if (target.channel.locked) await target.channel.setLocked(false, auditReason);
+
+  const announcement = new EmbedBuilder().setColor(0x2ECC71).setTitle('管理组解锁帖子公示')
+    .setDescription(`操作人：<@${interaction.user.id}>\n帖子：${link}\n操作：解锁并重新开放\n操作编号：${proposal.id}`)
+    .setTimestamp();
+  let announcementChannel = interaction.channel?.isTextBased?.() && typeof interaction.channel.send === 'function'
+    ? interaction.channel : null;
+  let announcementError = null;
+  const currentChannelPermissions = announcementChannel?.permissionsFor(botMember);
+  if (!announcementChannel || !currentChannelPermissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+    announcementChannel = setting.managementDeleteApprovalChannelId
+      ? await interaction.guild.channels.fetch(setting.managementDeleteApprovalChannelId).catch(() => null)
+      : null;
+  }
+  if (announcementChannel?.isTextBased?.() && typeof announcementChannel.send === 'function'
+    && announcementChannel.permissionsFor(botMember)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+    try { await announcementChannel.send({ embeds: [announcement], allowedMentions: { parse: [] } }); }
+    catch (error) { announcementError = error; }
+  } else {
+    announcementError = new Error('没有可发送解锁公示的频道。');
+  }
+  const result = announcementError
+    ? `帖子已解锁并重新开放（操作编号：${proposal.id}），但公示发送失败。`
+    : `帖子已解锁并重新开放，操作人和帖子链接已在 <#${announcementChannel.id}> 公示（操作编号：${proposal.id}）。`;
+  if (announcementError) logFailure('管理组解锁公示发送失败。', announcementError);
+  await interaction.editReply(result);
 }
 
 async function executeManagementThreadLock(interaction, link, reason) {
@@ -1483,6 +1580,7 @@ async function executeManagementThreadLock(interaction, link, reason) {
 }
 
 async function updateManagementDeleteApprovalCard(guild, proposal) {
+  if (!proposal.approvalChannelId || !proposal.approvalMessageId) return false;
   const channel = await guild.channels.fetch(proposal.approvalChannelId).catch(() => null);
   const message = channel?.isTextBased?.() && proposal.approvalMessageId
     ? await channel.messages.fetch(proposal.approvalMessageId).catch(() => null)
@@ -1490,7 +1588,7 @@ async function updateManagementDeleteApprovalCard(guild, proposal) {
   if (!message) return false;
   await message.edit({
     embeds: [moderationProposalEmbed(proposal)],
-    components: proposal.status === 'pending_management' ? managementDeleteVoteComponents(proposal) : [],
+    components: [],
   });
   return true;
 }
@@ -1515,12 +1613,12 @@ function scheduleManagementDeleteConfirmation(proposal, confirmationMessage) {
   const expireTimer = setTimeout(async () => {
     const current = (guildData.moderationProposals || []).find((item) => item.guildId === guildId && item.id === proposalId);
     if (current?.status !== 'awaiting_management_confirmation' || current.pendingManagementConfirmation?.token !== token) return;
-    resetManagementDeleteConfirmation(current);
+    resetManagementDeleteConfirmation(current, 'expired');
     try {
       await saveGuildData();
       const guild = await client.guilds.fetch(guildId);
       await updateManagementDeleteApprovalCard(guild, current);
-      await confirmationMessage.edit({ content: '最终确认已过期，帖子没有删除。申请已恢复为待投票状态。', components: [] }).catch(() => {});
+      await confirmationMessage.edit({ content: '最终确认已过期，帖子没有删除。请重新发起管理组删帖操作。', components: [] }).catch(() => {});
     } catch (error) {
       logFailure('管理组删帖确认过期清理失败。', error);
     }
@@ -1528,19 +1626,13 @@ function scheduleManagementDeleteConfirmation(proposal, confirmationMessage) {
   expireTimer.unref?.();
 }
 
-function resetManagementDeleteConfirmation(proposal) {
-  const token = proposal.pendingManagementConfirmation?.token;
-  if (token) proposal.managementVotes = (proposal.managementVotes || []).filter((vote) => vote.confirmationToken !== token);
+function resetManagementDeleteConfirmation(proposal, status = 'cancelled') {
   proposal.pendingManagementConfirmation = null;
-  proposal.status = 'pending_management';
+  proposal.status = status;
 }
 
 async function handleManagementDeleteVote(interaction) {
-  const [, choice, proposalId] = interaction.customId.split(':');
-  if (!['yes', 'no'].includes(choice)) {
-    await interaction.reply({ content: '无效的投票选项。', flags: MessageFlags.Ephemeral }).catch(() => {});
-    return;
-  }
+  const [, , proposalId] = interaction.customId.split(':');
   const lockKey = `${interaction.guildId}:${proposalId}`;
   if (activeManagementDeleteVotes.has(lockKey)) {
     await interaction.reply({ content: '这项审批正在处理另一张投票，请稍后重试。', flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -1550,68 +1642,18 @@ async function handleManagementDeleteVote(interaction) {
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const proposal = (guildData.moderationProposals || []).find((item) => item.id === proposalId && item.guildId === interaction.guildId && item.kind === 'management-delete');
-    if (!proposal || proposal.status !== 'pending_management') {
-      await interaction.editReply('这项管理组删帖审批已处理、过期或正在等待最终确认。').catch(() => {});
-      return;
-    }
-    if (Date.now() - proposal.createdAt > MODERATION_PROPOSAL_TTL) {
-      proposal.status = 'expired';
+    if (proposal && (proposal.status === 'pending_management'
+      || (proposal.status === 'awaiting_management_confirmation' && (proposal.managementVotesRequired || Array.isArray(proposal.managementVotes))))) {
+      proposal.status = 'cancelled';
+      proposal.failure = '旧版投票入口已停用';
+      proposal.pendingManagementConfirmation = null;
       await saveGuildData();
-      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
-      await interaction.editReply('这项审批已超过 24 小时，不能再投票。').catch(() => {});
-      return;
+      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('旧版管理组删帖卡停用失败。', error));
+      await interaction.message.edit({ embeds: [moderationProposalEmbed(proposal)], components: [] }).catch(() => {});
+    } else {
+      await interaction.message.edit({ components: [] }).catch(() => {});
     }
-    if (interaction.user.id === proposal.requesterId) {
-      await interaction.editReply('申请人已自动计作 1 张管理组同意票，不能重复投票。').catch(() => {});
-      return;
-    }
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-    if (!proposal.managementRoleId || !member.roles.cache.has(proposal.managementRoleId)) {
-      await interaction.editReply('只有该申请指定的主管理身份组成员可以审批。').catch(() => {});
-      return;
-    }
-    proposal.managementVotes ||= [];
-    if (proposal.managementVotes.some((vote) => vote.userId === interaction.user.id)) {
-      await interaction.editReply('你已经在这个申请中投过票。').catch(() => {});
-      return;
-    }
-    if (choice === 'no') {
-      proposal.managementVotes.push({ userId: interaction.user.id, choice: 'no', votedAt: Date.now() });
-      proposal.status = 'rejected';
-      await saveGuildData();
-      await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('管理组删帖审批卡更新失败。', error));
-      await interaction.editReply('管理组删帖申请已被拒绝。').catch(() => {});
-      return;
-    }
-
-    const now = Date.now();
-    const token = randomBytes(8).toString('hex');
-    proposal.managementVotes.push({ userId: interaction.user.id, choice: 'yes', votedAt: now });
-    const yesVotes = proposal.managementVotes.filter((vote) => vote.choice === 'yes').length;
-    const reachesThreshold = yesVotes >= (proposal.managementVotesRequired || 3);
-    if (reachesThreshold) {
-      proposal.managementVotes[proposal.managementVotes.length - 1].confirmationToken = token;
-      proposal.pendingManagementConfirmation = { token, userId: interaction.user.id, confirmAfter: now + 5000, expiresAt: now + 5 * 60 * 1000 };
-      proposal.status = 'awaiting_management_confirmation';
-    }
-    await saveGuildData();
-    await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('管理组删帖审批卡更新失败。', error));
-    if (reachesThreshold) {
-      try {
-        const confirmationMessage = await interaction.editReply({
-          content: '⚠️ 删除警示：管理组已投满 3 票。你确认后，Bot 会立即删除整个帖子及其中的消息，此操作无法恢复。确定吗？\n\n为避免误触，确认按钮将在 5 秒后启用。',
-          components: managementDeleteConfirmationComponents(proposal.id, token, true),
-        });
-        scheduleManagementDeleteConfirmation(proposal, confirmationMessage);
-      } catch (error) {
-        resetManagementDeleteConfirmation(proposal);
-        await saveGuildData();
-        await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
-        throw error;
-      }
-      return;
-    }
-    await interaction.editReply(`同意票已记录：${yesVotes}/${proposal.managementVotesRequired || 3}。`).catch(() => {});
+    await interaction.editReply('管理组删帖不再计票，旧投票按钮已停用。请重新发起 /管理删帖，由发起人直接确认。').catch(() => {});
   } catch (error) {
     logFailure('管理组删帖投票处理失败。', error);
     if (interaction.deferred || interaction.replied) {
@@ -1646,17 +1688,17 @@ async function handleManagementDeleteConfirmation(interaction) {
       return;
     }
     if (Date.now() >= pending.expiresAt) {
-      resetManagementDeleteConfirmation(proposal);
+      resetManagementDeleteConfirmation(proposal, 'expired');
       await saveGuildData();
       await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
-      await interaction.editReply({ content: '最终确认已过期，帖子没有删除；申请已恢复为待投票状态。', components: [] }).catch(() => {});
+      await interaction.editReply({ content: '最终确认已过期，帖子没有删除。请重新发起管理组删帖操作。', components: [] }).catch(() => {});
       return;
     }
     if (action === 'mgmtdelete-cancel') {
       resetManagementDeleteConfirmation(proposal);
       await saveGuildData();
       await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('取消最终确认后审批卡恢复失败。', error));
-      await interaction.editReply({ content: '已取消最终确认，帖子没有删除；申请已恢复为待投票状态。', components: [] }).catch(() => {});
+      await interaction.editReply({ content: '已取消，帖子没有删除。需要删除时请重新发起管理组删帖操作。', components: [] }).catch(() => {});
       return;
     }
     if (Date.now() < pending.confirmAfter) {
@@ -1670,12 +1712,6 @@ async function handleManagementDeleteConfirmation(interaction) {
       await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
       await interaction.editReply({ content: '你的主管理身份组已变更，确认失效；帖子没有删除。', components: [] }).catch(() => {});
       return;
-    }
-    proposal.managementVotes ||= [];
-    // The third vote is recorded when its voter opens this confirmation. Keep
-    // compatibility with pending confirmations saved by older bot versions.
-    if (!proposal.managementVotes.some((vote) => vote.userId === interaction.user.id && vote.choice === 'yes')) {
-      proposal.managementVotes.push({ userId: interaction.user.id, choice: 'yes', votedAt: Date.now(), confirmationToken: token });
     }
     proposal.pendingManagementConfirmation = null;
     proposal.status = 'executing';
@@ -1691,7 +1727,19 @@ async function handleManagementDeleteConfirmation(interaction) {
     }
     await saveGuildData();
     await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch((error) => logFailure('管理组删帖最终状态更新失败。', error));
-    await interaction.editReply({ content: proposal.status === 'completed' ? `已按 3 票和最终确认删除整个帖子（申请编号：${proposal.id}）。` : `确认已通过，但 Bot 删除失败：${proposal.failure}`, components: [] }).catch(() => {});
+    let officeNoticeFailed = false;
+    try {
+      const sent = await notifyManagementDeleteOffice(interaction.guild, proposal);
+      officeNoticeFailed = Boolean(settingsFor(interaction.guildId).managementDeleteOfficeChannelId && !sent);
+    } catch (error) {
+      officeNoticeFailed = true;
+      logFailure('管理组删帖结果提醒发送失败。', error);
+    }
+    const officeNote = officeNoticeFailed ? ' 办公室提醒发送失败，请检查管理删帖面板配置和 Bot 提及权限。' : '';
+    const result = proposal.status === 'completed'
+      ? `已确认并删除整个帖子（申请编号：${proposal.id}）。${officeNote}`
+      : `确认已通过，但 Bot 删除失败：${proposal.failure}${officeNote}`;
+    await interaction.editReply({ content: result, components: [] }).catch(() => {});
   } catch (error) {
     logFailure('管理组删帖最终确认处理失败。', error);
     await interaction.editReply({ content: `确认没有完成：${error.message}`, components: [] }).catch(() => {});
@@ -3071,7 +3119,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
   const messageCommand = interaction.isMessageContextMenuCommand()
-    && ['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定'].includes(interaction.commandName);
+    && ['处罚', '永封', '删帖', '锁定并关闭', '管理删帖', '管理锁定', '解锁'].includes(interaction.commandName);
   const userCommand = interaction.isUserContextMenuCommand()
     && ['处罚', '永封'].includes(interaction.commandName);
   const punishmentForm = interaction.isModalSubmit()
@@ -3228,7 +3276,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       await interaction.editReply('管理组删帖设置保存在本服务器的加密配置中。独立面板已发送到当前频道。');
-      await interaction.followUp({ content: '选择审批记录频道和办公室提醒频道。主管理身份组从 `/管理组面板` 读取，三票流程不使用版务审核员身份组。',
+      await interaction.followUp({ content: '可选设置删帖操作记录频道和办公室提醒频道。主管理身份组从 `/管理组面板` 读取；删帖由发起人直接二次确认，不走投票。',
         embeds: [managementDeletePanelEmbed(interaction.guildId)], components: managementDeletePanel(interaction.guildId) });
       return;
     }
@@ -3246,6 +3294,11 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === '管理删帖') {
       await createManagementDeleteProposal(interaction, options.getString('链接', true).trim());
+      return;
+    }
+
+    if (commandName === '解锁') {
+      await executeManagementThreadUnlock(interaction, options.getString('链接', true).trim());
       return;
     }
 
