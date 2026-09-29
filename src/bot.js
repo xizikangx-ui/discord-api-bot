@@ -44,6 +44,7 @@ function logFailure(label, error) {
 }
 
 const DAY = 24 * 60 * 60 * 1000;
+const DEFAULT_MONITORED_PERMISSION_KEYS = ['Administrator', 'ManageGuild', 'ManageRoles', 'ManageChannels', 'ManageThreads', 'ManageWebhooks'];
 const MAX_TIMEOUT = 28 * DAY;
 const TIMEOUT_REFRESH = 27 * DAY;
 const pendingManagementActions = new Map();
@@ -565,6 +566,8 @@ function settingsFor(guildId) {
   guildData.settings[guildId].permissionRollbackEnabled ??= true;
   guildData.settings[guildId].permissionEscalationEnabled ??= true;
   guildData.settings[guildId].permissionEscalationRoleId ??= null;
+  guildData.settings[guildId].permissionMonitoredKeys ||= [...DEFAULT_MONITORED_PERMISSION_KEYS];
+  guildData.settings[guildId].permissionRollbackWhitelistUserIds ||= [];
   guildData.settings[guildId].permissionStrikeCounts ||= {};
   guildData.settings[guildId].permissionAllChannelRules ||= {};
   managementTrack(guildData.settings[guildId], 'senior');
@@ -2487,13 +2490,50 @@ function permissionPanelEmbed(guild, session = {}) {
     + '\n\n**当前权限概览**\n' + current.slice(0, 900)
     + '\n\n频道权限遵循 Discord 合并规则：管理员身份组会绕过频道覆盖；成员持有多个身份组时，频道允许/拒绝会按 Discord 规则合并；帖子继承父频道权限。'
     + '\n高危权限审计：' + (setting.permissionAlertChannelId ? '<#' + setting.permissionAlertChannelId + '>' : '未设置告警频道')
-    + '\n非 Bot 变更恢复：' + (setting.permissionRollbackEnabled ? '开启（审计事件到达后快速恢复，无法阻止保存瞬间生效）' : '关闭')
+    + '\n自动扳回开关：' + (setting.permissionRollbackEnabled ? '开启（仅扳回已勾选的监控权限；审计事件到达后恢复，无法阻止保存瞬间生效）' : '关闭')
+    + '\n单项监控权限：' + (setting.permissionMonitoredKeys.length ? setting.permissionMonitoredKeys.map(permissionLabel).join('、').slice(0, 500) : '未选择（不会因权限变更扳回）')
+    + '\n扳回/警告白名单：' + (setting.permissionRollbackWhitelistUserIds.length ? setting.permissionRollbackWhitelistUserIds.map((id) => '<@' + id + '>').join('、') : '无')
+    + '\n其他机器人：一律忽略权限变更'
     + '\n高危违规私信/处置策略：' + (setting.permissionEscalationEnabled ? '开启（前两次私信提醒；第三次移除可管理身份组并发放指定身份组）' : '关闭')
     + '\n第三次处置身份组：' + (setting.permissionEscalationRoleId ? '<@&' + setting.permissionEscalationRoleId + '>' : '未配置');
   return new EmbedBuilder().setColor(0x5865F2).setTitle('服务器权限鉴定与配置面板').setDescription(description);
 }
 
 function permissionPanelComponents(session) {
+  if (session.waitingFor === 'guard') {
+    const setting = settingsFor(session.guild.id);
+    const categoryKey = session.guardCategory || 'administration';
+    const category = permissionGroups[categoryKey];
+    const keys = category.keys;
+    return [
+      new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+        .setCustomId('permission-guard-category:' + session.token).setPlaceholder('选择要单独设置的权限分类')
+        .addOptions(Object.entries(permissionGroups).map(([value, group]) => ({ label: group.label, value, description: group.keys.length + ' 项权限' })))),
+      new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+        .setCustomId('permission-guard-flags:' + session.token)
+        .setPlaceholder('勾选自动监控/扳回的权限（可多选）').setMinValues(0).setMaxValues(Math.min(25, keys.length || 1))
+        .addOptions(keys.map((key) => ({ label: permissionLabel(key), value: key, default: (session.guardSelectedPermissions || setting.permissionMonitoredKeys).includes(key) })))),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('permission-guard-save:' + session.token).setLabel('保存单项监控权限').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('permission-back:' + session.token).setLabel('返回').setStyle(ButtonStyle.Secondary),
+      ),
+    ];
+  }
+  if (session.waitingFor === 'whitelist') {
+    const setting = settingsFor(session.guild.id);
+    return [
+      new ActionRowBuilder().addComponents(new UserSelectMenuBuilder()
+        .setCustomId('permission-whitelist-users:' + session.token)
+        .setPlaceholder('选择要添加或移出白名单的成员')
+        .setMinValues(1).setMaxValues(1)),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('permission-whitelist-add:' + session.token).setLabel('添加所选成员').setStyle(ButtonStyle.Success).setDisabled(!session.whitelistUserId),
+        new ButtonBuilder().setCustomId('permission-whitelist-remove:' + session.token).setLabel('移出所选成员').setStyle(ButtonStyle.Secondary).setDisabled(!session.whitelistUserId || !setting.permissionRollbackWhitelistUserIds.includes(session.whitelistUserId)),
+        new ButtonBuilder().setCustomId('permission-whitelist-clear:' + session.token).setLabel('清空').setStyle(ButtonStyle.Danger).setDisabled(!setting.permissionRollbackWhitelistUserIds.length),
+        new ButtonBuilder().setCustomId('permission-back:' + session.token).setLabel('返回').setStyle(ButtonStyle.Secondary),
+      ),
+    ];
+  }
   if (session.waitingFor === 'channel' || session.waitingFor === 'alert') {
     const customId = session.waitingFor === 'alert' ? 'permission-alert-channel:' + session.token : 'permission-channel:' + session.token;
     const select = new ChannelSelectMenuBuilder().setCustomId(customId)
@@ -2518,6 +2558,10 @@ function permissionPanelComponents(session) {
         new RoleSelectMenuBuilder().setCustomId('permission-sanction-role:' + session.token)
           .setPlaceholder(setting.permissionEscalationRoleId ? '第三次处置身份组：已配置' : '选择第三次处置后要发放的身份组')
           .setMinValues(1).setMaxValues(1),
+      ));
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('permission-open-guard:' + session.token).setLabel('单项监控权限').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('permission-open-whitelist:' + session.token).setLabel('编辑白名单（' + setting.permissionRollbackWhitelistUserIds.length + '）').setStyle(ButtonStyle.Secondary),
       ));
       rows.push(new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('permission-clear-sanction-role:' + session.token)
@@ -2561,8 +2605,10 @@ function permissionPanelComponents(session) {
       new ButtonBuilder().setCustomId('permission-allow:' + session.token).setLabel(session.scope === 'guild' ? '授予所选权限' : '允许所选权限').setStyle(ButtonStyle.Success).setDisabled(!session.roleId),
       new ButtonBuilder().setCustomId('permission-deny:' + session.token).setLabel(session.scope === 'guild' ? '移除所选权限' : '拒绝所选权限').setStyle(ButtonStyle.Danger).setDisabled(!session.roleId),
       new ButtonBuilder().setCustomId('permission-reset:' + session.token).setLabel(session.scope === 'guild' ? '移除所选权限' : '恢复继承').setStyle(ButtonStyle.Secondary).setDisabled(!session.roleId),
-      new ButtonBuilder().setCustomId('permission-pick-channel:' + session.token).setLabel('选择单独频道').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('permission-pick-alert:' + session.token).setLabel('告警/扳回规则').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('permission-toggle-rollback:' + session.token)
+        .setLabel('自动扳回：' + (settingsFor(session.guild.id).permissionRollbackEnabled ? '开' : '关'))
+        .setStyle(settingsFor(session.guild.id).permissionRollbackEnabled ? ButtonStyle.Success : ButtonStyle.Secondary),
     ),
   ];
 }
@@ -2628,7 +2674,7 @@ async function applyPermissionPanelAction(guild, session, action, actorId) {
 }
 
 async function handlePermissionPanelInteraction(interaction) {
-  if (!(interaction.isButton() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() || interaction.isStringSelectMenu())
+  if (!(interaction.isButton() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() || interaction.isStringSelectMenu() || interaction.isUserSelectMenu())
     || !interaction.customId.startsWith('permission-')) return false;
   if (!interaction.inGuild()) {
     await interaction.reply({ content: '权限面板只能在服务器内使用。', flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -2667,6 +2713,33 @@ async function handlePermissionPanelInteraction(interaction) {
       await interaction.update({ content: '第三次违规后发放的身份组已保存。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
       return true;
     }
+    if (interaction.isUserSelectMenu() && interaction.customId.startsWith('permission-whitelist-users:')) {
+      session.whitelistUserId = interaction.values[0];
+      await interaction.update({ content: '已选择 <@' + session.whitelistUserId + '>。点“添加所选成员”或“移出所选成员”完成修改。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-whitelist-add:')) {
+      if (!session.whitelistUserId) throw new Error('请先选择要添加的成员。');
+      await interaction.deferUpdate();
+      const member = await interaction.guild.members.fetch(session.whitelistUserId).catch(() => null);
+      if (!member || member.user.bot) throw new Error('白名单只接受本服务器中的真实成员，不接受机器人。');
+      const setting = settingsFor(interaction.guildId);
+      if (!setting.permissionRollbackWhitelistUserIds.includes(member.id)) {
+        if (setting.permissionRollbackWhitelistUserIds.length >= 25) throw new Error('白名单最多 25 人，请先移除不需要的成员。');
+        setting.permissionRollbackWhitelistUserIds.push(member.id);
+      }
+      await saveGuildData();
+      await interaction.editReply({ content: '已添加 <@' + member.id + '> 到白名单。名单成员的权限变更不会自动扳回、计入违规或触发违规处置。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-whitelist-remove:')) {
+      if (!session.whitelistUserId) throw new Error('请先选择要移出的成员。');
+      const setting = settingsFor(interaction.guildId);
+      setting.permissionRollbackWhitelistUserIds = setting.permissionRollbackWhitelistUserIds.filter((id) => id !== session.whitelistUserId);
+      await saveGuildData();
+      await interaction.update({ content: '已从白名单移出 <@' + session.whitelistUserId + '>。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('permission-scope:')) {
       session.scope = interaction.values[0];
       session.channelId = null;
@@ -2679,6 +2752,18 @@ async function handlePermissionPanelInteraction(interaction) {
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('permission-category:')) {
       session.category = interaction.values[0];
       session.selectedPermissions = [];
+      await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('permission-guard-category:')) {
+      session.guardCategory = interaction.values[0];
+      session.guardSelectedPermissions = settingsFor(interaction.guildId).permissionMonitoredKeys
+        .filter((key) => permissionGroups[session.guardCategory].keys.includes(key));
+      await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('permission-guard-flags:')) {
+      session.guardSelectedPermissions = interaction.values;
       await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
       return true;
     }
@@ -2697,6 +2782,36 @@ async function handlePermissionPanelInteraction(interaction) {
     if (interaction.isButton() && interaction.customId.startsWith('permission-pick-alert:')) {
       session.waitingFor = 'alert';
       await interaction.update({ content: '选择你新建的告警频道或子区。请确保 Bot 可查看并发送消息。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-open-guard:')) {
+      const setting = settingsFor(interaction.guildId);
+      session.waitingFor = 'guard';
+      session.guardCategory = session.guardCategory || 'administration';
+      session.guardSelectedPermissions = setting.permissionMonitoredKeys.filter((key) => permissionGroups[session.guardCategory].keys.includes(key));
+      await interaction.update({ content: '选择哪些具体权限需要被自动监控和扳回；未勾选的权限不会被本功能阻止。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-guard-save:')) {
+      const setting = settingsFor(interaction.guildId);
+      const category = permissionGroups[session.guardCategory || 'administration'];
+      const retained = setting.permissionMonitoredKeys.filter((key) => !category.keys.includes(key));
+      setting.permissionMonitoredKeys = [...new Set([...retained, ...(session.guardSelectedPermissions || [])])];
+      await saveGuildData();
+      session.waitingFor = 'alert';
+      await interaction.update({ content: '已保存所选权限的单项监控规则。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-open-whitelist:')) {
+      session.waitingFor = 'whitelist';
+      session.whitelistUserId = null;
+      await interaction.update({ content: '白名单成员的权限调整不会自动扳回、计入违规或触发处置。每次选择一名成员后，可以单独添加或移出；最多 25 人。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
+      return true;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('permission-whitelist-clear:')) {
+      settingsFor(interaction.guildId).permissionRollbackWhitelistUserIds = [];
+      await saveGuildData();
+      await interaction.update({ content: '白名单已清空。', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
       return true;
     }
     if (interaction.isButton() && interaction.customId.startsWith('permission-toggle-rollback:')) {
@@ -2721,7 +2836,7 @@ async function handlePermissionPanelInteraction(interaction) {
       return true;
     }
     if (interaction.isButton() && interaction.customId.startsWith('permission-back:')) {
-      session.waitingFor = null;
+      session.waitingFor = session.waitingFor === 'guard' || session.waitingFor === 'whitelist' ? 'alert' : null;
       await interaction.update({ content: '', embeds: [permissionPanelEmbed(interaction.guild, session)], components: permissionPanelComponents(session) });
       return true;
     }
@@ -2772,8 +2887,14 @@ async function handlePermissionPanelInteraction(interaction) {
   }
 }
 
-const guardedPermissionKeys = ['Administrator', 'ManageGuild', 'ManageRoles', 'ManageChannels', 'ManageThreads', 'ManageWebhooks'];
+const guardedPermissionKeys = [...DEFAULT_MONITORED_PERMISSION_KEYS];
 const escalationPermissionKeys = new Set(guardedPermissionKeys);
+
+function monitoredPermissionBits(bits, setting) {
+  const enabled = new Set(setting.permissionMonitoredKeys || DEFAULT_MONITORED_PERMISSION_KEYS);
+  return permissionNamesForBits(bits).filter((key) => enabled.has(key))
+    .reduce((sum, key) => sum | PermissionFlagsBits[key], 0n);
+}
 
 function permissionInteger(value) {
   try { return BigInt(value || 0); } catch { return 0n; }
@@ -2790,8 +2911,9 @@ function permissionNamesForBits(bits) {
 async function restoreRolePermissionChanges(guild, entry, permissionChange) {
   const oldBits = permissionInteger(permissionChange.old);
   const newBits = permissionInteger(permissionChange.new);
-  const changed = oldBits ^ newBits;
-  if (!changed || !settingsFor(guild.id).permissionRollbackEnabled || entry.executorId === client.user.id) return { changed, restored: 0n };
+  const setting = settingsFor(guild.id);
+  const changed = monitoredPermissionBits(oldBits ^ newBits, setting);
+  if (!changed || !setting.permissionRollbackEnabled || entry.executorId === client.user.id) return { changed, restored: 0n };
   if (!entry.targetId) return { changed, restored: 0n, error: '审计日志缺少目标身份组 ID' };
   const role = guild.roles.cache.get(entry.targetId) || await guild.roles.fetch(entry.targetId).catch(() => null);
   const botMember = guild.members.me || await guild.members.fetchMe();
@@ -2816,8 +2938,9 @@ async function restoreChannelOverwriteChanges(guild, entry, overwriteChanges) {
   if (oldAllow === null || newAllow === null || oldDeny === null || newDeny === null) {
     return { changed: 0n, restored: 0n, error: '审计日志没有包含完整的 allow/deny 前后值' };
   }
-  const changed = (oldAllow ^ newAllow) | (oldDeny ^ newDeny);
-  if (!changed || !settingsFor(guild.id).permissionRollbackEnabled || entry.executorId === client.user.id) return { changed, restored: 0n };
+  const setting = settingsFor(guild.id);
+  const changed = monitoredPermissionBits((oldAllow ^ newAllow) | (oldDeny ^ newDeny), setting);
+  if (!changed || !setting.permissionRollbackEnabled || entry.executorId === client.user.id) return { changed, restored: 0n };
   const overwriteTarget = entry.extra?.id ? entry.extra : null;
   const channel = entry.targetId
     ? (guild.channels.cache.get(entry.targetId) || await guild.channels.fetch(entry.targetId).catch(() => null))
@@ -2956,7 +3079,9 @@ client.on('guildAuditLogEntryCreate', async (entry, guild) => {
   handledPermissionAuditEntries.add(entry.id);
   if (handledPermissionAuditEntries.size > 2000) handledPermissionAuditEntries.clear();
   try {
-    if (entry.executorId === client.user?.id) return;
+    if (entry.executorId === client.user?.id || entry.executor?.bot) return;
+    const setting = settingsFor(guild.id);
+    if (entry.executorId && setting.permissionRollbackWhitelistUserIds.includes(entry.executorId)) return;
     let changedBits = 0n;
     let targetDescription = '';
     let restoreResult = { changed: 0n, restored: 0n };
@@ -2966,7 +3091,7 @@ client.on('guildAuditLogEntryCreate', async (entry, guild) => {
     if (entry.action === AuditLogEvent.RoleUpdate) {
       const permissionChange = entry.changes.find((change) => change.key === 'permissions');
       if (!permissionChange) return;
-      changedBits = changedPermissionBits(permissionChange.old, permissionChange.new);
+      changedBits = monitoredPermissionBits(changedPermissionBits(permissionChange.old, permissionChange.new), setting);
       if (!changedBits) return;
       // Restore immediately from the audit entry's before/after values. Delay
       // all actor and display-name lookups until the permission is back in place.
@@ -2991,7 +3116,7 @@ client.on('guildAuditLogEntryCreate', async (entry, guild) => {
         console.warn('频道权限审计记录缺少 allow/deny 前后值，无法计算变更范围；审计编号 ' + entry.id);
         return;
       }
-      changedBits = (oldAllow ^ newAllow) | (oldDeny ^ newDeny);
+      changedBits = monitoredPermissionBits((oldAllow ^ newAllow) | (oldDeny ^ newDeny), setting);
       if (!changedBits) return;
       try {
         restoreResult = await restoreChannelOverwriteChanges(guild, entry, permissionChanges);
