@@ -56,6 +56,7 @@ const claimedPunishments = new Set();
 const activePunishmentLocks = new Set();
 const pendingPunishmentTargetClaims = new Set();
 const managementSyncTimers = new Map();
+const activeManagementPanelSyncs = new Map();
 let scheduleProcessing = false;
 const activeReactionCleanups = new Set();
 const activeModerationTargetClaims = new Set();
@@ -1474,8 +1475,9 @@ async function executeManagementThreadUnlock(interaction, link) {
   const permissions = target.channel.permissionsFor(botMember);
   if (!permissions?.has(PermissionFlagsBits.ManageThreads)) throw new Error('Bot 缺少“管理帖子”权限。');
   const auditReason = `管理组解锁（${proposal.id}），操作人 ${interaction.user.id}`;
-  if (target.channel.archived) await target.channel.setArchived(false, auditReason);
-  if (target.channel.locked) await target.channel.setLocked(false, auditReason);
+  if (target.channel.archived || target.channel.locked) {
+    await target.channel.edit({ archived: false, locked: false, reason: auditReason });
+  }
 
   const announcement = new EmbedBuilder().setColor(0x2ECC71).setTitle('管理组解锁帖子公示')
     .setDescription(`操作人：<@${interaction.user.id}>\n帖子：${link}\n操作：解锁并重新开放\n操作编号：${proposal.id}`)
@@ -2159,6 +2161,20 @@ async function syncManagementRole(guild, tier = 'senior', memberList = null, rol
   }
   if (!newlyDetected.length && !removed.length) await updateManagementRoster(guild, tier, track.roleId);
   return true;
+}
+
+function scheduleManagementPanelSync(guild, interaction) {
+  if (activeManagementPanelSyncs.has(guild.id)) return;
+  const sync = (async () => {
+    const track = managementTrack(settingsFor(guild.id), 'senior');
+    if (track.roleId && track.channelId) await syncManagementRole(guild, 'senior');
+    else if (track.roleId && track.companionRoleId) await syncManagementCompanionRole(guild);
+  })();
+  activeManagementPanelSyncs.set(guild.id, sync);
+  void sync.then(async () => {
+    await interaction.editReply({ embeds: [managementPanelEmbed(guild.id)], components: managementPanelComponents(guild.id) }).catch(() => {});
+  }).catch((error) => logFailure('管理组面板后台成员同步失败。', error))
+    .finally(() => activeManagementPanelSyncs.delete(guild.id));
 }
 
 async function reconcileManagementMember(member, hasRole, tier = 'senior', roleId = null) {
@@ -3161,7 +3177,7 @@ client.on('interactionCreate', async (interaction) => {
     }
     return;
   }
-  console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
+  console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isContextMenuCommand() ? `右键/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
   if (await handlePermissionPanelInteraction(interaction)) return;
   if (interaction.isModalSubmit() && interaction.customId.startsWith('mgmt-reason:')) {
     const token = interaction.customId.split(':')[1];
@@ -4234,12 +4250,8 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply('需要“管理服务器”权限才能配置管理组面板。');
         return;
       }
-      const track = managementTrack(settingsFor(interaction.guildId), 'senior');
-      if (track.roleId && track.channelId) await syncManagementRole(interaction.guild, 'senior');
-      else if (track.roleId && track.companionRoleId) {
-        await syncManagementCompanionRole(interaction.guild).catch((error) => logFailure('主管理配套身份组同步失败。', error));
-      }
       await interaction.editReply({ embeds: [managementPanelEmbed(interaction.guildId)], components: managementPanelComponents(interaction.guildId) });
+      scheduleManagementPanelSync(interaction.guild, interaction);
       return;
     }
 
