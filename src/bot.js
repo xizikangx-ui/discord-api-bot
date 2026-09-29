@@ -27,7 +27,7 @@ const {
   ContextMenuCommandBuilder, ApplicationCommandType,
   PermissionFlagsBits, MessageFlags, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ChannelSelectMenuBuilder, RoleSelectMenuBuilder, UserSelectMenuBuilder,
-  ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials,
+  ModalBuilder, LabelBuilder, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials,
 } = require('discord.js');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
@@ -2533,14 +2533,21 @@ client.on('interactionCreate', async (interaction) => {
         .setCustomId(`message-punish:${ban ? 'ban' : 'punish'}:${targetUserId}:${interaction.user.id}`)
         .setTitle(`${commandName}${userCommand ? '成员' : '消息作者'}`);
       const field = (id, label, required, max, value) => {
-        const input = new TextInputBuilder().setCustomId(id).setLabel(label)
+        const input = new TextInputBuilder().setCustomId(id)
           .setStyle(TextInputStyle.Short).setRequired(required).setMaxLength(max);
         if (value) input.setValue(value);
-        return new ActionRowBuilder().addComponents(input);
+        return new LabelBuilder().setLabel(label).setTextInputComponent(input);
       };
       modal.addComponents(field('reason', '原因', true, 400));
       if (!ban) modal.addComponents(
-        field('mode', '方式：仅警告 / 仅禁言 / 警告并禁言', true, 20, '警告并禁言'),
+        new LabelBuilder().setLabel('方式').setDescription('请选择一种处罚方式')
+          .setStringSelectMenuComponent(new StringSelectMenuBuilder()
+            .setCustomId('mode').setPlaceholder('请选择处罚方式').setRequired(true)
+            .addOptions(
+              { label: '仅警告', value: 'warning' },
+              { label: '仅禁言', value: 'timeout' },
+              { label: '警告并禁言', value: 'both' },
+            )),
         field('timeout', '禁言天数（1–90；有禁言时必填）', false, 2),
         field('warning', '警告天数（1–90；留空不自动移除）', false, 2));
       await interaction.showModal(modal);
@@ -2570,11 +2577,7 @@ client.on('interactionCreate', async (interaction) => {
       values = { user_id: match[2], 原因: interaction.fields.getTextInputValue('reason').trim() };
       if (!values.原因) { await interaction.editReply('请填写处罚原因。'); return; }
       if (commandName === '处罚') {
-        const mode = interaction.fields.getTextInputValue('mode').trim();
-        values.方式 = new Map([
-          ['仅警告', 'warning'], ['仅禁言', 'timeout'], ['警告并禁言', 'both'],
-          ['warning', 'warning'], ['timeout', 'timeout'], ['both', 'both'],
-        ]).get(mode);
+        values.方式 = interaction.fields.getStringSelectValues('mode')[0];
         if (!values.方式) { await interaction.editReply('处罚方式请填写：仅警告、仅禁言或警告并禁言。'); return; }
         for (const [id, name] of [['timeout', '禁言天数'], ['warning', '警告天数']]) {
           const input = interaction.fields.getTextInputValue(id).trim();
