@@ -1373,9 +1373,8 @@ async function createManagementDeleteProposal(interaction, link) {
       }
     }
 
-    let confirmationMessage;
     try {
-      confirmationMessage = await interaction.editReply({
+      await interaction.editReply({
         content: `⚠️ 删除警示：你确认后，Bot 会立即删除整个帖子及其中的消息，此操作无法恢复。确定吗？\n\n申请编号：${proposal.id}\n为避免误触，确认按钮将在 5 秒后启用；5 分钟内未确认会自动失效。`,
         components: managementDeleteConfirmationComponents(proposal.id, token, true),
       });
@@ -1386,7 +1385,9 @@ async function createManagementDeleteProposal(interaction, link) {
       await updateManagementDeleteApprovalCard(interaction.guild, proposal).catch(() => {});
       throw error;
     }
-    scheduleManagementDeleteConfirmation(proposal, confirmationMessage);
+    // Ephemeral interaction replies cannot be edited with channel Message.edit;
+    // keep the original interaction webhook for the 5-second enable and expiry.
+    scheduleManagementDeleteConfirmation(proposal, interaction);
 
   } finally {
     activeModerationTargetClaims.delete(targetClaim);
@@ -1593,7 +1594,7 @@ async function updateManagementDeleteApprovalCard(guild, proposal) {
   return true;
 }
 
-function scheduleManagementDeleteConfirmation(proposal, confirmationMessage) {
+function scheduleManagementDeleteConfirmation(proposal, confirmationInteraction) {
   const proposalId = proposal.id;
   const token = proposal.pendingManagementConfirmation.token;
   const guildId = proposal.guildId;
@@ -1602,7 +1603,7 @@ function scheduleManagementDeleteConfirmation(proposal, confirmationMessage) {
   const enableTimer = setTimeout(() => {
     const current = (guildData.moderationProposals || []).find((item) => item.guildId === guildId && item.id === proposalId);
     if (current?.status === 'awaiting_management_confirmation' && current.pendingManagementConfirmation?.token === token) {
-      confirmationMessage.edit({
+      confirmationInteraction.editReply({
         content: '5 秒等待已结束。确定删除后，Bot 会立即删除整个帖子，且无法恢复。',
         components: managementDeleteConfirmationComponents(proposalId, token, false),
       }).catch((error) => logFailure('管理组删帖确认按钮启用失败。', error));
@@ -1618,7 +1619,7 @@ function scheduleManagementDeleteConfirmation(proposal, confirmationMessage) {
       await saveGuildData();
       const guild = await client.guilds.fetch(guildId);
       await updateManagementDeleteApprovalCard(guild, current);
-      await confirmationMessage.edit({ content: '最终确认已过期，帖子没有删除。请重新发起管理组删帖操作。', components: [] }).catch(() => {});
+      await confirmationInteraction.editReply({ content: '最终确认已过期，帖子没有删除。请重新发起管理组删帖操作。', components: [] }).catch(() => {});
     } catch (error) {
       logFailure('管理组删帖确认过期清理失败。', error);
     }
