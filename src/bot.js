@@ -1963,7 +1963,7 @@ function managementCompanionRolePanel(guildId, tier = 'senior', roleId = null) {
     .setCustomId(`${track.prefix}-companion-roles:${guildId}:${track.roleId || ''}`)
     .setPlaceholder('选择 0 到 4 个配套身份组')
     .setMinValues(0).setMaxValues(4);
-  if (selectedRoleIds.length) roleSelect.setDefaultValues(...selectedRoleIds.map((id) => ({ id, type: 'role' })));
+  if (selectedRoleIds.length) roleSelect.setDefaultRoles(...selectedRoleIds);
   return {
     embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle(`${track.label}配套身份组`)
       .setDescription(`管理身份组：${track.roleId ? `<@&${track.roleId}>` : '尚未设置'}\n当前配套身份组：${track.companionRoleIds.map((id) => `<@&${id}>`).join('、') || '无'}\n\n选择最多 4 个配套身份组后，Bot 会为现有在任成员补发。之后任命会自动发放，卸任或移除管理身份时会一并移除不再需要的配套身份组。此设置会替换该管理身份组当前的配套列表。`)],
@@ -3368,6 +3368,7 @@ client.on('messageReactionAdd', async (incomingReaction, user) => {
       activeReactionCleanups.delete(cleanupKey);
     }
   } catch (error) {
+    if (Number(error.code ?? error.rawError?.code) === 10008) return;
     logFailure('自动清理消息表情反应失败。', error);
   }
 });
