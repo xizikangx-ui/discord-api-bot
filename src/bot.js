@@ -1273,7 +1273,7 @@ function emergencyChannelPanelEmbed(guildId) {
   const setting = settingsFor(guildId);
   const managerRoleId = managementTrack(setting, 'senior').roleId;
   return new EmbedBuilder().setColor(0xE67E22).setTitle('紧急频道面板')
-    .setDescription(`管理组：${managerRoleId ? `<@&${managerRoleId}>` : '尚未在 /管理组面板 配置'}\n开设位置：${setting.emergencyCategoryId ? `<#${setting.emergencyCategoryId}>` : '尚未选择分类'}\n私密记录频道：${setting.emergencyRecordChannelId ? `<#${setting.emergencyRecordChannelId}>` : '尚未选择'}\n\n管理组成员可填写频道名称和理由开设私密文字频道。频道内的“记录并关闭”按钮会先要求二次确认，再将聊天记录发送至上述记录频道；记录成功才删除频道。附件会以链接保存在记录中。若 Discord 未提供完整消息内容，Bot 会停止删除。`);
+    .setDescription(`管理组：${managerRoleId ? `<@&${managerRoleId}>` : '尚未在 /管理组面板 配置'}\n开设位置：${setting.emergencyCategoryId ? `<#${setting.emergencyCategoryId}>` : '尚未选择分类'}\n私密记录频道：${setting.emergencyRecordChannelId ? `<#${setting.emergencyRecordChannelId}>` : '尚未选择'}\n\n管理组成员可填写频道名称和理由开设私密文字频道。频道内的“记录并关闭”按钮会先要求二次确认，再将聊天记录加密发送至上述记录频道；记录成功才删除频道。管理组可点击记录卡获取仅自己可见的解密文件。附件会以链接保存在记录中。若 Discord 未提供完整消息内容，Bot 会停止删除。`);
 }
 
 function emergencyChannelPanelComponents(guildId) {
@@ -1351,7 +1351,10 @@ async function emergencyTranscriptFiles(channel, caseId) {
   if (current) chunks.push(current);
   if (chunks.length > 10) throw new Error('聊天记录超过 10 个附件，无法一次完整保存。频道未删除。');
   return { count: messages.length, newestId: messages.at(-1)?.id || null,
-    files: chunks.map((content, index) => ({ attachment: Buffer.from(content, 'utf8'), name: `emergency-${caseId}-${index + 1}.txt` })) };
+    files: chunks.map((content, index) => ({
+      attachment: Buffer.from(encryptJson({ kind: 'emergency-transcript', caseId, part: index + 1, content }), 'utf8'),
+      name: `emergency-${caseId}-${index + 1}.json.enc`,
+    })) };
 }
 
 function parseReactionEmojiKeys(input) {
@@ -3627,6 +3630,31 @@ async function handleEmergencyChannelInteraction(interaction) {
         components: emergencyChannelPanelComponents(interaction.guildId) });
       return true;
     }
+    if (action === 'emergency-view' && interaction.isButton()) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await emergencyManagerRole(interaction);
+      if (interaction.channelId !== settingsFor(interaction.guildId).emergencyRecordChannelId) {
+        throw new Error('只能从配置的私密记录频道读取紧急频道记录。');
+      }
+      const attachments = [...interaction.message.attachments.values()]
+        .filter((item) => item.name?.startsWith(`emergency-${reference}-`) && item.name.endsWith('.json.enc'));
+      if (!attachments.length) throw new Error('记录附件不存在或已被移除。');
+      const files = [];
+      for (const attachment of attachments) {
+        const response = await fetch(attachment.url);
+        if (!response.ok) throw new Error(`无法读取加密记录附件（HTTP ${response.status}）。`);
+        const decrypted = decryptJson(await response.json());
+        const payload = decrypted.value;
+        if (!decrypted.encrypted || payload?.kind !== 'emergency-transcript' || payload.caseId !== reference
+          || !Number.isInteger(payload.part) || typeof payload.content !== 'string') {
+          throw new Error('记录附件内容与当前案件不匹配。');
+        }
+        files.push({ attachment: Buffer.from(payload.content, 'utf8'), name: `emergency-${reference}-${payload.part}.txt` });
+      }
+      files.sort((left, right) => Number(left.name.match(/-(\d+)\.txt$/)?.[1]) - Number(right.name.match(/-(\d+)\.txt$/)?.[1]));
+      await interaction.editReply({ content: `紧急频道 ${reference} 的聊天记录仅向你显示。`, files });
+      return true;
+    }
     if (action === 'emergency-close' && interaction.isButton()) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await emergencyManagerRole(interaction);
@@ -3641,7 +3669,7 @@ async function handleEmergencyChannelInteraction(interaction) {
       const token = randomBytes(8).toString('hex');
       pendingEmergencyClosures.set(token, { guildId: interaction.guildId, channelId: reference,
         userId: interaction.user.id, expiresAt: Date.now() + 5 * 60 * 1000 });
-      await interaction.editReply({ content: `确认后会将本频道全部可读消息导出至 <#${setting.emergencyRecordChannelId}>，成功后永久删除本频道。附件以链接记录。确定继续吗？`,
+      await interaction.editReply({ content: `确认后会把本频道全部可读消息加密保存至 <#${setting.emergencyRecordChannelId}>，成功后永久删除本频道。附件以链接记录。确定继续吗？`,
         components: [new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`emergency-confirm:${token}`).setLabel('导出记录并删除频道').setStyle(ButtonStyle.Danger),
           new ButtonBuilder().setCustomId(`emergency-cancel:${token}`).setLabel('取消').setStyle(ButtonStyle.Secondary))],
@@ -3672,8 +3700,11 @@ async function handleEmergencyChannelInteraction(interaction) {
         const transcript = await emergencyTranscriptFiles(channel, caseData.caseId);
         const latest = await channel.messages.fetch({ limit: 1 });
         if ((latest.first()?.id || null) !== transcript.newestId) throw new Error('导出期间有新消息；已停止删除，请重试。');
-        await recordChannel.send({ content: `紧急频道记录 ${caseData.caseId}\n原频道：${caseData.name} (${channel.id})\n创建人：<@${caseData.createdBy}>\n关闭人：<@${interaction.user.id}>\n开设理由：${caseData.reason}\n消息数量：${transcript.count}\n附件原件不随聊天记录复制，记录中保留原链接。`,
-          files: transcript.files, allowedMentions: { parse: [] } });
+        await recordChannel.send({ content: `紧急频道记录 ${caseData.caseId}\n原频道：${caseData.name} (${channel.id})\n创建人：<@${caseData.createdBy}>\n关闭人：<@${interaction.user.id}>\n开设理由：${caseData.reason}\n消息数量：${transcript.count}\n聊天正文已加密保存；管理组可点击按钮查看。附件原件不随记录复制，记录中保留原链接。`,
+          files: transcript.files,
+          components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`emergency-view:${caseData.caseId}`)
+            .setLabel('查看聊天记录').setStyle(ButtonStyle.Secondary))],
+          allowedMentions: { parse: [] } });
         recorded = true;
         const finalLatest = await channel.messages.fetch({ limit: 1 });
         if ((finalLatest.first()?.id || null) !== transcript.newestId) {
