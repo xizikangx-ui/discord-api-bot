@@ -1580,9 +1580,9 @@ async function executeManagementThreadLock(interaction, link, reason) {
   };
   let announcementMessage = null;
   let announcedInChannelId = null;
-  const announcementEmbed = (description) => new EmbedBuilder().setColor(0x5865F2)
+  const announcementEmbed = (description = '') => new EmbedBuilder().setColor(0x5865F2)
     .setTitle('管理组锁定帖子公示')
-    .setDescription(`操作人：<@${interaction.user.id}>\n帖子：${proposal.targetLink}\n操作：锁定并关闭\n锁定理由：${reason}\n操作编号：${proposal.id}\n\n${description}`)
+    .setDescription(`操作人：<@${interaction.user.id}>\n帖子：${proposal.targetLink}\n操作：锁定并关闭\n锁定理由：${reason}\n操作编号：${proposal.id}${description ? `\n\n${description}` : ''}`)
     .setTimestamp();
   try {
     const target = await resolveModerationTarget(interaction.guild, proposal);
@@ -1595,10 +1595,10 @@ async function executeManagementThreadLock(interaction, link, reason) {
 
     // If the command is being run inside the target thread, publish before
     // archiving it; archived threads may reject new messages.
-    if (sameChannelAsTarget && announcementChannel) {
+    if (sameChannelAsTarget && announcementChannel && !target.channel.archived) {
       try {
         announcementMessage = await announcementChannel.send({
-          embeds: [announcementEmbed('正在执行锁定并关闭。')],
+          embeds: [announcementEmbed()],
           allowedMentions: { parse: [] },
         });
         announcedInChannelId = announcementChannel.id;
@@ -1611,23 +1611,28 @@ async function executeManagementThreadLock(interaction, link, reason) {
       try {
         await announcementMessage.edit({ embeds: [announcementEmbed('帖子已锁定并关闭。')], allowedMentions: { parse: [] } });
       } catch (error) {
-        announcementError ||= error;
+        // The complete notice was posted before archiving. Discord can reject
+        // edits to archived threads even when the lock itself succeeded.
+        if ((error.code ?? error.rawError?.code) !== 50083) announcementError ||= error;
       }
     } else {
-      const panelChannel = !sameChannelAsTarget ? announcementChannel : null;
+      const panelChannel = !sameChannelAsTarget && !(announcementChannel?.isThread() && announcementChannel.archived)
+        ? announcementChannel : null;
       const fallbackChannel = panelChannel || (settingsFor(interaction.guildId).managementDeleteApprovalChannelId
         ? await interaction.guild.channels.fetch(settingsFor(interaction.guildId).managementDeleteApprovalChannelId).catch(() => null)
         : null);
-      const logChannel = fallbackChannel?.isTextBased?.() && typeof fallbackChannel.send === 'function' ? fallbackChannel : null;
+      const logChannel = fallbackChannel?.isTextBased?.() && typeof fallbackChannel.send === 'function'
+        && !(fallbackChannel.isThread() && fallbackChannel.archived) ? fallbackChannel : null;
       if (logChannel) {
         try {
           await logChannel.send({ embeds: [announcementEmbed('帖子已锁定并关闭。')], allowedMentions: { parse: [] } });
           announcedInChannelId = logChannel.id;
+          announcementError = null;
         } catch (error) {
           announcementError ||= error;
         }
       } else if (!announcementError) {
-        announcementError = new Error('当前频道和已配置的审批频道都不可发送公示。');
+        announcementError = new Error('当前帖子已归档，且没有可发送公示的非归档频道。');
       }
     }
     const result = announcementError
@@ -2211,18 +2216,17 @@ async function syncManagementRole(guild, tier = 'senior', memberList = null, rol
   return true;
 }
 
-function scheduleManagementPanelSync(guild, interaction) {
-  if (activeManagementPanelSyncs.has(guild.id)) return;
-  const sync = (async () => {
-    const track = managementTrack(settingsFor(guild.id), 'senior');
-    if (track.roleId && track.channelId) await syncManagementRole(guild, 'senior');
-    await syncManagementCompanionRoles(guild);
-  })();
+function queueManagementPanelSync(guild, work, label) {
+  // Large guilds may need longer than Discord's 15-minute interaction-token
+  // lifetime to enumerate members. Never use that token after starting a scan.
+  const previous = activeManagementPanelSyncs.get(guild.id) || Promise.resolve();
+  const sync = previous.catch(() => {}).then(work);
   activeManagementPanelSyncs.set(guild.id, sync);
-  void sync.then(async () => {
-    await interaction.editReply({ embeds: [managementPanelEmbed(guild.id)], components: managementPanelComponents(guild.id) }).catch(() => {});
-  }).catch((error) => logFailure('管理组面板后台成员同步失败。', error))
-    .finally(() => activeManagementPanelSyncs.delete(guild.id));
+  void sync.then((summary) => console.log(`${label}已完成。${summary ? ` ${JSON.stringify(summary)}` : ''}`))
+    .catch((error) => logFailure(`${label}失败。`, error))
+    .finally(() => {
+      if (activeManagementPanelSyncs.get(guild.id) === sync) activeManagementPanelSyncs.delete(guild.id);
+    });
 }
 
 async function reconcileManagementMember(member, hasRole, tier = 'senior', roleId = null) {
@@ -3920,12 +3924,12 @@ client.on('interactionCreate', async (interaction) => {
             const existingThread = await interaction.guild.channels.fetch(oldChannelId).catch(() => null);
             if (existingThread?.isThread()) {
               const announcementThread = await ensureManagementAnnouncementThread(interaction.guild, 'middle', role.id);
-              const updated = await syncManagementRole(interaction.guild, 'middle', null, role.id);
-              const companionSync = await syncManagementCompanionRoles(interaction.guild).catch((error) => ({ error: error.message }));
-              await interaction.editReply({ content: updated
-                ? `身份组 <@&${role.id}> 的实时名单仍位于 <#${oldChannelId}>；任免公示子区为 ${announcementThread}。已重新同步成员并刷新名单。${companionSync.error ? `配套身份组同步失败：${companionSync.error}` : ''}`
-                : `实时名单子区为 <#${oldChannelId}>，任免公示子区为 ${announcementThread}；成员同步未完成，请确认 Server Members Intent 已开启。`,
+              await interaction.editReply({ content: `身份组 <@&${role.id}> 的实时名单仍位于 <#${oldChannelId}>；任免公示子区为 ${announcementThread}。成员正在后台同步。`,
                 embeds: [managementPanelEmbed(guildId, 'middle')], components: managementPanelComponents(guildId, 'middle') });
+              queueManagementPanelSync(interaction.guild, async () => {
+                await syncManagementRole(interaction.guild, 'middle', null, role.id);
+                return syncManagementCompanionRoles(interaction.guild);
+              }, '中层管理成员同步');
               return;
             }
           }
@@ -3951,12 +3955,12 @@ client.on('interactionCreate', async (interaction) => {
           setManagementTrackChannel(setting, track, thread.id);
           await saveGuildData();
           const announcementThread = await ensureManagementAnnouncementThread(interaction.guild, 'middle', role.id);
-          const updated = await syncManagementRole(interaction.guild, 'middle', null, role.id);
-          const companionSync = await syncManagementCompanionRoles(interaction.guild).catch((error) => ({ error: error.message }));
-          await interaction.editReply({ content: updated
-            ? `已为 <@&${role.id}> 创建实时名单子区 ${thread} 和任免公示子区 ${announcementThread}，现有成员已开始同步。${companionSync.error ? `配套身份组同步失败：${companionSync.error}` : ''}`
-            : `已创建实时名单子区 ${thread} 和任免公示子区 ${announcementThread}，但成员同步未完成；请检查 Server Members Intent 后重试。`,
+          await interaction.editReply({ content: `已为 <@&${role.id}> 创建实时名单子区 ${thread} 和任免公示子区 ${announcementThread}，现有成员正在后台同步。`,
             embeds: [managementPanelEmbed(guildId, 'middle')], components: managementPanelComponents(guildId, 'middle') });
+          queueManagementPanelSync(interaction.guild, async () => {
+            await syncManagementRole(interaction.guild, 'middle', null, role.id);
+            return syncManagementCompanionRoles(interaction.guild);
+          }, '中层管理成员同步');
           return;
         }
         if (action === 'mgmt-announcement' && interaction.isButton()) {
@@ -4035,12 +4039,14 @@ client.on('interactionCreate', async (interaction) => {
           }
           setManagementTrackChannel(setting, track, channel.id);
           await saveGuildData();
-          if (track.roleId) await syncManagementRole(interaction.guild, tier, null, track.roleId);
-          else await updateManagementRoster(interaction.guild, tier);
-          const companionSync = await syncManagementCompanionRoles(interaction.guild).catch((error) => ({ error: error.message }));
           const panelUpdated = await editManagementPanelSource(interaction, guildId, tier);
           if (!panelUpdated) await interaction.followUp({ content: '设置已保存，但原面板消息已不存在。请重新运行对应的管理面板指令。', flags: MessageFlags.Ephemeral });
-          if (companionSync.error) await interaction.followUp({ content: `配套身份组同步失败：${companionSync.error}`, flags: MessageFlags.Ephemeral });
+          await interaction.followUp({ content: '公示频道设置已保存；成员和配套身份组正在后台同步。', flags: MessageFlags.Ephemeral });
+          queueManagementPanelSync(interaction.guild, async () => {
+            if (track.roleId) await syncManagementRole(interaction.guild, tier, null, track.roleId);
+            else await updateManagementRoster(interaction.guild, tier);
+            return syncManagementCompanionRoles(interaction.guild);
+          }, '管理组公示频道成员同步');
           return;
         }
         if (action === 'mgmt-companion-roles' && interaction.isRoleSelectMenu()) {
@@ -4083,18 +4089,10 @@ client.on('interactionCreate', async (interaction) => {
             }
             throw error;
           }
-          let summary;
-          try {
-            summary = await syncManagementCompanionRoles(interaction.guild, previousRoleIds);
-          } catch (error) {
-            logFailure(`${track.label}配套身份组同步失败。`, error);
-            summary = { configured: true, granted: 0, removed: 0, failed: 0, error: error.message };
-          }
           await interaction.editReply(managementCompanionRolePanel(guildId, tier, roleId));
-          const resultText = summary.error
-            ? `设置已保存，但成员补发未完成：${summary.error}`
-            : `设置已保存：已补发配套身份组 ${summary.granted} 次，移除不再适用的配套身份组 ${summary.removed} 次，失败 ${summary.failed} 人。`;
-          await interaction.followUp({ content: resultText, flags: MessageFlags.Ephemeral });
+          await interaction.followUp({ content: '配套身份组设置已保存。现有成员的补发和移除正在后台同步；大型服务器可能需要较长时间。', flags: MessageFlags.Ephemeral });
+          queueManagementPanelSync(interaction.guild,
+            () => syncManagementCompanionRoles(interaction.guild, previousRoleIds), `${track.label}配套身份组同步`);
           return;
         }
         if (action === 'mgmt-role' && interaction.isRoleSelectMenu() && tier === 'senior') {
@@ -4128,20 +4126,27 @@ client.on('interactionCreate', async (interaction) => {
           }
           setManagementTrackRole(setting, track, role.id);
           await saveGuildData();
-          if (track.channelId) await syncManagementRole(interaction.guild, tier);
-          const companionSync = await syncManagementCompanionRoles(interaction.guild).catch((error) => ({ error: error.message }));
           const panelUpdated = await editManagementPanelSource(interaction, guildId, tier);
           if (!panelUpdated) await interaction.followUp({ content: '设置已保存，但原面板消息已不存在。请重新运行对应的管理面板指令。', flags: MessageFlags.Ephemeral });
-          if (companionSync.error) await interaction.followUp({ content: `配套身份组同步失败：${companionSync.error}`, flags: MessageFlags.Ephemeral });
+          await interaction.followUp({ content: '管理身份组设置已保存；现有成员和配套身份组正在后台同步。', flags: MessageFlags.Ephemeral });
+          queueManagementPanelSync(interaction.guild, async () => {
+            if (track.channelId) await syncManagementRole(interaction.guild, tier);
+            return syncManagementCompanionRoles(interaction.guild);
+          }, '管理身份组成员同步');
           return;
         }
         if (action === 'mgmt-refresh' && interaction.isButton()) {
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-          const updated = await syncManagementRole(interaction.guild, tier);
-          const companionSync = await syncManagementCompanionRoles(interaction.guild);
-          await interaction.editReply(updated
-            ? `已重新读取管理组身份组成员并刷新公示名单。配套身份组补发 ${companionSync.granted} 次、移除 ${companionSync.removed} 次、失败 ${companionSync.failed} 人。`
-            : '尚未设置可用的公示频道或管理组身份组，请先完成配置。');
+          const track = managementTrack(settingsFor(guildId), tier, tier === 'middle' ? session.roleId : null);
+          if (!track.roleId || !track.channelId) {
+            await interaction.editReply('尚未设置可用的公示频道或管理组身份组，请先完成配置。');
+            return;
+          }
+          await interaction.editReply('已开始后台刷新管理组名单及配套身份组；大型服务器可能需要较长时间。');
+          queueManagementPanelSync(interaction.guild, async () => {
+            await syncManagementRole(interaction.guild, tier, null, track.roleId);
+            return syncManagementCompanionRoles(interaction.guild);
+          }, '管理组名单刷新');
           return;
         }
       } catch (error) {
@@ -4534,7 +4539,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       await interaction.editReply({ embeds: [managementPanelEmbed(interaction.guildId)], components: managementPanelComponents(interaction.guildId) });
-      scheduleManagementPanelSync(interaction.guild, interaction);
       return;
     }
 
