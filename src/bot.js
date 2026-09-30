@@ -66,6 +66,7 @@ const activeModerationTargetClaims = new Set();
 const activeManagementDeleteVotes = new Set();
 const activeManagementDeleteExecutions = new Set();
 const pendingEmergencyClosures = new Map();
+const pendingEmergencyOpenings = new Map();
 const activeEmergencyClosures = new Set();
 const timeoutFile = path.join(__dirname, '..', 'data', 'long-timeouts.json');
 const guildDataFile = path.join(__dirname, '..', 'data', 'guild-settings.json');
@@ -1277,7 +1278,22 @@ function emergencyChannelPanelEmbed(guildId) {
   const setting = settingsFor(guildId);
   const managerRoleId = managementTrack(setting, 'senior').roleId;
   return new EmbedBuilder().setColor(0xE67E22).setTitle('紧急频道面板')
-    .setDescription(`管理组：${managerRoleId ? `<@&${managerRoleId}>` : '尚未在 /管理组面板 配置'}\n开设位置：${setting.emergencyCategoryId ? `<#${setting.emergencyCategoryId}>` : '尚未选择分类'}\n私密记录频道：${setting.emergencyRecordChannelId ? `<#${setting.emergencyRecordChannelId}>` : '尚未选择'}\n\n管理组成员可填写频道名称和理由开设私密文字频道。频道内的“记录并关闭”按钮会先要求二次确认，再将聊天记录加密发送至上述记录频道；记录成功才删除频道。管理组可点击记录卡获取仅自己可见的解密文件。附件会以链接保存在记录中。若 Discord 未提供完整消息内容，Bot 会停止删除。`);
+    .setDescription(`管理组：${managerRoleId ? `<@&${managerRoleId}>` : '尚未在 /管理组面板 配置'}\n开设位置：${setting.emergencyCategoryId ? `<#${setting.emergencyCategoryId}>` : '尚未选择分类'}\n私密记录频道：${setting.emergencyRecordChannelId ? `<#${setting.emergencyRecordChannelId}>` : '尚未选择'}\n\n开设时可选择允许进入的身份组，也可不选；仅创建者和 Bot 默认可进入。频道内可通过“拉人”按钮为指定成员开放查看、发言、创建公共子区、添加反应和查看历史消息。频道内的“记录并关闭”按钮会先要求二次确认，再将聊天记录加密发送至上述记录频道；记录成功才删除频道。管理组可点击记录卡获取仅自己可见的解密文件。附件会以链接保存在记录中。若 Discord 未提供完整消息内容，Bot 会停止删除。`);
+}
+
+const emergencyGuestPermissions = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+  PermissionFlagsBits.CreatePublicThreads, PermissionFlagsBits.AddReactions, PermissionFlagsBits.ReadMessageHistory];
+
+function emergencyOpeningReady(session) {
+  return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`emergency-details:${session.token}`)
+    .setLabel('填写频道名称和理由').setStyle(ButtonStyle.Primary))];
+}
+
+function emergencyOpeningSession(interaction, token) {
+  const session = pendingEmergencyOpenings.get(token);
+  if (!session || session.guildId !== interaction.guildId || session.userId !== interaction.user.id
+    || session.expiresAt <= Date.now()) throw new Error('开设步骤已过期，请重新点击面板中的“开设紧急频道”。');
+  return session;
 }
 
 function emergencyChannelPanelComponents(guildId) {
@@ -1319,19 +1335,55 @@ async function emergencyRecordChannel(guild, setting) {
   return channel;
 }
 
-async function emergencyTranscriptFiles(channel, caseId) {
-  const messages = [];
-  let before;
-  while (true) {
-    const page = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
-    if (!page.size) break;
-    messages.push(...page.values());
-    if (messages.length > 5000) throw new Error('紧急频道超过 5000 条消息；为避免生成不完整记录，未删除频道。');
-    before = page.last().id;
-    if (page.size < 100) break;
+async function emergencyTranscriptSources(channel) {
+  const threads = new Map((await channel.threads.fetchActive()).threads);
+  for (const type of ['public', 'private']) {
+    let before;
+    while (true) {
+      const page = await channel.threads.fetchArchived({ type, fetchAll: true, limit: 100,
+        ...(before ? { before } : {}) });
+      for (const thread of page.threads.values()) threads.set(thread.id, thread);
+      if (!page.hasMore) break;
+      const last = page.threads.last();
+      if (!last?.archivedAt || last.archivedAt.getTime() === before?.getTime()) {
+        throw new Error('无法完整翻页读取子区列表；频道未删除。');
+      }
+      before = last.archivedAt;
+    }
   }
-  messages.reverse();
-  const lines = [`紧急频道聊天记录\n频道：${channel.name} (${channel.id})\n记录编号：${caseId}\n导出时间：${new Date().toISOString()}\n消息数量：${messages.length}\n`];
+  return [channel, ...threads.values()];
+}
+
+async function emergencyTranscriptUnchanged(channel, newestIds) {
+  const sources = await emergencyTranscriptSources(channel);
+  if (sources.length !== newestIds.size || sources.some((source) => !newestIds.has(source.id))) return false;
+  for (const source of sources) {
+    const latest = await source.messages.fetch({ limit: 1 });
+    if ((latest.first()?.id || null) !== newestIds.get(source.id)) return false;
+  }
+  return true;
+}
+
+async function emergencyTranscriptFiles(channel, caseId) {
+  const sources = await emergencyTranscriptSources(channel);
+  const messages = [];
+  const newestIds = new Map();
+  for (const source of sources) {
+    let before;
+    let newestId = null;
+    while (true) {
+      const page = await source.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+      if (!page.size) break;
+      if (!newestId) newestId = page.first().id;
+      messages.push(...page.values());
+      if (messages.length > 5000) throw new Error('紧急频道及子区合计超过 5000 条消息；频道未删除。');
+      before = page.last().id;
+      if (page.size < 100) break;
+    }
+    newestIds.set(source.id, newestId);
+  }
+  messages.sort((left, right) => left.createdTimestamp - right.createdTimestamp || left.id.localeCompare(right.id));
+  const lines = [`紧急频道聊天记录\n频道：${channel.name} (${channel.id})\n记录编号：${caseId}\n导出时间：${new Date().toISOString()}\n频道及子区数量：${sources.length}\n消息数量：${messages.length}\n`];
   for (const message of messages) {
     if (!message.author?.bot && (message.type === 0 || message.type === 19)
       && !message.content && !message.attachments.size && !message.stickers?.size) {
@@ -1339,7 +1391,7 @@ async function emergencyTranscriptFiles(channel, caseId) {
     }
     const attachments = [...message.attachments.values()].map((item) => `${item.name || '附件'}: ${item.url}`);
     const embeds = message.embeds.map((embed) => JSON.stringify(embed.toJSON()));
-    lines.push(`[${new Date(message.createdTimestamp).toISOString()}] ${message.author?.tag || message.author?.id || '未知用户'} (${message.author?.id || '未知'})\n消息 ID：${message.id}\n${message.content || '[无文字]'}${attachments.length ? `\n${attachments.join('\n')}` : ''}${embeds.length ? `\n嵌入内容：${embeds.join('\n')}` : ''}\n`);
+    lines.push(`[${new Date(message.createdTimestamp).toISOString()}] ${message.author?.tag || message.author?.id || '未知用户'} (${message.author?.id || '未知'})\n所在位置：${message.channel?.name || message.channelId} (${message.channelId})\n消息 ID：${message.id}\n${message.content || '[无文字]'}${attachments.length ? `\n${attachments.join('\n')}` : ''}${embeds.length ? `\n嵌入内容：${embeds.join('\n')}` : ''}\n`);
   }
   const chunks = [];
   let current = '';
@@ -1354,7 +1406,7 @@ async function emergencyTranscriptFiles(channel, caseId) {
   }
   if (current) chunks.push(current);
   if (chunks.length > 10) throw new Error('聊天记录超过 10 个附件，无法一次完整保存。频道未删除。');
-  return { count: messages.length, newestId: messages.at(-1)?.id || null,
+  return { count: messages.length, newestIds,
     files: chunks.map((content, index) => ({
       attachment: Buffer.from(encryptJson({ kind: 'emergency-transcript', caseId, part: index + 1, content }), 'utf8'),
       name: `emergency-${caseId}-${index + 1}.json.enc`,
@@ -3185,15 +3237,12 @@ async function restoreRolePermissionChanges(guild, entry, permissionChange) {
 async function restoreChannelOverwriteChanges(guild, entry, overwriteChanges) {
   const allowChange = overwriteChanges.find((change) => change.key === 'allow');
   const denyChange = overwriteChanges.find((change) => change.key === 'deny');
-  const create = entry.action === AuditLogEvent.ChannelOverwriteCreate;
-  const remove = entry.action === AuditLogEvent.ChannelOverwriteDelete;
-  const oldAllow = allowChange ? permissionInteger(allowChange.old) : (create ? 0n : null);
-  const newAllow = allowChange ? permissionInteger(allowChange.new) : (remove ? 0n : null);
-  const oldDeny = denyChange ? permissionInteger(denyChange.old) : (create ? 0n : null);
-  const newDeny = denyChange ? permissionInteger(denyChange.new) : (remove ? 0n : null);
-  if (oldAllow === null || newAllow === null || oldDeny === null || newDeny === null) {
-    return { changed: 0n, restored: 0n, error: '审计日志没有包含完整的 allow/deny 前后值' };
-  }
+  // Audit entries contain only changed fields. An absent side is the empty bitset;
+  // an absent field did not change and contributes no bits to the diff.
+  const oldAllow = allowChange ? permissionInteger(allowChange.old) : 0n;
+  const newAllow = allowChange ? permissionInteger(allowChange.new) : 0n;
+  const oldDeny = denyChange ? permissionInteger(denyChange.old) : 0n;
+  const newDeny = denyChange ? permissionInteger(denyChange.new) : 0n;
   const setting = settingsFor(guild.id);
   const changed = monitoredPermissionBits((oldAllow ^ newAllow) | (oldDeny ^ newDeny), setting);
   if (!changed || !setting.permissionRollbackEnabled || entry.executorId === client.user.id) return { changed, restored: 0n };
@@ -3362,16 +3411,10 @@ client.on('guildAuditLogEntryCreate', async (entry, guild) => {
       if (!permissionChanges.length) return;
       const allowChange = permissionChanges.find((change) => change.key === 'allow');
       const denyChange = permissionChanges.find((change) => change.key === 'deny');
-      const create = entry.action === AuditLogEvent.ChannelOverwriteCreate;
-      const remove = entry.action === AuditLogEvent.ChannelOverwriteDelete;
-      const oldAllow = allowChange ? permissionInteger(allowChange.old) : (create ? 0n : null);
-      const newAllow = allowChange ? permissionInteger(allowChange.new) : (remove ? 0n : null);
-      const oldDeny = denyChange ? permissionInteger(denyChange.old) : (create ? 0n : null);
-      const newDeny = denyChange ? permissionInteger(denyChange.new) : (remove ? 0n : null);
-      if (oldAllow === null || newAllow === null || oldDeny === null || newDeny === null) {
-        console.warn('频道权限审计记录缺少 allow/deny 前后值，无法计算变更范围；审计编号 ' + entry.id);
-        return;
-      }
+      const oldAllow = allowChange ? permissionInteger(allowChange.old) : 0n;
+      const newAllow = allowChange ? permissionInteger(allowChange.new) : 0n;
+      const oldDeny = denyChange ? permissionInteger(denyChange.old) : 0n;
+      const newDeny = denyChange ? permissionInteger(denyChange.new) : 0n;
       changedBits = monitoredPermissionBits((oldAllow ^ newAllow) | (oldDeny ^ newDeny), setting);
       if (!changedBits) return;
       try {
@@ -3592,9 +3635,48 @@ async function handleEmergencyChannelInteraction(interaction) {
     }
     const [action, reference] = customId.split(':');
     if (action === 'emergency-create' && interaction.isButton()) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       if (reference !== interaction.guildId) throw new Error('面板不属于当前服务器。');
       await emergencyManagerRole(interaction);
-      await interaction.showModal(new ModalBuilder().setCustomId(`emergency-open:${interaction.guildId}:${interaction.user.id}`)
+      for (const [token, session] of pendingEmergencyOpenings) {
+        if (session.expiresAt <= Date.now()) pendingEmergencyOpenings.delete(token);
+      }
+      const token = randomBytes(8).toString('hex');
+      pendingEmergencyOpenings.set(token, { token, guildId: interaction.guildId, userId: interaction.user.id,
+        expiresAt: Date.now() + 10 * 60 * 1000, roleIds: null });
+      await interaction.editReply({ content: '选择可进入紧急频道的身份组，或点“不分配身份组”。只有创建者和 Bot 会默认进入。',
+        components: [
+          new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`emergency-roles:${token}`)
+            .setPlaceholder('选择可进入的身份组（最多 10 个）').setMinValues(1).setMaxValues(10)),
+          new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`emergency-no-roles:${token}`)
+            .setLabel('不分配身份组').setStyle(ButtonStyle.Secondary)),
+        ] });
+      return true;
+    }
+    if (action === 'emergency-roles' && interaction.isRoleSelectMenu()) {
+      await interaction.deferUpdate();
+      await emergencyManagerRole(interaction);
+      const session = emergencyOpeningSession(interaction, reference);
+      session.roleIds = [...new Set(interaction.values)].filter((id) => id !== interaction.guildId);
+      if (!session.roleIds.length) throw new Error('不能选择 @everyone；请选择其他身份组或“不分配身份组”。');
+      await interaction.editReply({ content: `已选择 ${session.roleIds.map((id) => `<@&${id}>`).join('、')}。下一步填写名称和理由。`,
+        components: emergencyOpeningReady(session), allowedMentions: { parse: [] } });
+      return true;
+    }
+    if (action === 'emergency-no-roles' && interaction.isButton()) {
+      await interaction.deferUpdate();
+      await emergencyManagerRole(interaction);
+      const session = emergencyOpeningSession(interaction, reference);
+      session.roleIds = [];
+      await interaction.editReply({ content: '不分配身份组；只有创建者和 Bot 默认可进入。下一步填写名称和理由。',
+        components: emergencyOpeningReady(session) });
+      return true;
+    }
+    if (action === 'emergency-details' && interaction.isButton()) {
+      await emergencyManagerRole(interaction);
+      const session = emergencyOpeningSession(interaction, reference);
+      if (!Array.isArray(session.roleIds)) throw new Error('请先选择身份组或“不分配身份组”。');
+      await interaction.showModal(new ModalBuilder().setCustomId(`emergency-open:${reference}`)
         .setTitle('开设紧急频道').addComponents(
           new LabelBuilder().setLabel('频道名称').setTextInputComponent(new TextInputBuilder()
             .setCustomId('name').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50)),
@@ -3604,8 +3686,13 @@ async function handleEmergencyChannelInteraction(interaction) {
     }
     if (action === 'emergency-open' && interaction.isModalSubmit()) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      if (reference !== interaction.guildId || customId.split(':')[2] !== interaction.user.id) throw new Error('表单不属于当前操作者。');
-      const roleId = await emergencyManagerRole(interaction);
+      await emergencyManagerRole(interaction);
+      const session = emergencyOpeningSession(interaction, reference);
+      if (!Array.isArray(session.roleIds)) throw new Error('请先选择频道可进入的身份组。');
+      pendingEmergencyOpenings.delete(reference);
+      const roleIds = session.roleIds;
+      const roles = await Promise.all(roleIds.map((id) => interaction.guild.roles.fetch(id).catch(() => null)));
+      if (roles.some((role) => !role || role.id === interaction.guildId)) throw new Error('所选身份组已失效，请重新开设。');
       const setting = settingsFor(interaction.guildId);
       const category = setting.emergencyCategoryId
         ? await interaction.guild.channels.fetch(setting.emergencyCategoryId).catch(() => null) : null;
@@ -3624,14 +3711,15 @@ async function handleEmergencyChannelInteraction(interaction) {
         topic: `discord-api-bot-emergency:${caseId}`,
         permissionOverwrites: [
           { id: interaction.guildId, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.UseApplicationCommands] },
+          ...roleIds.map((id) => ({ id, allow: emergencyGuestPermissions })),
+          { id: interaction.user.id, allow: [...emergencyGuestPermissions, PermissionFlagsBits.UseApplicationCommands] },
           { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
-            PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.AttachFiles] },
+            PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels,
+            PermissionFlagsBits.ManageRoles, PermissionFlagsBits.AttachFiles] },
         ], reason: `紧急频道 ${caseId}，创建人 ${interaction.user.id}`,
       });
       setting.emergencyChannels[channel.id] = { caseId, createdBy: interaction.user.id,
-        createdAt: Date.now(), name: channel.name, reason };
+        createdAt: Date.now(), name: channel.name, reason, accessRoleIds: roleIds };
       try { await saveGuildData(); }
       catch (error) {
         delete setting.emergencyChannels[channel.id];
@@ -3640,9 +3728,10 @@ async function handleEmergencyChannelInteraction(interaction) {
       }
       try {
         await channel.send({ embeds: [new EmbedBuilder().setColor(0xE67E22).setTitle('紧急频道')
-          .setDescription(`编号：${caseId}\n创建人：<@${interaction.user.id}>\n理由：${reason}\n\n管理组可点击下方按钮导出聊天记录并关闭。`)
-          .setTimestamp()], components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
-            .setCustomId(`emergency-close:${channel.id}`).setLabel('记录并关闭').setStyle(ButtonStyle.Danger))],
+          .setDescription(`编号：${caseId}\n创建人：<@${interaction.user.id}>\n可进入的身份组：${roleIds.length ? roleIds.map((id) => `<@&${id}>`).join('、') : '无'}\n理由：${reason}\n\n管理组可拉人，或点击“记录并关闭”导出聊天记录并关闭。`)
+          .setTimestamp()], components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`emergency-invite:${channel.id}`).setLabel('拉人').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`emergency-close:${channel.id}`).setLabel('记录并关闭').setStyle(ButtonStyle.Danger))],
           allowedMentions: { parse: [] } });
       } catch (error) {
         await channel.delete('紧急频道关闭面板无法发送，撤销刚创建的空频道').catch(() => {});
@@ -3673,6 +3762,49 @@ async function handleEmergencyChannelInteraction(interaction) {
       await saveGuildData();
       await interaction.editReply({ embeds: [emergencyChannelPanelEmbed(interaction.guildId)],
         components: emergencyChannelPanelComponents(interaction.guildId) });
+      return true;
+    }
+    if (action === 'emergency-invite' && interaction.isButton()) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await emergencyManagerRole(interaction);
+      if (reference !== interaction.channelId || !settingsFor(interaction.guildId).emergencyChannels[reference]) {
+        throw new Error('只能在紧急频道内邀请成员。');
+      }
+      if (activeEmergencyClosures.has(reference)) throw new Error('频道正在归档，暂不能邀请成员。');
+      await interaction.editReply({ content: '选择要拉进本频道的成员。Bot 将开放查看消息、发言、创建公共子区、添加反应和查看历史消息。',
+        components: [new ActionRowBuilder().addComponents(new UserSelectMenuBuilder()
+          .setCustomId(`emergency-users:${reference}`).setPlaceholder('选择成员（最多 10 人）').setMinValues(1).setMaxValues(10))] });
+      return true;
+    }
+    if (action === 'emergency-users' && interaction.isUserSelectMenu()) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await emergencyManagerRole(interaction);
+      const caseData = settingsFor(interaction.guildId).emergencyChannels[reference];
+      if (reference !== interaction.channelId || !caseData) throw new Error('只能在紧急频道内邀请成员。');
+      if (activeEmergencyClosures.has(reference)) throw new Error('频道正在归档，暂不能邀请成员。');
+      const channel = await interaction.guild.channels.fetch(reference).catch(() => null);
+      if (!channel || channel.type !== ChannelType.GuildText) throw new Error('紧急频道已不存在。');
+      const botMember = await interaction.guild.members.fetchMe();
+      if (!channel.permissionsFor(botMember)?.has(PermissionFlagsBits.ManageRoles)) {
+        throw new Error('Bot 在紧急频道缺少“管理身份组”权限，无法设置成员频道权限。');
+      }
+      const granted = [];
+      const failed = [];
+      for (const userId of [...new Set(interaction.values)]) {
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        if (!member) { failed.push(`${userId}（不在服务器）`); continue; }
+        try {
+          await channel.permissionOverwrites.edit(userId, {
+            ViewChannel: true, SendMessages: true, CreatePublicThreads: true,
+            AddReactions: true, ReadMessageHistory: true,
+          }, `紧急频道 ${caseData.caseId}：${interaction.user.id} 邀请成员`);
+          granted.push(`<@${userId}>`);
+        } catch (error) {
+          failed.push(`${userId}（${error?.rawError?.message || error.message}）`);
+        }
+      }
+      await interaction.editReply({ content: `已拉入：${granted.length ? granted.join('、') : '无'}${failed.length ? `\n失败：${failed.join('；')}` : ''}`,
+        allowedMentions: { parse: [] } });
       return true;
     }
     if (action === 'emergency-view' && interaction.isButton()) {
@@ -3728,7 +3860,7 @@ async function handleEmergencyChannelInteraction(interaction) {
         || pending.expiresAt <= Date.now()) throw new Error('确认已过期或不属于你，请重新点击频道内的关闭按钮。');
       pendingEmergencyClosures.delete(reference);
       if (action === 'emergency-cancel') { await interaction.editReply('已取消；频道保持开放。'); return true; }
-      const roleId = await emergencyManagerRole(interaction);
+      await emergencyManagerRole(interaction);
       const setting = settingsFor(interaction.guildId);
       const caseData = setting.emergencyChannels[pending.channelId];
       const channel = await interaction.guild.channels.fetch(pending.channelId).catch(() => null);
@@ -3740,26 +3872,43 @@ async function handleEmergencyChannelInteraction(interaction) {
       if (activeEmergencyClosures.has(channel.id)) throw new Error('此频道正在由另一名管理员归档，请勿重复操作。');
       activeEmergencyClosures.add(channel.id);
       let recorded = false;
+      const lockedOverwrites = [];
       try {
-        await channel.permissionOverwrites.edit(roleId, { SendMessages: false }, `紧急频道 ${caseData.caseId} 正在导出记录`);
+        for (const overwrite of channel.permissionOverwrites.cache.values()) {
+          if (overwrite.id === client.user.id || overwrite.id === interaction.guildId
+            || !overwrite.allow.has(PermissionFlagsBits.ViewChannel)) continue;
+          const original = {};
+          for (const key of ['SendMessages', 'SendMessagesInThreads', 'CreatePublicThreads']) {
+            const bit = PermissionFlagsBits[key];
+            original[key] = overwrite.allow.has(bit) ? true : overwrite.deny.has(bit) ? false : null;
+          }
+          await channel.permissionOverwrites.edit(overwrite.id, {
+            SendMessages: false, SendMessagesInThreads: false, CreatePublicThreads: false,
+          },
+            `紧急频道 ${caseData.caseId} 正在导出记录`);
+          lockedOverwrites.push({ id: overwrite.id, original });
+        }
         const transcript = await emergencyTranscriptFiles(channel, caseData.caseId);
-        const latest = await channel.messages.fetch({ limit: 1 });
-        if ((latest.first()?.id || null) !== transcript.newestId) throw new Error('导出期间有新消息；已停止删除，请重试。');
+        if (!(await emergencyTranscriptUnchanged(channel, transcript.newestIds))) {
+          throw new Error('导出期间频道或子区出现新消息；已停止删除，请重试。');
+        }
         await recordChannel.send({ content: `紧急频道记录 ${caseData.caseId}\n原频道：${caseData.name} (${channel.id})\n创建人：<@${caseData.createdBy}>\n关闭人：<@${interaction.user.id}>\n开设理由：${caseData.reason}\n消息数量：${transcript.count}\n聊天正文已加密保存；管理组可点击按钮查看。附件原件不随记录复制，记录中保留原链接。`,
           files: transcript.files,
           components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`emergency-view:${caseData.caseId}`)
             .setLabel('查看聊天记录').setStyle(ButtonStyle.Secondary))],
           allowedMentions: { parse: [] } });
         recorded = true;
-        const finalLatest = await channel.messages.fetch({ limit: 1 });
-        if ((finalLatest.first()?.id || null) !== transcript.newestId) {
-          throw new Error('上传记录期间出现新消息；频道未删除，请重新导出。');
+        if (!(await emergencyTranscriptUnchanged(channel, transcript.newestIds))) {
+          throw new Error('上传记录期间频道或子区出现新消息；频道未删除，请重新导出。');
         }
         await channel.delete(`紧急频道 ${caseData.caseId} 已导出记录，由 ${interaction.user.id} 关闭`);
         delete setting.emergencyChannels[channel.id];
         await saveGuildData().catch((error) => logFailure('紧急频道删除后保存索引失败。', error));
       } catch (error) {
-        await channel.permissionOverwrites.edit(roleId, { SendMessages: true }, '紧急频道关闭失败，恢复发言').catch(() => {});
+        for (const overwrite of lockedOverwrites) {
+          await channel.permissionOverwrites.edit(overwrite.id, overwrite.original,
+            '紧急频道关闭失败，恢复原有发言权限').catch(() => {});
+        }
         if (recorded) throw new Error(`聊天记录已发送至 <#${recordChannel.id}>，频道仍保留：${error.message}`);
         throw error;
       } finally {
