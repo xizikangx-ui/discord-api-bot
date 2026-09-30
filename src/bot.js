@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { randomBytes, createCipheriv, createDecipheriv } = require('node:crypto');
+const { randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } = require('node:crypto');
 const proxyUrl = process.env.DISCORD_PROXY_URL || process.env.HTTPS_PROXY;
 if (proxyUrl) {
   // discord.js uses the `ws` package on Node.js; pass it an explicit CONNECT agent.
@@ -44,6 +44,8 @@ function logFailure(label, error) {
 }
 
 const DAY = 24 * 60 * 60 * 1000;
+const MANAGEMENT_SPEECH_TITLE = '管理组正式发言';
+const MANAGEMENT_SPEECH_FOOTER = '管理组认证：';
 const DEFAULT_MONITORED_PERMISSION_KEYS = ['Administrator', 'ManageGuild', 'ManageRoles', 'ManageChannels', 'ManageThreads', 'ManageWebhooks'];
 const MAX_TIMEOUT = 28 * DAY;
 const TIMEOUT_REFRESH = 27 * DAY;
@@ -205,9 +207,11 @@ const commands = [
     new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.Message)),
   ...['处罚', '永封'].map((name) =>
     new ContextMenuCommandBuilder().setName(name).setType(ApplicationCommandType.User)),
-  ...(() => {
+  ...['说话', '管理说话'].map((commandName) => {
     const command = new SlashCommandBuilder()
-      .setName('说话').setDescription('让机器人以自己的身份在当前频道或子区发言')
+      .setName(commandName).setDescription(commandName === '管理说话'
+        ? '主管理组以可核验的管理组身份在当前频道或子区发言'
+        : '让机器人以自己的身份在当前频道或子区发言')
       .addStringOption((o) => o.setName('内容').setDescription('机器人要发送的消息（与图片至少填写一项）').setRequired(false).setMaxLength(1900));
     for (const name of ['图片1', '图片2', '图片3', '图片4', '图片5']) {
       command.addAttachmentOption((o) => o.setName(name).setDescription('可选图片附件').setRequired(false));
@@ -215,8 +219,8 @@ const commands = [
     command
       .addStringOption((o) => o.setName('图片链接').setDescription('可填多个 HTTPS 图片链接，用空格或换行分隔').setRequired(false).setMaxLength(1800))
       .addStringOption((o) => o.setName('回复消息链接').setDescription('可选：粘贴当前频道/子区中要回复的消息链接').setRequired(false).setMaxLength(200));
-    return [command];
-  })(),
+    return command;
+  }),
   new SlashCommandBuilder()
     .setName('说话转发').setDescription('让机器人把一条本服务器可见的消息转发到当前频道或子区')
     .addStringOption((o) => o.setName('消息链接').setDescription('粘贴本服务器消息的 Discord 链接').setRequired(true).setMaxLength(200)),
@@ -1296,7 +1300,7 @@ async function emergencyManagerRole(interaction) {
   const member = inPayload || isAdmin ? null : await interaction.guild.members.fetch(interaction.user.id);
   if (!inPayload && !isAdmin && !member.roles.cache.has(roleId)
     && !member.permissions.has(PermissionFlagsBits.Administrator)) {
-    throw new Error('只有主管理组成员可以开设和关闭紧急频道。');
+    throw new Error('只有主管理组成员或服务器管理员可以使用此功能。');
   }
   return roleId;
 }
@@ -2518,6 +2522,20 @@ function hasPermission(interaction, permission) {
   return interaction.memberPermissions?.has(permission) || false;
 }
 
+function imitatesManagementSpeech(content) {
+  const normalized = String(content || '').normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '');
+  return normalized.includes(MANAGEMENT_SPEECH_TITLE)
+    || normalized.includes('管理组认证')
+    || normalized.includes('点击核验管理组发言')
+    || normalized.includes('认证通过这条消息由管理组成员');
+}
+
+function managementSpeechSignature(guildId, channelId, actorId, nonce, body) {
+  return createHmac('sha256', encryptionKey())
+    .update(JSON.stringify(['management-speech-v1', guildId, channelId, actorId, nonce, body]))
+    .digest('hex');
+}
+
 function isConfiguredManagementMember(interaction) {
   if (!interaction.guildId) return false;
   const setting = settingsFor(interaction.guildId);
@@ -3529,6 +3547,33 @@ client.on('guildMemberRemove', (member) => {
   for (const roleId of Object.keys(setting.middleManagementGroups || {})) scheduleManagementMemberSync(member, false, 'middle', roleId);
 });
 
+async function handleManagementSpeechVerification(interaction) {
+  if (!interaction.isButton() || !interaction.customId.startsWith('management-speech-verify:')) return false;
+  const match = interaction.customId.match(/^management-speech-verify:(\d{17,20}):([a-f0-9]{24})$/);
+  const actorId = match?.[1];
+  const nonce = match?.[2];
+  const embed = interaction.message?.embeds?.find((item) => item.title === MANAGEMENT_SPEECH_TITLE);
+  const footer = embed?.footer?.text || '';
+  const signature = footer.startsWith(MANAGEMENT_SPEECH_FOOTER)
+    ? footer.slice(MANAGEMENT_SPEECH_FOOTER.length) : '';
+  let valid = false;
+  try {
+    if (match && interaction.inGuild() && interaction.message?.author?.id === client.user.id
+      && embed?.description === '此消息由 Bot 在核对主管理组身份后发布。点击下方按钮可验证来源。'
+      && embed?.fields?.some((field) => field.name === '发言人' && field.value === `<@${actorId}>`)
+      && /^[a-f0-9]{64}$/.test(signature)) {
+      const expected = managementSpeechSignature(interaction.guildId, interaction.channelId, actorId, nonce,
+        interaction.message.content || '');
+      valid = timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
+    }
+  } catch (error) { logFailure('管理组发言核验失败。', error); }
+  await interaction.reply({ content: valid
+    ? `认证通过：这条消息由管理组成员 <@${actorId}> 通过 /管理说话 发出，内容未被修改。`
+    : '认证失败：此消息并非有效的管理组正式发言，或内容已被修改。',
+  flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+  return true;
+}
+
 async function handleEmergencyChannelInteraction(interaction) {
   const command = interaction.isChatInputCommand() && interaction.commandName === '紧急频道面板';
   const customId = interaction.customId || '';
@@ -3742,6 +3787,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
   console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isContextMenuCommand() ? `右键/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
+  if (await handleManagementSpeechVerification(interaction)) return;
   if (await handleEmergencyChannelInteraction(interaction)) return;
   if (await handlePermissionPanelInteraction(interaction)) return;
   if (interaction.isModalSubmit() && interaction.customId.startsWith('mgmt-reason:')) {
@@ -5232,14 +5278,19 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (commandName === '说话') {
+    if (commandName === '说话' || commandName === '管理说话') {
+      const managementSpeech = commandName === '管理说话';
+      if (managementSpeech) {
+        try { await emergencyManagerRole(interaction); }
+        catch (error) { await interaction.editReply(error.message); return; }
+      }
       const target = interaction.channel;
       if (!target?.isTextBased() || !target.guildId || target.guildId !== interaction.guildId) {
         await interaction.editReply('请在本服务器的文字频道或子区中使用此指令。');
         return;
       }
       if (target.type === ChannelType.GuildForum) {
-        await interaction.editReply('请先打开要发言的论坛帖子，再在该帖子内使用 `/说话`。');
+        await interaction.editReply(`请先打开要发言的论坛帖子，再在该帖子内使用 \`/${commandName}\`。`);
         return;
       }
       const botMember = await interaction.guild.members.fetchMe();
@@ -5250,6 +5301,10 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       const content = options.getString('内容') || '';
+      if (!managementSpeech && imitatesManagementSpeech(content)) {
+        await interaction.editReply('普通 /说话 不能冒用管理组正式发言或认证标记。请让主管理组成员使用 /管理说话。');
+        return;
+      }
       const pictures = ['图片1', '图片2', '图片3', '图片4', '图片5']
         .map((name) => options.getAttachment(name)).filter(Boolean);
       const pictureLinksInput = options.getString('图片链接') || '';
@@ -5347,10 +5402,24 @@ client.on('interactionCreate', async (interaction) => {
         }
         replyOptions = { reply: { messageReference: sourceMessage.id, failIfNotExists: false } };
       }
-      await target.send({ content: messageContent || undefined, ...replyOptions,
+      const sendOptions = { content: messageContent || undefined, ...replyOptions,
         ...(pictures.length ? { files: pictures.map((picture) => ({ attachment: picture.url, name: picture.name })) } : {}),
-        allowedMentions: { parse: ['users', 'roles', ...(mentionsEveryone ? ['everyone'] : [])], repliedUser: false } });
-      await interaction.editReply(replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。');
+        allowedMentions: { parse: ['users', 'roles', ...(mentionsEveryone ? ['everyone'] : [])], repliedUser: false } };
+      if (managementSpeech) {
+        const nonce = randomBytes(12).toString('hex');
+        const signature = managementSpeechSignature(interaction.guildId, target.id, interaction.user.id, nonce, messageContent);
+        sendOptions.embeds = [new EmbedBuilder().setColor(0x5865F2).setTitle(MANAGEMENT_SPEECH_TITLE)
+          .setDescription('此消息由 Bot 在核对主管理组身份后发布。点击下方按钮可验证来源。')
+          .addFields({ name: '发言人', value: `<@${interaction.user.id}>` })
+          .setFooter({ text: `${MANAGEMENT_SPEECH_FOOTER}${signature}` })];
+        sendOptions.components = [new ActionRowBuilder().addComponents(new ButtonBuilder()
+          .setCustomId(`management-speech-verify:${interaction.user.id}:${nonce}`)
+          .setLabel('核验管理组发言').setStyle(ButtonStyle.Secondary))];
+      }
+      await target.send(sendOptions);
+      await interaction.editReply(managementSpeech
+        ? '已发布可点击核验的管理组正式发言。'
+        : replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。');
       return;
     }
 
@@ -5470,7 +5539,17 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply('出于安全限制，只能编辑此机器人的消息。');
         return;
       }
-      await message.edit({ content: options.getString('新内容', true), allowedMentions: { parse: [] } });
+      if (message.embeds.some((embed) => embed.title === MANAGEMENT_SPEECH_TITLE
+        || embed.footer?.text?.startsWith(MANAGEMENT_SPEECH_FOOTER))) {
+        await interaction.editReply('管理组正式发言不允许通过 /编辑说话 修改；请由管理组重新发布。');
+        return;
+      }
+      const newContent = options.getString('新内容', true);
+      if (imitatesManagementSpeech(newContent)) {
+        await interaction.editReply('不能把普通机器人消息编辑成管理组正式发言格式。');
+        return;
+      }
+      await message.edit({ content: newContent, allowedMentions: { parse: [] } });
       await interaction.editReply('已更新机器人消息。');
       return;
     }
