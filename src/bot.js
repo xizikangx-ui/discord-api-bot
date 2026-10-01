@@ -2670,6 +2670,14 @@ function isConfiguredManagementMember(interaction) {
   return [...managementRoleIds].some((roleId) => memberRoleIds.has(roleId));
 }
 
+function isConfiguredSeniorManagementMember(interaction) {
+  if (!interaction.guildId) return false;
+  const roleId = managementTrack(settingsFor(interaction.guildId), 'senior').roleId;
+  if (!roleId) return false;
+  const roles = interaction.member?.roles;
+  return roles?.cache?.has(roleId) || (Array.isArray(roles) && roles.includes(roleId)) || false;
+}
+
 function configuredManagementRoleIds(setting) {
   return new Set([
     managementTrack(setting, 'senior').roleId,
@@ -5625,7 +5633,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.editReply('机器人缺少“提及 @everyone、@here 和所有身份组”权限，无法提醒不可被普通成员提及的身份组；请为机器人开启此权限，或将目标身份组设为可被提及。');
           return;
         }
-        if (!managementSpeech) {
+        if (!managementSpeech && !isConfiguredSeniorManagementMember(interaction)) {
           let oversizedRole;
           try {
             oversizedRole = await roleMentionOverMemberLimit(interaction.guild, roles, 100);
