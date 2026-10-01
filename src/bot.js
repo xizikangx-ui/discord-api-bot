@@ -77,6 +77,7 @@ const ENCRYPTED_JSON_FORMAT = 'discord-api-bot-encrypted-json';
 const STORAGE_MARKER = 'discord-api-bot-state-v1';
 const STORAGE_FILE_NAME = 'discord-api-bot-state.json';
 const storageChannelId = process.env.DISCORD_STORAGE_CHANNEL_ID || '';
+const speechArchiveChannelId = process.env.DISCORD_SPEECH_ARCHIVE_CHANNEL_ID || '';
 const legacyStorageChannelId = process.env.DISCORD_LEGACY_STORAGE_CHANNEL_ID || '';
 function parseGuildIds(value) {
   return [...new Set((value || '').split(',').map((id) => id.trim()).filter(Boolean))];
@@ -2594,6 +2595,56 @@ async function roleMentionOverMemberLimit(guild, roles, limit) {
   }
 }
 
+async function resolveSpeechArchiveChannel() {
+  if (!speechArchiveChannelId) throw new Error('尚未配置 DISCORD_SPEECH_ARCHIVE_CHANNEL_ID。');
+  const channel = await client.channels.fetch(speechArchiveChannelId);
+  if (!channel || channel.type !== ChannelType.GuildText || !storageChannel?.guildId
+    || channel.guildId !== storageChannel.guildId || channel.id === storageChannelId) {
+    throw new Error('说话留档频道必须是信息存储服务器内独立的文字频道。');
+  }
+  const permissions = channel.permissionsFor(client.user);
+  if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles])) {
+    throw new Error('Bot 在说话留档频道缺少查看、发言、读取历史或附加文件权限。');
+  }
+  if (channel.permissionsFor(channel.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
+    throw new Error('说话留档频道对 @everyone 可见；请先把它设为私密频道。');
+  }
+  return channel;
+}
+
+function speechArchiveSummary(interaction, archiveId, managementSpeech, status, messageUrl) {
+  return `说话留档 ${archiveId}\n操作人：<@${interaction.user.id}> (${interaction.user.id})\n指令：/${managementSpeech ? '管理说话' : '说话'}\n原频道：<#${interaction.channelId}> (${interaction.channelId})\n状态：${status}${messageUrl ? `\n已发送消息：${messageUrl}` : ''}\n发言正文与图片链接保存在本消息的加密附件中。`;
+}
+
+async function beginSpeechArchive(interaction, managementSpeech, messageContent, pictures, replyLink) {
+  const channel = await resolveSpeechArchiveChannel();
+  const archiveId = randomBytes(8).toString('hex');
+  const data = {
+    kind: 'speech-archive', archiveId, guildId: interaction.guildId, channelId: interaction.channelId,
+    operatorId: interaction.user.id, command: managementSpeech ? '管理说话' : '说话',
+    interactionId: interaction.id, recordedAt: new Date().toISOString(), content: messageContent,
+    replyLink: replyLink || null,
+    pictures: pictures.map((picture) => ({ name: picture.name, url: picture.url, size: picture.size })),
+  };
+  const message = await channel.send({
+    content: speechArchiveSummary(interaction, archiveId, managementSpeech, '准备发送'),
+    files: [{ attachment: Buffer.from(encryptJson(data), 'utf8'), name: `speech-archive-${archiveId}.json.enc` }],
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
+      .setCustomId(`speech-archive-view:${archiveId}`).setLabel('查看加密记录').setStyle(ButtonStyle.Secondary))],
+    allowedMentions: { parse: [] },
+  });
+  return { archiveId, message };
+}
+
+async function updateSpeechArchive(interaction, archive, managementSpeech, status, messageUrl) {
+  await archive.message.edit({
+    content: speechArchiveSummary(interaction, archive.archiveId, managementSpeech, status, messageUrl),
+    attachments: [...archive.message.attachments.values()].map((attachment) => ({ id: attachment.id })),
+    allowedMentions: { parse: [] },
+  });
+}
+
 function imitatesManagementSpeech(content) {
   const normalized = String(content || '').normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '');
   return normalized.includes(MANAGEMENT_SPEECH_TITLE)
@@ -3637,6 +3688,35 @@ async function handleManagementSpeechVerification(interaction) {
   return true;
 }
 
+async function handleSpeechArchiveView(interaction) {
+  if (!interaction.isButton() || !interaction.customId.startsWith('speech-archive-view:')) return false;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const archiveId = interaction.customId.slice('speech-archive-view:'.length);
+    if (!/^[a-f0-9]{16}$/.test(archiveId) || !interaction.inGuild()
+      || interaction.channelId !== speechArchiveChannelId
+      || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+      || interaction.message?.author?.id !== client.user.id) {
+      throw new Error('只有留档服务器的管理员能在指定留档频道查看此记录。');
+    }
+    const attachment = [...interaction.message.attachments.values()]
+      .find((item) => item.name === `speech-archive-${archiveId}.json.enc`);
+    if (!attachment) throw new Error('加密记录附件已不存在。');
+    const response = await fetch(attachment.url);
+    if (!response.ok) throw new Error(`无法读取留档附件（HTTP ${response.status}）。`);
+    const decrypted = decryptJson(await response.json());
+    if (!decrypted.encrypted || decrypted.value?.kind !== 'speech-archive'
+      || decrypted.value.archiveId !== archiveId) throw new Error('留档内容与当前记录不匹配。');
+    await interaction.editReply({ content: `说话留档 ${archiveId} 的内容仅向你显示。`,
+      files: [{ attachment: Buffer.from(JSON.stringify(decrypted.value, null, 2), 'utf8'),
+        name: `speech-archive-${archiveId}.json` }] });
+  } catch (error) {
+    logFailure('读取说话留档失败。', error);
+    await interaction.editReply(`无法读取说话留档：${error.message}`);
+  }
+  return true;
+}
+
 async function handleEmergencyChannelInteraction(interaction) {
   const command = interaction.isChatInputCommand() && interaction.commandName === '紧急频道面板';
   const customId = interaction.customId || '';
@@ -3957,6 +4037,7 @@ client.on('interactionCreate', async (interaction) => {
   }
   console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isContextMenuCommand() ? `右键/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
   if (await handleManagementSpeechVerification(interaction)) return;
+  if (await handleSpeechArchiveView(interaction)) return;
   if (await handleEmergencyChannelInteraction(interaction)) return;
   if (await handlePermissionPanelInteraction(interaction)) return;
   if (interaction.isModalSubmit() && interaction.customId.startsWith('mgmt-reason:')) {
@@ -5599,10 +5680,33 @@ client.on('interactionCreate', async (interaction) => {
           .setCustomId(`management-speech-verify:${interaction.user.id}:${nonce}`)
           .setLabel('核验管理组发言').setStyle(ButtonStyle.Secondary))];
       }
-      await target.send(sendOptions);
-      await interaction.editReply(managementSpeech
+      let archive;
+      try {
+        archive = await beginSpeechArchive(interaction, managementSpeech, messageContent, pictures, replyLink);
+      } catch (error) {
+        logFailure('说话留档写入失败，未发送原消息。', error);
+        await interaction.editReply(`说话留档未完成，Bot 没有发言：${error.message}`);
+        return;
+      }
+      let sent;
+      try {
+        sent = await target.send(sendOptions);
+      } catch (error) {
+        await updateSpeechArchive(interaction, archive, managementSpeech, '发送失败').catch((archiveError) =>
+          logFailure('原消息发送失败后无法更新留档状态。', archiveError));
+        throw error;
+      }
+      let archiveStatusFailed = false;
+      try {
+        await updateSpeechArchive(interaction, archive, managementSpeech, '已发送', sent.url);
+      } catch (error) {
+        archiveStatusFailed = true;
+        logFailure('Bot 已发言，但留档消息链接更新失败。', error);
+      }
+      const result = managementSpeech
         ? '已发布可点击核验的管理组正式发言。'
-        : replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。');
+        : replyLink ? '已由机器人在当前频道/子区回复该消息。' : '已由机器人在当前频道/子区发言。';
+      await interaction.editReply(`${result}${archiveStatusFailed ? '加密留档已保存，但留档状态和消息链接更新失败，请检查留档频道。' : '操作人和发言内容已留档。'}`);
       return;
     }
 
