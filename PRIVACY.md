@@ -15,6 +15,8 @@
 
 ### Bot 发言与 Discord 交互
 
+中层申请被拒绝时，管理组可在表单中填写或修改拒绝理由，Bot 会私信申请人告知申请结果和理由。默认拒绝理由、实际拒绝理由、处理人 ID、私信发送状态及成功发送后的消息 ID 会随申请记录加密保存。私信、申请人自己的进度页和拒绝审批卡不显示拒绝人身份；处理人 ID 保留在内部加密状态中用于审计。管理员填写理由时应避免主动包含处理人的身份。申请人关闭私信时可能无法投递，Bot 会记录失败并允许管理组重发，申请人也可在原面板查看理由。
+
 启用违规改名面板后，Bot 保存允许操作的身份组、目标必需违规身份组、启停状态和当前昵称锁定记录（目标/操作者 ID、改名理由、违规身份组、时间）。这些设置与记录随服务器状态加密保存。获授权的操作员提交改名后，Bot 将目标服务器昵称改为其数字用户 ID，通过成员更新事件及定期检查保持该昵称；移除指定违规身份组、离服或手动解除锁定后删除该成员的锁定记录并停止自动改回。更换面板中的违规身份组会解除全部已有锁定。暂停功能会保留记录。Bot 不改变账号名或用户数字 ID，不为此保存聊天内容。
 
 启用中层申请面板后，Bot 会保存每套面板的名称、说明、前置/发放身份组、审批/公开频道、审批票数和已发布消息 ID；还会保存申请人 ID、申请理由、提交时间、申请时的身份组要求、审批人 ID、票数、处理结果和失败说明。这些记录随服务器状态用 AES-256-GCM 加密保存到部署者的 Discord 私密存储频道，没有自动删除期限。理由和审批信息会显示在管理员配置的审批频道，申请人可查看自己的申请状态；部署者应限制审批频道访问。公开申请面板仅显示要求、Discord 官方身份组人数（含 Bot）和待审批人数，不显示申请理由。人数通过身份组人数接口读取，不为此扫描完整成员列表；统计结果只在内存中维护，成员变更事件及定期核对用于更新人数。审批通过后 Bot 发放配置的身份组，申请人不能审批自己的申请。
@@ -48,6 +50,8 @@
 Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应遵守适用法律、Discord 开发者条款及服务器规则。功能或数据处理方式发生变化时，部署者应更新此政策并告知受影响用户。
 
 ## English summary
+
+When a middle-management application is rejected, a reviewer supplies or edits a rejection reason, and the bot sends the applicant a direct message with the result and reason. Default and actual rejection reasons, the internal reviewer ID, delivery status and successful DM message ID are stored with the encrypted application state. The DM, applicant-facing status view and rejected approval card do not display the rejecting reviewer's identity; the ID remains in encrypted state for internal auditing. Reviewers should avoid including identifying information in their free-text reasons. If DMs cannot be delivered, the bot records failure, allows reviewers to resend and keeps the reason available through the applicant's status view.
 
 The optional nickname panel stores authorized operator roles, the prerequisite violation role, an enabled flag and current locks containing target/operator IDs, reason, role and time. This state is encrypted with the other operational settings. An authorized operator can rename an eligible member's server nickname to their numeric user ID; the bot maintains that nickname through member updates and periodic checks. The lock is removed when the violation role is removed, the member leaves, or an operator releases it. Changing the configured violation role clears existing locks; pausing preserves them. The bot does not change account usernames or numeric user IDs, or store chat content for this purpose.
 

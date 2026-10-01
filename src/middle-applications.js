@@ -9,6 +9,9 @@ const configurationCommand = new SlashCommandBuilder().setName('中层申请配�
   .setDescription('主管理组添加和配置多套中层申请面板及审批流程')
   .setDefaultMemberPermissions(null);
 const activeStatuses = new Set(['pending', 'executing', 'grant_failed']);
+const DEFAULT_REJECTION_REASON = '本次申请未获通过，请按申请面板要求补充信息后重新申请。';
+const statusLabels = { pending: '待管理组审批', executing: '正在发放身份组', completed: '已通过并发放',
+  rejected: '已拒绝', grant_failed: '审批通过，身份组发放未完成', delivery_failed: '申请卡发送未完成' };
 const row = (...components) => new ActionRowBuilder().addComponents(...components);
 const button = (id, label, style = ButtonStyle.Secondary) => new ButtonBuilder()
   .setCustomId(id).setLabel(label).setStyle(style);
@@ -69,6 +72,8 @@ function createMiddleApplications(deps) {
     const config = configFor(session);
     const embed = new EmbedBuilder().setColor(0x5865F2).setTitle(config.name)
       .setDescription(`${config.description || '未填写说明'}\n\n前置身份组（全部必需）：${config.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、') || '未设置'}\n通过后发放：${config.roleId ? `<@&${config.roleId}>` : '未设置'}\n审批频道：${config.approvalChannelId ? `<#${config.approvalChannelId}>` : '未设置'}\n公开申请频道：${config.channelId ? `<#${config.channelId}>` : '未设置'}\n审批：${config.votesRequired} 名不同主管理同意；任一主管理拒绝即结束\n状态：${config.enabled ? '开放申请' : '暂停申请'}\n已发布面板：${config.messages.length} 个\n\n审批身份组由 /管理组面板 的主管理身份组决定。通过后会同步已有中层身份组的配套身份。`);
+    embed.addFields({ name: '新申请是否提及主管理组', value: config.mentionManagers !== false ? '提及' : '不提及' },
+      { name: '默认拒绝理由', value: config.rejectionReasonDefault || DEFAULT_REJECTION_REASON });
     return { content: null, embeds: [embed], allowedMentions: { parse: [] }, components: [
       row(new RoleSelectMenuBuilder().setCustomId(`midappcfg-prerequisite:${session.token}`)
         .setPlaceholder('选择前置身份组（最多 10 个，必须全部持有）').setMinValues(1).setMaxValues(10)),
@@ -77,7 +82,7 @@ function createMiddleApplications(deps) {
         .setPlaceholder('选择管理组审批频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
       row(new ChannelSelectMenuBuilder().setCustomId(`midappcfg-channel:${session.token}`)
         .setPlaceholder('选择公开申请频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
-      row(button(`midappcfg-edit:${session.token}`, '名称/说明/票数'),
+      row(button(`midappcfg-edit:${session.token}`, '名称/说明/票数/通知设置'),
         button(`midappcfg-publish:${session.token}`, '发布申请面板', ButtonStyle.Primary),
         button(`midappcfg-toggle:${session.token}`, config.enabled ? '暂停申请' : '开放申请'),
         button(`midappcfg-delete:${session.token}`, '删除配置', ButtonStyle.Danger),
@@ -91,7 +96,14 @@ function createMiddleApplications(deps) {
     return new ModalBuilder().setCustomId(`midappcfg-form:${token}:${config?.id || 'new'}`).setTitle(config ? '编辑中层申请面板' : '新增中层申请面板')
       .addComponents(field('name', '面板名称', TextInputStyle.Short, 80, config?.name || '中层申请'),
         field('description', '面板说明', TextInputStyle.Paragraph, 800, config?.description || '请填写申请理由，提交后由管理组审批。'),
-        field('votes', '需要多少名不同管理组成员同意（1–10）', TextInputStyle.Short, 2, String(config?.votesRequired || 1)));
+        field('votes', '需要多少名不同管理组成员同意（1–10）', TextInputStyle.Short, 2, String(config?.votesRequired || 1)),
+        field('rejectionReasonDefault', '默认拒绝理由（每次拒绝时仍可修改）', TextInputStyle.Paragraph, 400,
+          config?.rejectionReasonDefault || DEFAULT_REJECTION_REASON),
+        new LabelBuilder().setLabel('新申请是否提及主管理组')
+          .setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId('mentionManagers')
+            .setRequired(true).setMinValues(1).setMaxValues(1).addOptions(
+              { label: '提及主管理组', value: 'yes', default: config?.mentionManagers !== false },
+              { label: '不提及主管理组', value: 'no', default: config?.mentionManagers === false })));
   }
   function publicPayload(guildId, config) {
     const current = counts.get(guildId);
@@ -106,14 +118,44 @@ function createMiddleApplications(deps) {
       button(`midapp-status:${config.id}`, '我的申请'), button(`midapp-refresh:${config.id}`, '刷新人数'))], allowedMentions: { parse: [] } };
   }
   function approvalPayload(app) {
-    const labels = { pending: '待管理组审批', executing: '正在发放身份组', completed: '已通过并发放',
-      rejected: '已拒绝', grant_failed: '审批通过，身份组发放未完成', delivery_failed: '申请卡发送未完成' };
+    const notificationLabels = { pending: '待发送', sending: '正在发送', sent: '已发送', failed: '发送失败，可重发', unknown: '发送结果未确认，可手动重发' };
     return { embeds: [new EmbedBuilder().setColor(app.status === 'completed' ? 0x2ECC71 : app.status === 'rejected' ? 0xE74C3C : 0x5865F2)
-      .setTitle(`中层申请：${app.panelName}`).setDescription(`申请人：<@${app.userId}> (${app.userId})\n申请身份组：<@&${app.roleId}>\n前置身份组：${app.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}\n\n申请理由：\n${app.reason}\n\n状态：${labels[app.status] || app.status}\n同意票：${app.approverIds.length}/${app.votesRequired}\n已同意：${app.approverIds.map((id) => `<@${id}>`).join('、') || '无'}${app.decidedBy ? `\n处理人：<@${app.decidedBy}>` : ''}${app.failure ? `\n失败说明：${app.failure.slice(0, 500)}` : ''}`)
+      .setTitle(`中层申请：${app.panelName}`).setDescription(`申请人：<@${app.userId}> (${app.userId})\n申请身份组：<@&${app.roleId}>\n前置身份组：${app.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}\n\n申请理由：\n${app.reason}\n\n状态：${statusLabels[app.status] || app.status}\n同意票：${app.approverIds.length}/${app.votesRequired}\n已同意：${app.approverIds.map((id) => `<@${id}>`).join('、') || '无'}${app.decidedBy && app.status !== 'rejected' ? `\n处理人（仅内部审批卡）：<@${app.decidedBy}>` : ''}${app.rejectionReason ? `\n拒绝理由：${app.rejectionReason}` : ''}${app.rejectionNotification ? `\n申请人私信通知：${notificationLabels[app.rejectionNotification.status] || '未完成'}` : ''}${app.failure ? `\n失败说明：${app.failure.slice(0, 500)}` : ''}`)
       .setFooter({ text: `申请 ${app.id} · 申请人不能审批自己的申请` }).setTimestamp(app.createdAt)],
     components: ['pending', 'grant_failed'].includes(app.status) ? [row(
       button(`midapp-approve:${app.id}`, app.status === 'grant_failed' ? '重试发放身份组' : '同意', ButtonStyle.Success),
-      button(`midapp-reject:${app.id}`, '拒绝', ButtonStyle.Danger))] : [], allowedMentions: { parse: [] } };
+      button(`midapp-reject:${app.id}`, '拒绝并填写理由', ButtonStyle.Danger))]
+      : app.status === 'rejected' && app.rejectionReason && app.rejectionNotification?.status !== 'sent'
+        ? [row(button(`midapp-notify:${app.id}`, '重发拒绝通知'))] : [], allowedMentions: { parse: [] } };
+  }
+  function applicantPayload(app) {
+    return { embeds: [new EmbedBuilder().setTitle(`我的申请：${app.panelName}`)
+      .setColor(app.status === 'rejected' ? 0xE74C3C : app.status === 'completed' ? 0x2ECC71 : 0x5865F2)
+      .setDescription(`申请身份组：<@&${app.roleId}>\n状态：${statusLabels[app.status] || app.status}\n同意票：${app.approverIds.length}/${app.votesRequired}\n\n申请理由：\n${app.reason}${app.status === 'rejected' ? `\n\n拒绝理由：\n${app.rejectionReason || '未填写，请联系管理组。'}` : ''}`)
+      .setFooter({ text: `申请 ${app.id}` }).setTimestamp(app.createdAt)], components: [], allowedMentions: { parse: [] } };
+  }
+  async function notifyRejection(guild, app) {
+    if (app.rejectionNotification?.status === 'sent') return true;
+    const previous = app.rejectionNotification;
+    app.rejectionNotification = { status: 'sending', attemptedAt: Date.now() };
+    try { await save(); } catch (error) {
+      app.rejectionNotification = previous || { status: 'pending' };
+      logFailure('拒绝私信发送状态保存失败，尚未发送。', error);
+      return false;
+    }
+    try {
+      const user = await client.users.fetch(app.userId);
+      const roleName = guild.roles.cache.get(app.roleId)?.name || `身份组 ${app.roleId}`;
+      const message = await user.send({ embeds: [new EmbedBuilder().setColor(0xE74C3C).setTitle('中层申请未通过')
+        .setDescription(`服务器：${guild.name}\n申请面板：${app.panelName}\n申请身份组：${roleName}\n\n拒绝理由：\n${app.rejectionReason}`)
+        .setFooter({ text: `申请 ${app.id} · 可在原申请面板查看进度` }).setTimestamp()], allowedMentions: { parse: [] } });
+      app.rejectionNotification = { status: 'sent', deliveredAt: Date.now(), messageId: message.id };
+    } catch (error) {
+      app.rejectionNotification = { status: 'failed', attemptedAt: Date.now(), code: error.code || null };
+      logFailure(`中层申请 ${app.id} 的拒绝私信发送失败。`, error);
+    }
+    await save().catch((error) => logFailure('拒绝私信发送结果保存失败。', error));
+    return app.rejectionNotification.status === 'sent';
   }
   async function channelFor(guild, id) {
     const channel = id && await guild.channels.fetch(id).catch(() => null);
@@ -245,8 +287,10 @@ function createMiddleApplications(deps) {
       applications.push(app);
       try { await save(); } catch (error) { applications.splice(applications.indexOf(app), 1); throw error; }
       try {
-        const message = await channel.send({ ...approvalPayload(app), content: `<@&${roleId}> 有新的中层申请待审批。`,
-          allowedMentions: { parse: [], roles: [roleId] } });
+        const mentionManagers = config.mentionManagers !== false;
+        const message = await channel.send({ ...approvalPayload(app),
+          content: `${mentionManagers ? `<@&${roleId}> ` : ''}有新的中层申请待审批。`,
+          allowedMentions: { parse: [], roles: mentionManagers ? [roleId] : [] } });
         app.approvalMessageId = message.id;
         await save();
       } catch (error) {
@@ -260,18 +304,23 @@ function createMiddleApplications(deps) {
       await interaction.editReply(`申请已提交（${app.id}）。管理组审批通过后会自动发放身份组；你可点击公开面板的“我的申请”查看进度。`);
     } finally { locks.delete(key); }
   }
-  async function review(interaction, app, reject) {
+  async function review(interaction, app, reject, rejectionReason, sourceMessageId = interaction.message?.id) {
     const key = `${interaction.guildId}:${app.userId}:${app.roleId}`;
     if (locks.has(key)) throw new Error('这项申请正在处理另一项操作，请稍后重试。');
     locks.add(key);
     try {
       if (!['pending', 'grant_failed'].includes(app.status)) throw new Error('这项申请已处理或正在发放，请勿重复审批。');
-      if (app.approvalChannelId !== interaction.channelId || app.approvalMessageId !== interaction.message.id) throw new Error('请在原审批卡上操作。');
+      if (app.approvalChannelId !== interaction.channelId || app.approvalMessageId !== sourceMessageId) throw new Error('请在原审批卡上操作。');
       if (app.userId === interaction.user.id) throw new Error('不能审批自己的申请。');
       if (!(await manager(interaction.guild, interaction.user.id))) throw new Error('只有主管理组成员或服务器管理员可以审批。');
       const previous = JSON.parse(JSON.stringify(app));
       if (reject) {
+        const reason = String(rejectionReason || '').trim();
+        if (!reason || reason.length > 400) throw new Error('请填写 1–400 字的拒绝理由。');
         app.status = 'rejected'; app.decidedBy = interaction.user.id; app.decidedAt = Date.now();
+        app.rejectionReason = reason;
+        app.rejectionNotification = { status: 'pending' };
+        delete app.failure;
       } else {
         const validVoters = [];
         for (const id of app.approverIds) {
@@ -285,6 +334,7 @@ function createMiddleApplications(deps) {
         } else app.status = 'pending';
       }
       try { await save(); } catch (error) { Object.keys(app).forEach((key) => delete app[key]); Object.assign(app, previous); throw error; }
+      if (app.status === 'rejected') await notifyRejection(interaction.guild, app);
       await updateApproval(interaction.guild, app).catch((error) => logFailure('中层申请审批卡更新失败。', error));
       if (app.status === 'executing') {
         try {
@@ -308,7 +358,9 @@ function createMiddleApplications(deps) {
       await updateApproval(interaction.guild, app).catch((error) => logFailure('中层申请结果卡更新失败。', error));
       scheduleRefresh(interaction.guild);
       await interaction.editReply(app.status === 'completed' ? '审批通过，已自动发放身份组。'
-        : app.status === 'rejected' ? '已拒绝申请。'
+        : app.status === 'rejected' ? (app.rejectionNotification?.status === 'sent'
+          ? '已拒绝申请，并私信告知理由。私信和申请人进度页不显示处理人。'
+          : '已拒绝申请并保存理由，但私信未发送成功。申请人可能关闭了私信，可在内部审批卡重发；申请人也可在“我的申请”查看理由。')
           : ['grant_failed', 'executing'].includes(app.status) ? `身份组发放或记录保存未完成：${app.failure || '请稍后查看状态'}。`
             : `已记录同意票（${app.approverIds.length}/${app.votesRequired}）。`);
     } finally { locks.delete(key); }
@@ -351,7 +403,10 @@ function createMiddleApplications(deps) {
           const name = interaction.fields.getTextInputValue('name').trim();
           const description = interaction.fields.getTextInputValue('description').trim();
           const votesInput = interaction.fields.getTextInputValue('votes').trim();
-          if (!name || !description || !/^(?:[1-9]|10)$/.test(votesInput)) throw new Error('请填写名称、说明和 1–10 的审批人数。');
+          const rejectionReasonDefault = interaction.fields.getTextInputValue('rejectionReasonDefault').trim();
+          const mentionChoice = interaction.fields.getStringSelectValues('mentionManagers')[0];
+          if (!['yes', 'no'].includes(mentionChoice)) throw new Error('请选择是否提及主管理组。');
+          if (!name || !description || !rejectionReasonDefault || !/^(?:[1-9]|10)$/.test(votesInput)) throw new Error('请填写名称、说明、默认拒绝理由和 1–10 的审批人数。');
           const panels = state(interaction.guildId).panels;
           if (editingId && !panels[editingId]) throw new Error('这套配置已被删除。');
           if (!editingId && Object.keys(panels).length >= 25) throw new Error('最多配置 25 套申请面板。');
@@ -359,7 +414,7 @@ function createMiddleApplications(deps) {
           const previous = panels[id] && JSON.parse(JSON.stringify(panels[id]));
           panels[id] ||= { id, prerequisiteRoleIds: [], roleId: null, approvalChannelId: null, channelId: null,
             enabled: true, messages: [] };
-          Object.assign(panels[id], { name, description, votesRequired: Number(votesInput) });
+          Object.assign(panels[id], { name, description, rejectionReasonDefault, mentionManagers: mentionChoice === 'yes', votesRequired: Number(votesInput) });
           try { await save(); } catch (error) { if (previous) panels[id] = previous; else delete panels[id]; throw error; }
           session.panelId = id;
           await interaction.editReply(editor(session)); scheduleRefresh(interaction.guild); return true;
@@ -425,12 +480,44 @@ function createMiddleApplications(deps) {
         await interaction.editReply(editor(session)); return true;
       }
       const { panels, applications } = state(interaction.guildId);
-      if (action === 'midapp-approve' || action === 'midapp-reject') {
+      if (action === 'midapp-reject' && interaction.isButton()) {
+        const app = applications.find((item) => item.id === reference);
+        if (!app || !['pending', 'grant_failed'].includes(app.status)) throw new Error('申请已处理或正在发放，请勿重复操作。');
+        if (app.approvalChannelId !== interaction.channelId || app.approvalMessageId !== interaction.message.id) throw new Error('请在原审批卡操作。');
+        if (app.userId === interaction.user.id) throw new Error('不能审批自己的申请。');
+        if (!configurationManager(interaction) && !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) throw new Error('只有主管理组成员或服务器管理员可以审批。');
+        const defaultReason = panels[app.panelId]?.rejectionReasonDefault || DEFAULT_REJECTION_REASON;
+        await interaction.showModal(new ModalBuilder().setCustomId(`midapp-rejectreason:${app.id}:${app.approvalMessageId}`)
+          .setTitle('填写拒绝理由并私信通知申请人').addComponents(new LabelBuilder().setLabel('拒绝理由（不显示处理人，请勿填写姓名）')
+            .setTextInputComponent(new TextInputBuilder().setCustomId('rejectionReason').setStyle(TextInputStyle.Paragraph)
+              .setRequired(true).setMaxLength(400).setValue(defaultReason))));
+        return true;
+      }
+      if (action === 'midapp-notify' && interaction.isButton()) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral }); privateReply = true;
+        const app = applications.find((item) => item.id === reference);
+        if (!app || app.status !== 'rejected' || !app.rejectionReason) throw new Error('没有可发送的拒绝通知。');
+        if (app.approvalChannelId !== interaction.channelId || app.approvalMessageId !== interaction.message.id) throw new Error('请在原审批卡操作。');
+        if (app.userId === interaction.user.id || !(await manager(interaction.guild, interaction.user.id))) throw new Error('只有其他主管理组成员或服务器管理员可以重发通知。');
+        const key = `${interaction.guildId}:${app.userId}:${app.roleId}`;
+        if (locks.has(key)) throw new Error('申请正在处理，请稍后重试。');
+        locks.add(key);
+        try {
+          if (app.rejectionNotification?.status === 'sent') throw new Error('通知已发送，请勿重复发送。');
+          const sent = await notifyRejection(interaction.guild, app);
+          await updateApproval(interaction.guild, app).catch((error) => logFailure('拒绝通知审批卡更新失败。', error));
+          await interaction.editReply(sent ? '已私信告知拒绝理由，不显示处理人。' : '私信仍未发送成功，请让申请人开启私信；他可在“我的申请”查看理由。');
+        } finally { locks.delete(key); }
+        return true;
+      }
+      if (action === 'midapp-approve' || (action === 'midapp-rejectreason' && interaction.isModalSubmit())) {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         privateReply = true;
         const app = applications.find((item) => item.id === reference);
         if (!app) throw new Error('申请记录已不存在。');
-        await review(interaction, app, action === 'midapp-reject'); return true;
+        const reject = action === 'midapp-rejectreason';
+        await review(interaction, app, reject, reject ? interaction.fields.getTextInputValue('rejectionReason') : null,
+          reject ? anchor : interaction.message?.id); return true;
       }
       const config = panels[reference];
       if (!config) throw new Error('申请面板已停用或配置已删除。');
@@ -458,7 +545,7 @@ function createMiddleApplications(deps) {
       else if (action === 'midapp-status' && interaction.isButton()) {
         const app = applications.filter((item) => item.panelId === config.id && item.userId === interaction.user.id).at(-1);
         if (!app) await interaction.editReply('你还没有向此面板提交申请。');
-        else { const payload = approvalPayload(app); payload.components = []; await interaction.editReply(payload); }
+        else await interaction.editReply(applicantPayload(app));
       } else throw new Error('未知申请操作。');
     } catch (error) {
       logFailure('中层申请面板操作失败。', error);
@@ -471,7 +558,7 @@ function createMiddleApplications(deps) {
     }
     return true;
   }
-  async function recover(guild) {
+  async function recover(guild, refreshCards = false) {
     for (const app of state(guild.id).applications) {
       if (locks.has(`${guild.id}:${app.userId}:${app.roleId}`)) continue;
       let changed = false;
@@ -488,23 +575,37 @@ function createMiddleApplications(deps) {
         app.status = 'delivery_failed'; app.failure = '申请提交期间重启，申请卡未完整保存；请重新提交。'; await save();
         changed = true;
       }
-      if (changed && app.approvalMessageId) await updateApproval(guild, app).catch((error) => logFailure('恢复中层申请审批卡失败。', error));
+      if (app.status === 'rejected' && app.rejectionReason) {
+        if (app.rejectionNotification?.status === 'sending') {
+          app.rejectionNotification.status = 'unknown';
+          await save(); changed = true;
+        } else if (app.rejectionNotification?.status === 'pending') {
+          const key = `${guild.id}:${app.userId}:${app.roleId}`;
+          locks.add(key);
+          try { await notifyRejection(guild, app); changed = true; }
+          finally { locks.delete(key); }
+        }
+      }
+      if ((changed || (refreshCards && ['pending', 'grant_failed', 'rejected'].includes(app.status)))
+        && app.approvalMessageId) await updateApproval(guild, app).catch((error) => logFailure('恢复中层申请审批卡失败。', error));
     }
   }
   function start() {
     let running = false;
-    const reconcile = async () => {
+    const reconcile = async (refreshCards = false) => {
       if (running) return;
       running = true;
       try {
         for (const guild of client.guilds.cache.values()) {
-          if (!Object.keys(state(guild.id).panels).length) continue;
-          try { await recover(guild); await refreshPublic(guild, true); }
+          const { panels, applications } = state(guild.id);
+          if (!refreshCards && !Object.keys(panels).length && !applications.some((app) =>
+            app.status === 'rejected' && ['pending', 'sending'].includes(app.rejectionNotification?.status))) continue;
+          try { await recover(guild, refreshCards); await refreshPublic(guild, true); }
           catch (error) { logFailure('中层申请启动/定期同步失败。', error); }
         }
       } finally { running = false; }
     };
-    void reconcile();
+    void reconcile(true);
     setInterval(() => void reconcile(), 60 * 1000).unref();
   }
   return { handle, onMember, onRaw, start };
