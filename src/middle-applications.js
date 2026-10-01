@@ -6,8 +6,8 @@ const {
 } = require('discord.js');
 
 const configurationCommand = new SlashCommandBuilder().setName('中层申请配置面板')
-  .setDescription('添加和配置多套中层申请面板及管理组审批流程')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
+  .setDescription('主管理组添加和配置多套中层申请面板及审批流程')
+  .setDefaultMemberPermissions(null);
 const activeStatuses = new Set(['pending', 'executing', 'grant_failed']);
 const row = (...components) => new ActionRowBuilder().addComponents(...components);
 const button = (id, label, style = ButtonStyle.Secondary) => new ButtonBuilder()
@@ -17,13 +17,18 @@ const hasRole = (member, roleId) => member?.roles?.cache?.has(roleId)
 const prerequisitesMet = (member, roleIds) => roleIds.length > 0 && roleIds.every((id) => hasRole(member, id));
 
 function createMiddleApplications(deps) {
-  const { client, settingsFor, save, managerRoleId, forEachMemberPage, logFailure, afterGrant } = deps;
+  const { client, settingsFor, save, managerRoleId, logFailure, afterGrant } = deps;
   const sessions = new Map();
   const locks = new Set();
   const counts = new Map();
   const refreshTimers = new Map();
   const refreshing = new Map();
   const refreshAgain = new Set();
+  const forceRefresh = new Set();
+
+  function configurationManager(interaction) {
+    return hasRole(interaction.member, managerRoleId(interaction.guildId));
+  }
 
   function state(guildId) {
     const setting = settingsFor(guildId);
@@ -35,7 +40,7 @@ function createMiddleApplications(deps) {
     const session = sessions.get(token);
     if (!session || session.guildId !== interaction.guildId || session.userId !== interaction.user.id
       || session.expiresAt < Date.now()) throw new Error('配置面板已过期，请重新运行 /中层申请配置面板。');
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) throw new Error('需要“管理服务器”权限。');
+    if (!configurationManager(interaction)) throw new Error('您不具备权限，只有已配置的主管理组成员可以配置申请面板。');
     return session;
   }
   function configFor(session) {
@@ -89,12 +94,16 @@ function createMiddleApplications(deps) {
         field('votes', '需要多少名不同管理组成员同意（1–10）', TextInputStyle.Short, 2, String(config?.votesRequired || 1)));
   }
   function publicPayload(guildId, config) {
-    const count = counts.get(guildId)?.sets.get(config.roleId)?.size;
+    const current = counts.get(guildId);
+    const count = current?.values.get(config.roleId);
+    const failure = current?.error || current?.roleErrors?.get(config.roleId);
+    const countText = count === undefined ? (failure ? '读取失败，请主管理点击刷新人数' : '正在读取')
+      : `${count} 人${failure ? '（上次结果，更新失败）' : ''}`;
     return { embeds: [new EmbedBuilder().setColor(config.enabled ? 0x5865F2 : 0x95A5A6).setTitle(config.name)
-      .setDescription(`${config.description}\n\n前置身份组：${config.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}（须全部持有）\n通过后身份组：<@&${config.roleId}>\n当前人数：${count === undefined ? '正在读取' : `${count} 人`}\n待审批：${pendingCount(guildId, config.id)} 人\n审批门槛：${config.votesRequired} 名管理组成员同意\n${config.enabled ? '点击下方按钮填写申请理由。' : '当前暂停新申请。'}`)
-      .setFooter({ text: `申请面板 ${config.id} · 人数随身份组变更更新` })],
+      .setDescription(`${config.description}\n\n前置身份组：${config.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}（须全部持有）\n通过后身份组：<@&${config.roleId}>\n当前人数：${countText}\n待审批：${pendingCount(guildId, config.id)} 人\n审批门槛：${config.votesRequired} 名管理组成员同意\n${config.enabled ? '点击下方按钮填写申请理由。' : '当前暂停新申请。'}${failure ? `\n人数读取失败说明：${failure}` : ''}`)
+      .setFooter({ text: `申请面板 ${config.id} · Discord 身份组人数（含 Bot），随成员变更更新` })],
     components: [row(button(`midapp-apply:${config.id}`, '填写申请理由', ButtonStyle.Primary).setDisabled(!config.enabled),
-      button(`midapp-status:${config.id}`, '我的申请'))], allowedMentions: { parse: [] } };
+      button(`midapp-status:${config.id}`, '我的申请'), button(`midapp-refresh:${config.id}`, '刷新人数'))], allowedMentions: { parse: [] } };
   }
   function approvalPayload(app) {
     const labels = { pending: '待管理组审批', executing: '正在发放身份组', completed: '已通过并发放',
@@ -129,32 +138,41 @@ function createMiddleApplications(deps) {
   async function refreshCounts(guild, force = false) {
     let current = counts.get(guild.id);
     const roleIds = new Set(Object.values(state(guild.id).panels).map((config) => config.roleId).filter(Boolean));
+    if (!roleIds.size) return;
     if (current?.loading) { await current.loading; return refreshCounts(guild, force); }
-    if (!force && current && [...roleIds].every((id) => current.sets.has(id))) return;
-    current ||= { sets: new Map(), events: new Map() };
+    if (!force && current && !current.error && Date.now() - current.updatedAt < 60 * 1000
+      && [...roleIds].every((id) => current.values.has(id))) return;
+    current ||= { values: new Map(), roleErrors: new Map(), updatedAt: 0 };
     counts.set(guild.id, current);
-    const sets = new Map([...roleIds].map((id) => [id, new Set()]));
-    current.events.clear();
     current.loading = (async () => {
-      await forEachMemberPage(guild, async (page) => {
-        for (const data of page) {
-          if (data.user?.bot || !data.user?.id) continue;
-          for (const id of roleIds) if (data.roles?.includes(id)) sets.get(id).add(data.user.id);
+      try {
+        const totals = await guild.roles.fetchMemberCounts();
+        const values = new Map();
+        const errors = new Map();
+        for (const id of roleIds) {
+          const value = totals.get(id);
+          if (Number.isInteger(value) && value >= 0) values.set(id, value);
+          else errors.set(id, 'Discord 未返回该身份组的统计，请检查身份组是否仍存在。');
         }
-      });
-      for (const [userId, ids] of current.events) {
-        for (const [roleId, users] of sets) {
-          if (ids.has(roleId)) users.add(userId); else users.delete(userId);
-        }
+        current.values = values;
+        current.roleErrors = errors;
+        current.updatedAt = Date.now();
+        current.error = null;
+      } catch (error) {
+        current.error = `Discord 人数请求失败${error.code ? `（${error.code}）` : ''}，请稍后重试。`;
+        throw error;
       }
-      current.sets = sets;
     })();
-    try { await current.loading; } finally { current.loading = null; current.events.clear(); }
+    try { await current.loading; } finally { current.loading = null; }
   }
-  async function refreshPublic(guild) {
-    if (refreshing.has(guild.id)) { refreshAgain.add(guild.id); return refreshing.get(guild.id); }
+  async function refreshPublic(guild, force = false) {
+    if (refreshing.has(guild.id)) {
+      refreshAgain.add(guild.id);
+      if (force) forceRefresh.add(guild.id);
+      return refreshing.get(guild.id);
+    }
     const work = (async () => {
-      await refreshCounts(guild);
+      await refreshCounts(guild, force).catch((error) => logFailure('中层申请人数读取失败。', error));
       for (const config of Object.values(state(guild.id).panels)) {
         for (const ref of config.messages) {
           try {
@@ -168,28 +186,32 @@ function createMiddleApplications(deps) {
     refreshing.set(guild.id, work);
     try { await work; } finally {
       refreshing.delete(guild.id);
-      if (refreshAgain.delete(guild.id)) scheduleRefresh(guild);
+      if (refreshAgain.delete(guild.id)) scheduleRefresh(guild, forceRefresh.has(guild.id));
     }
   }
-  function scheduleRefresh(guild) {
+  function scheduleRefresh(guild, force = false) {
     if (!Object.keys(state(guild.id).panels).length) return;
-    if (refreshTimers.has(guild.id)) clearTimeout(refreshTimers.get(guild.id));
+    if (force) forceRefresh.add(guild.id);
+    if (refreshTimers.has(guild.id)) return;
     refreshTimers.set(guild.id, setTimeout(() => {
       refreshTimers.delete(guild.id);
-      refreshPublic(guild).catch((error) => logFailure('中层申请人数更新失败。', error));
+      refreshPublic(guild, forceRefresh.delete(guild.id)).catch((error) => logFailure('中层申请人数更新失败。', error));
     }, 1000));
   }
-  function onMember(member, removed = false) {
-    if (member.user.bot) return;
-    const current = counts.get(member.guild.id);
-    const ids = removed ? new Set() : new Set(member.roles.cache.keys());
-    if (current?.loading) current.events.set(member.id, ids);
-    let changed = !current;
-    if (current) for (const [roleId, users] of current.sets) {
-      if (users.has(member.id) !== ids.has(roleId)) changed = true;
-      if (ids.has(roleId)) users.add(member.id); else users.delete(member.id);
+  function onMember(member, removed = false, previousMember = null) {
+    const ids = Object.values(state(member.guild.id).panels).map((config) => config.roleId).filter(Boolean);
+    if (removed || ids.some((id) => previousMember
+      ? hasRole(previousMember, id) !== hasRole(member, id) : hasRole(member, id))) {
+      scheduleRefresh(member.guild, true);
     }
-    if (changed) scheduleRefresh(member.guild);
+  }
+  function onRaw(packet) {
+    if (!['GUILD_MEMBER_REMOVE', 'GUILD_MEMBER_UPDATE'].includes(packet.t)) return;
+    const guild = client.guilds.cache.get(packet.d?.guild_id);
+    if (!guild) return;
+    // Removed or uncached members may not produce a discord.js member event.
+    if (packet.t === 'GUILD_MEMBER_REMOVE' || (Array.isArray(packet.d.roles)
+      && !guild.members.cache.has(packet.d.user?.id))) scheduleRefresh(guild, true);
   }
   async function updateApproval(guild, app) {
     if (!app.approvalMessageId) return;
@@ -303,7 +325,7 @@ function createMiddleApplications(deps) {
       if (command) {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         privateReply = true;
-        if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) throw new Error('需要“管理服务器”权限。');
+        if (!configurationManager(interaction)) throw new Error('您不具备权限，只有已配置的主管理组成员可以配置申请面板。');
         for (const [token, session] of sessions) if (session.expiresAt < Date.now()) sessions.delete(token);
         const token = randomBytes(8).toString('hex');
         const session = { token, guildId: interaction.guildId, userId: interaction.user.id, expiresAt: Date.now() + 30 * 60 * 1000 };
@@ -358,11 +380,6 @@ function createMiddleApplications(deps) {
             config.prerequisiteRoleIds = ids;
           } else if (action === 'midappcfg-role') {
             const role = await grantableRole(interaction.guild, interaction.values[0]);
-            const caller = await interaction.guild.members.fetch({ user: interaction.user.id, force: true });
-            if (!caller.permissions.has(PermissionFlagsBits.Administrator)
-              && (!caller.permissions.has(PermissionFlagsBits.ManageRoles) || role.comparePositionTo(caller.roles.highest) >= 0)) {
-              throw new Error('配置发放身份组需要“管理身份组”权限，且该组层级须低于你。');
-            }
             if (config.prerequisiteRoleIds.includes(role.id)) throw new Error('发放身份组不能同时作为前置身份组。');
             config.roleId = role.id;
           } else if (action === 'midappcfg-approval' || action === 'midappcfg-channel') {
@@ -429,6 +446,15 @@ function createMiddleApplications(deps) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       privateReply = true;
       if (action === 'midapp-submit' && interaction.isModalSubmit()) await submit(interaction, config);
+      else if (action === 'midapp-refresh' && interaction.isButton()) {
+        if (!configurationManager(interaction)) throw new Error('只有主管理组成员可以手动刷新人数。');
+        await refreshCounts(interaction.guild, true).catch((error) => logFailure('手动读取中层申请人数失败。', error));
+        await refreshPublic(interaction.guild);
+        const current = counts.get(interaction.guildId);
+        const error = current?.error || current?.roleErrors.get(config.roleId);
+        if (error) throw new Error(error);
+        await interaction.editReply(`人数已刷新：${current.values.get(config.roleId)} 人（含 Bot）。`);
+      }
       else if (action === 'midapp-status' && interaction.isButton()) {
         const app = applications.filter((item) => item.panelId === config.id && item.userId === interaction.user.id).at(-1);
         if (!app) await interaction.editReply('你还没有向此面板提交申请。');
@@ -473,15 +499,15 @@ function createMiddleApplications(deps) {
       try {
         for (const guild of client.guilds.cache.values()) {
           if (!Object.keys(state(guild.id).panels).length) continue;
-          try { await recover(guild); await refreshCounts(guild, true); await refreshPublic(guild); }
+          try { await recover(guild); await refreshPublic(guild, true); }
           catch (error) { logFailure('中层申请启动/定期同步失败。', error); }
         }
       } finally { running = false; }
     };
     void reconcile();
-    setInterval(() => void reconcile(), 10 * 60 * 1000).unref();
+    setInterval(() => void reconcile(), 60 * 1000).unref();
   }
-  return { handle, onMember, start };
+  return { handle, onMember, onRaw, start };
 }
 
 module.exports = { createMiddleApplications, configurationCommand, prerequisitesMet };

@@ -3457,7 +3457,6 @@ const client = new Client({
 const middleApplications = createMiddleApplications({
   client, settingsFor, save: saveGuildData, logFailure,
   managerRoleId: (guildId) => settingsFor(guildId).managementRoleId,
-  forEachMemberPage: forEachGuildMemberPage,
   afterGrant: async (member, roleId) => {
     await syncManagementCompanionRolesForMember(member);
     if (settingsFor(member.guild.id).middleManagementGroups?.[roleId]) {
@@ -3667,7 +3666,7 @@ client.once('clientReady', async () => {
   setInterval(() => processSchedules().catch((error) => logFailure('Schedule processing failed.', error)), 1000);
 });
 client.on('guildMemberUpdate', (oldMember, newMember) => {
-  if (storageReady) middleApplications.onMember(newMember);
+  if (storageReady) middleApplications.onMember(newMember, false, oldMember);
   if (storageReady) nicknamePanel.onMember(newMember);
   const setting = guildData.settings[newMember.guild.id];
   if (!setting) return;
@@ -3694,6 +3693,9 @@ client.on('guildMemberRemove', (member) => {
 client.on('guildMemberAdd', (member) => {
   if (storageReady) middleApplications.onMember(member);
   if (storageReady) nicknamePanel.onMember(member);
+});
+client.on('raw', (packet) => {
+  if (storageReady) middleApplications.onRaw(packet);
 });
 
 async function handleManagementSpeechVerification(interaction) {
