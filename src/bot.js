@@ -291,8 +291,8 @@ const commands = [
     .setName('管理组卸任').setDescription('当前管理组成员自行申请卸任')
     .addStringOption((o) => o.setName('理由').setDescription('卸任理由（可选）').setRequired(false).setMaxLength(400)),
   new SlashCommandBuilder()
-    .setName('中层管理面板').setDescription('配置中层管理任命、卸任和公示名单')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setName('中层管理面板').setDescription('主管理组配置中层管理任命、卸任和公示名单')
+    .setDefaultMemberPermissions(null),
   middleApplicationCommand,
   nicknameCommand,
   new SlashCommandBuilder()
@@ -3457,10 +3457,12 @@ const client = new Client({
 const middleApplications = createMiddleApplications({
   client, settingsFor, save: saveGuildData, logFailure,
   managerRoleId: (guildId) => settingsFor(guildId).managementRoleId,
-  afterGrant: async (member, roleId) => {
+  afterGrant: async (member, roleIds) => {
     await syncManagementCompanionRolesForMember(member);
-    if (settingsFor(member.guild.id).middleManagementGroups?.[roleId]) {
-      scheduleManagementMemberSync(member, true, 'middle', roleId);
+    for (const roleId of roleIds) {
+      if (settingsFor(member.guild.id).middleManagementGroups?.[roleId]) {
+        scheduleManagementMemberSync(member, true, 'middle', roleId);
+      }
     }
   },
 });
@@ -4089,8 +4091,8 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
     pendingManagementActions.delete(token);
-    if (!hasPermission(interaction, PermissionFlagsBits.ManageRoles)) {
-      await interaction.reply({ content: '你需要“管理身份组”权限才能任命或办理他人卸任。', flags: MessageFlags.Ephemeral });
+    if (!(pending.tier === 'middle' ? isConfiguredSeniorManagementMember(interaction) : hasPermission(interaction, PermissionFlagsBits.ManageRoles))) {
+      await interaction.reply({ content: '中层任免需要主管理身份组；管理组任免需要“管理身份组”权限。', flags: MessageFlags.Ephemeral });
       return;
     }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -4476,16 +4478,16 @@ client.on('interactionCreate', async (interaction) => {
         const tier = rawAction.startsWith('midmgmt-') ? 'middle' : 'senior';
         const action = rawAction.replace(/^midmgmt-/, 'mgmt-');
         if (guildId !== interaction.guildId) return;
+        if (tier === 'middle' && !isConfiguredSeniorManagementMember(interaction)) {
+          await interaction.reply({ content: '您不具备权限，只有已配置的主管理组成员可以使用中层管理面板。', flags: MessageFlags.Ephemeral });
+          return;
+        }
         const sessionKey = `${guildId}:${interaction.message.id}:${interaction.user.id}`;
         for (const [key, session] of pendingManagementPanelSelections) {
           if (Date.now() - session.updatedAt > 30 * 60 * 1000) pendingManagementPanelSelections.delete(key);
         }
         const session = pendingManagementPanelSelections.get(sessionKey) || { updatedAt: Date.now() };
         if (tier === 'middle' && rawAction === 'midmgmt-role' && interaction.isRoleSelectMenu()) {
-          if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-            await interaction.reply({ content: '需要“管理服务器”权限才能配置中层管理子区。', flags: MessageFlags.Ephemeral });
-            return;
-          }
           await interaction.deferUpdate();
           const role = await interaction.guild.roles.fetch(interaction.values[0]);
           const botMember = await interaction.guild.members.fetchMe();
@@ -4508,10 +4510,6 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
         if (tier === 'middle' && rawAction === 'midmgmt-parent' && interaction.isChannelSelectMenu()) {
-          if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-            await interaction.reply({ content: '需要“管理服务器”权限才能配置中层管理子区。', flags: MessageFlags.Ephemeral });
-            return;
-          }
           await interaction.deferUpdate();
           session.parentChannelId = interaction.values[0];
           session.updatedAt = Date.now();
@@ -4519,10 +4517,6 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
         if (tier === 'middle' && rawAction === 'midmgmt-create' && interaction.isButton()) {
-          if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-            await interaction.reply({ content: '需要“管理服务器”权限才能创建中层管理子区。', flags: MessageFlags.Ephemeral });
-            return;
-          }
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           const roleId = session.roleId;
           if (!roleId || !session.parentChannelId || Date.now() - session.updatedAt > 30 * 60 * 1000) {
@@ -4601,7 +4595,7 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
         if (action === 'mgmt-announcement' && interaction.isButton()) {
-          if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+          if (tier !== 'middle' && !hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
             await interaction.reply({ content: '需要“管理服务器”权限才能创建任免公示子区。', flags: MessageFlags.Ephemeral });
             return;
           }
@@ -4619,7 +4613,7 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
         if (action === 'mgmt-companion-config' && interaction.isButton()) {
-          if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+          if (tier !== 'middle' && !hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
             await interaction.reply({ content: '需要“管理服务器”权限才能配置配套身份组。', flags: MessageFlags.Ephemeral });
             return;
           }
@@ -4635,7 +4629,7 @@ client.on('interactionCreate', async (interaction) => {
         }
         const requiredPermission = action === 'mgmt-appoint' || action === 'mgmt-resign'
           ? PermissionFlagsBits.ManageRoles : PermissionFlagsBits.ManageGuild;
-        if (!hasPermission(interaction, requiredPermission)) {
+        if (tier !== 'middle' && !hasPermission(interaction, requiredPermission)) {
           await interaction.reply({ content: '你没有权限执行此管理组面板操作。', flags: MessageFlags.Ephemeral });
           return;
         }
@@ -5180,8 +5174,8 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === '中层管理面板') {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-        await interaction.editReply('需要“管理服务器”权限才能配置中层管理面板。');
+      if (!isConfiguredSeniorManagementMember(interaction)) {
+        await interaction.editReply('您不具备权限，只有已配置的主管理组成员可以配置中层管理面板。');
         return;
       }
       await interaction.editReply({ embeds: [managementPanelEmbed(interaction.guildId, 'middle')], components: managementPanelComponents(interaction.guildId, 'middle') });

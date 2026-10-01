@@ -18,6 +18,11 @@ const button = (id, label, style = ButtonStyle.Secondary) => new ButtonBuilder()
 const hasRole = (member, roleId) => member?.roles?.cache?.has(roleId)
   || (Array.isArray(member?.roles) && member.roles.includes(roleId)) || false;
 const prerequisitesMet = (member, roleIds) => roleIds.length > 0 && roleIds.every((id) => hasRole(member, id));
+// Keep existing single-role configurations and pending applications readable.
+const awardRoleIds = (record) => [...new Set(Array.isArray(record.roleIds)
+  ? record.roleIds : [record.roleId])].filter(Boolean);
+const awardMentions = (record) => awardRoleIds(record).map((id) => `<@&${id}>`).join('、') || '未设置';
+const memberLockKey = (guildId, userId) => `member:${guildId}:${userId}`;
 
 function createMiddleApplications(deps) {
   const { client, settingsFor, save, managerRoleId, logFailure, afterGrant } = deps;
@@ -71,13 +76,14 @@ function createMiddleApplications(deps) {
   function editor(session) {
     const config = configFor(session);
     const embed = new EmbedBuilder().setColor(0x5865F2).setTitle(config.name)
-      .setDescription(`${config.description || '未填写说明'}\n\n前置身份组（全部必需）：${config.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、') || '未设置'}\n通过后发放：${config.roleId ? `<@&${config.roleId}>` : '未设置'}\n审批频道：${config.approvalChannelId ? `<#${config.approvalChannelId}>` : '未设置'}\n公开申请频道：${config.channelId ? `<#${config.channelId}>` : '未设置'}\n审批：${config.votesRequired} 名不同主管理同意；任一主管理拒绝即结束\n状态：${config.enabled ? '开放申请' : '暂停申请'}\n已发布面板：${config.messages.length} 个\n\n审批身份组由 /管理组面板 的主管理身份组决定。通过后会同步已有中层身份组的配套身份。`);
+      .setDescription(`${config.description || '未填写说明'}\n\n前置身份组（全部必需）：${config.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、') || '未设置'}\n通过后发放：${awardMentions(config)}\n审批频道：${config.approvalChannelId ? `<#${config.approvalChannelId}>` : '未设置'}\n公开申请频道：${config.channelId ? `<#${config.channelId}>` : '未设置'}\n审批：${config.votesRequired} 名不同主管理同意；任一主管理拒绝即结束\n状态：${config.enabled ? '开放申请' : '暂停申请'}\n已发布面板：${config.messages.length} 个\n\n审批身份组由 /管理组面板 的主管理身份组决定。通过后会同步已有中层身份组的配套身份。`);
     embed.addFields({ name: '新申请是否提及主管理组', value: config.mentionManagers !== false ? '提及' : '不提及' },
       { name: '默认拒绝理由', value: config.rejectionReasonDefault || DEFAULT_REJECTION_REASON });
     return { content: null, embeds: [embed], allowedMentions: { parse: [] }, components: [
       row(new RoleSelectMenuBuilder().setCustomId(`midappcfg-prerequisite:${session.token}`)
         .setPlaceholder('选择前置身份组（最多 10 个，必须全部持有）').setMinValues(1).setMaxValues(10)),
-      row(new RoleSelectMenuBuilder().setCustomId(`midappcfg-role:${session.token}`).setPlaceholder('选择审批通过后发放的身份组')),
+      row(new RoleSelectMenuBuilder().setCustomId(`midappcfg-role:${session.token}`)
+        .setPlaceholder('选择审批通过后发放的身份组（最多 10 个）').setMinValues(1).setMaxValues(10)),
       row(new ChannelSelectMenuBuilder().setCustomId(`midappcfg-approval:${session.token}`)
         .setPlaceholder('选择管理组审批频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
       row(new ChannelSelectMenuBuilder().setCustomId(`midappcfg-channel:${session.token}`)
@@ -107,12 +113,17 @@ function createMiddleApplications(deps) {
   }
   function publicPayload(guildId, config) {
     const current = counts.get(guildId);
-    const count = current?.values.get(config.roleId);
-    const failure = current?.error || current?.roleErrors?.get(config.roleId);
-    const countText = count === undefined ? (failure ? '读取失败，请主管理点击刷新人数' : '正在读取')
-      : `${count} 人${failure ? '（上次结果，更新失败）' : ''}`;
+    const roleIds = awardRoleIds(config);
+    const countText = roleIds.map((id) => {
+      const count = current?.values.get(id);
+      const failure = current?.error || current?.roleErrors?.get(id);
+      const value = count === undefined ? (failure ? '读取失败，请主管理点击刷新人数' : '正在读取')
+        : `${count} 人${failure ? '（上次结果，更新失败）' : ''}`;
+      return `${roleIds.length > 1 ? `<@&${id}>：` : ''}${value}`;
+    }).join('\n') || '未设置发放身份组';
+    const failure = current?.error || roleIds.map((id) => current?.roleErrors?.get(id)).find(Boolean);
     return { embeds: [new EmbedBuilder().setColor(config.enabled ? 0x5865F2 : 0x95A5A6).setTitle(config.name)
-      .setDescription(`${config.description}\n\n前置身份组：${config.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}（须全部持有）\n通过后身份组：<@&${config.roleId}>\n当前人数：${countText}\n待审批：${pendingCount(guildId, config.id)} 人\n审批门槛：${config.votesRequired} 名管理组成员同意\n${config.enabled ? '点击下方按钮填写申请理由。' : '当前暂停新申请。'}${failure ? `\n人数读取失败说明：${failure}` : ''}`)
+      .setDescription(`${config.description}\n\n前置身份组：${config.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}（须全部持有）\n通过后身份组：${awardMentions(config)}\n当前人数：${countText}\n待审批：${pendingCount(guildId, config.id)} 人\n审批门槛：${config.votesRequired} 名管理组成员同意\n${config.enabled ? '点击下方按钮填写申请理由。' : '当前暂停新申请。'}${failure ? `\n人数读取失败说明：${failure}` : ''}`)
       .setFooter({ text: `申请面板 ${config.id} · Discord 身份组人数（含 Bot），随成员变更更新` })],
     components: [row(button(`midapp-apply:${config.id}`, '填写申请理由', ButtonStyle.Primary).setDisabled(!config.enabled),
       button(`midapp-status:${config.id}`, '我的申请'), button(`midapp-refresh:${config.id}`, '刷新人数'))], allowedMentions: { parse: [] } };
@@ -120,7 +131,7 @@ function createMiddleApplications(deps) {
   function approvalPayload(app) {
     const notificationLabels = { pending: '待发送', sending: '正在发送', sent: '已发送', failed: '发送失败，可重发', unknown: '发送结果未确认，可手动重发' };
     return { embeds: [new EmbedBuilder().setColor(app.status === 'completed' ? 0x2ECC71 : app.status === 'rejected' ? 0xE74C3C : 0x5865F2)
-      .setTitle(`中层申请：${app.panelName}`).setDescription(`申请人：<@${app.userId}> (${app.userId})\n申请身份组：<@&${app.roleId}>\n前置身份组：${app.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}\n\n申请理由：\n${app.reason}\n\n状态：${statusLabels[app.status] || app.status}\n同意票：${app.approverIds.length}/${app.votesRequired}\n已同意：${app.approverIds.map((id) => `<@${id}>`).join('、') || '无'}${app.decidedBy && app.status !== 'rejected' ? `\n处理人（仅内部审批卡）：<@${app.decidedBy}>` : ''}${app.rejectionReason ? `\n拒绝理由：${app.rejectionReason}` : ''}${app.rejectionNotification ? `\n申请人私信通知：${notificationLabels[app.rejectionNotification.status] || '未完成'}` : ''}${app.failure ? `\n失败说明：${app.failure.slice(0, 500)}` : ''}`)
+      .setTitle(`中层申请：${app.panelName}`).setDescription(`申请人：<@${app.userId}> (${app.userId})\n申请身份组：${awardMentions(app)}\n前置身份组：${app.prerequisiteRoleIds.map((id) => `<@&${id}>`).join('、')}\n\n申请理由：\n${app.reason}\n\n状态：${statusLabels[app.status] || app.status}\n同意票：${app.approverIds.length}/${app.votesRequired}\n已同意：${app.approverIds.map((id) => `<@${id}>`).join('、') || '无'}${app.decidedBy && app.status !== 'rejected' ? `\n处理人（仅内部审批卡）：<@${app.decidedBy}>` : ''}${app.rejectionReason ? `\n拒绝理由：${app.rejectionReason}` : ''}${app.rejectionNotification ? `\n申请人私信通知：${notificationLabels[app.rejectionNotification.status] || '未完成'}` : ''}${app.failure ? `\n失败说明：${app.failure.slice(0, 500)}` : ''}`)
       .setFooter({ text: `申请 ${app.id} · 申请人不能审批自己的申请` }).setTimestamp(app.createdAt)],
     components: ['pending', 'grant_failed'].includes(app.status) ? [row(
       button(`midapp-approve:${app.id}`, app.status === 'grant_failed' ? '重试发放身份组' : '同意', ButtonStyle.Success),
@@ -131,7 +142,7 @@ function createMiddleApplications(deps) {
   function applicantPayload(app) {
     return { embeds: [new EmbedBuilder().setTitle(`我的申请：${app.panelName}`)
       .setColor(app.status === 'rejected' ? 0xE74C3C : app.status === 'completed' ? 0x2ECC71 : 0x5865F2)
-      .setDescription(`申请身份组：<@&${app.roleId}>\n状态：${statusLabels[app.status] || app.status}\n同意票：${app.approverIds.length}/${app.votesRequired}\n\n申请理由：\n${app.reason}${app.status === 'rejected' ? `\n\n拒绝理由：\n${app.rejectionReason || '未填写，请联系管理组。'}` : ''}`)
+      .setDescription(`申请身份组：${awardMentions(app)}\n状态：${statusLabels[app.status] || app.status}\n同意票：${app.approverIds.length}/${app.votesRequired}\n\n申请理由：\n${app.reason}${app.status === 'rejected' ? `\n\n拒绝理由：\n${app.rejectionReason || '未填写，请联系管理组。'}` : ''}`)
       .setFooter({ text: `申请 ${app.id}` }).setTimestamp(app.createdAt)], components: [], allowedMentions: { parse: [] } };
   }
   async function notifyRejection(guild, app) {
@@ -145,7 +156,7 @@ function createMiddleApplications(deps) {
     }
     try {
       const user = await client.users.fetch(app.userId);
-      const roleName = guild.roles.cache.get(app.roleId)?.name || `身份组 ${app.roleId}`;
+      const roleName = awardRoleIds(app).map((id) => guild.roles.cache.get(id)?.name || `身份组 ${id}`).join('、');
       const message = await user.send({ embeds: [new EmbedBuilder().setColor(0xE74C3C).setTitle('中层申请未通过')
         .setDescription(`服务器：${guild.name}\n申请面板：${app.panelName}\n申请身份组：${roleName}\n\n拒绝理由：\n${app.rejectionReason}`)
         .setFooter({ text: `申请 ${app.id} · 可在原申请面板查看进度` }).setTimestamp()], allowedMentions: { parse: [] } });
@@ -179,7 +190,7 @@ function createMiddleApplications(deps) {
   }
   async function refreshCounts(guild, force = false) {
     let current = counts.get(guild.id);
-    const roleIds = new Set(Object.values(state(guild.id).panels).map((config) => config.roleId).filter(Boolean));
+    const roleIds = new Set(Object.values(state(guild.id).panels).flatMap(awardRoleIds));
     if (!roleIds.size) return;
     if (current?.loading) { await current.loading; return refreshCounts(guild, force); }
     if (!force && current && !current.error && Date.now() - current.updatedAt < 60 * 1000
@@ -241,7 +252,7 @@ function createMiddleApplications(deps) {
     }, 1000));
   }
   function onMember(member, removed = false, previousMember = null) {
-    const ids = Object.values(state(member.guild.id).panels).map((config) => config.roleId).filter(Boolean);
+    const ids = Object.values(state(member.guild.id).panels).flatMap(awardRoleIds);
     if (removed || ids.some((id) => previousMember
       ? hasRole(previousMember, id) !== hasRole(member, id) : hasRole(member, id))) {
       scheduleRefresh(member.guild, true);
@@ -264,24 +275,26 @@ function createMiddleApplications(deps) {
   async function submit(interaction, config) {
     config = JSON.parse(JSON.stringify(config));
     const applications = state(interaction.guildId).applications;
-    const key = `${interaction.guildId}:${interaction.user.id}:${config.roleId}`;
+    const key = memberLockKey(interaction.guildId, interaction.user.id);
     if (locks.has(key)) throw new Error('你的申请正在处理，请稍后查看“我的申请”。');
     locks.add(key);
     try {
       if (!config.enabled) throw new Error('这套面板已暂停申请。');
-      if (applications.some((app) => app.userId === interaction.user.id && app.roleId === config.roleId
+      const roleIds = awardRoleIds(config);
+      if (!roleIds.length || roleIds.length > 10) throw new Error('请配置 1–10 个发放身份组。');
+      if (applications.some((app) => app.userId === interaction.user.id && awardRoleIds(app).some((id) => roleIds.includes(id))
         && activeStatuses.has(app.status))) throw new Error('同一身份组已有待处理申请，请勿重复提交。');
       const member = await interaction.guild.members.fetch({ user: interaction.user.id, force: true });
       if (member.user.bot || !prerequisitesMet(member, config.prerequisiteRoleIds)) throw new Error('你必须持有本面板要求的全部前置身份组。');
-      if (hasRole(member, config.roleId)) throw new Error('你已持有目标身份组，无需申请。');
-      await grantableRole(interaction.guild, config.roleId);
+      if (roleIds.every((id) => hasRole(member, id))) throw new Error('你已持有全部目标身份组，无需申请。');
+      for (const id of roleIds) await grantableRole(interaction.guild, id);
       const channel = await channelFor(interaction.guild, config.approvalChannelId);
       const roleId = managerRoleId(interaction.guildId);
       if (!roleId) throw new Error('请先配置 /管理组面板 的主管理身份组。');
       const reason = interaction.fields.getTextInputValue('reason').trim();
       if (!reason) throw new Error('请填写申请理由。');
       const app = { id: randomBytes(8).toString('hex'), panelId: config.id, panelName: config.name,
-        userId: member.id, roleId: config.roleId, prerequisiteRoleIds: [...config.prerequisiteRoleIds],
+        userId: member.id, roleId: roleIds[0], roleIds, prerequisiteRoleIds: [...config.prerequisiteRoleIds],
         reason, votesRequired: config.votesRequired, approverIds: [], status: 'pending',
         createdAt: Date.now(), approvalChannelId: channel.id, approvalMessageId: null };
       applications.push(app);
@@ -305,7 +318,7 @@ function createMiddleApplications(deps) {
     } finally { locks.delete(key); }
   }
   async function review(interaction, app, reject, rejectionReason, sourceMessageId = interaction.message?.id) {
-    const key = `${interaction.guildId}:${app.userId}:${app.roleId}`;
+    const key = memberLockKey(interaction.guildId, app.userId);
     if (locks.has(key)) throw new Error('这项申请正在处理另一项操作，请稍后重试。');
     locks.add(key);
     try {
@@ -338,13 +351,19 @@ function createMiddleApplications(deps) {
       await updateApproval(interaction.guild, app).catch((error) => logFailure('中层申请审批卡更新失败。', error));
       if (app.status === 'executing') {
         try {
-          await grantableRole(interaction.guild, app.roleId);
+          const roleIds = awardRoleIds(app);
+          if (!roleIds.length || roleIds.length > 10) throw new Error('申请记录中的发放身份组无效。');
+          for (const id of roleIds) await grantableRole(interaction.guild, id);
           let member = await interaction.guild.members.fetch({ user: app.userId, force: true });
           if (!prerequisitesMet(member, app.prerequisiteRoleIds)) throw new Error('申请人已不再持有全部前置身份组，未发放。');
-          if (!hasRole(member, app.roleId)) member = await member.roles.add(app.roleId, `中层申请 ${app.id} 由 ${interaction.user.id} 审批通过`);
+          // Single-role PUTs preserve unrelated roles changed concurrently; retries
+          // only deliver missing roles if an earlier batch stopped partway through.
+          for (const id of roleIds) if (!hasRole(member, id)) {
+            member = await member.roles.add(id, `中层申请 ${app.id} 由 ${interaction.user.id} 审批通过`);
+          }
           app.status = 'completed';
           await save();
-          await afterGrant(member, app.roleId).catch((error) => logFailure('中层申请配套身份同步失败。', error));
+          await afterGrant(member, roleIds).catch((error) => logFailure('中层申请配套身份同步失败。', error));
           onMember(member);
         } catch (error) {
           // If role delivery succeeded but persistence failed, keep an executing
@@ -431,12 +450,15 @@ function createMiddleApplications(deps) {
           let posted;
           if (action === 'midappcfg-prerequisite') {
             const ids = [...new Set(interaction.values)];
-            if (ids.includes(interaction.guildId) || ids.includes(config.roleId)) throw new Error('前置身份组不能是 @everyone 或待发放身份组。');
+            if (ids.includes(interaction.guildId) || ids.some((id) => awardRoleIds(config).includes(id))) throw new Error('前置身份组不能是 @everyone 或待发放身份组。');
             config.prerequisiteRoleIds = ids;
           } else if (action === 'midappcfg-role') {
-            const role = await grantableRole(interaction.guild, interaction.values[0]);
-            if (config.prerequisiteRoleIds.includes(role.id)) throw new Error('发放身份组不能同时作为前置身份组。');
-            config.roleId = role.id;
+            const ids = [...new Set(interaction.values)];
+            if (!ids.length || ids.length > 10) throw new Error('请选择 1–10 个发放身份组。');
+            if (ids.some((id) => config.prerequisiteRoleIds.includes(id))) throw new Error('发放身份组不能同时作为前置身份组。');
+            for (const id of ids) await grantableRole(interaction.guild, id);
+            config.roleIds = ids;
+            config.roleId = ids[0];
           } else if (action === 'midappcfg-approval' || action === 'midappcfg-channel') {
             const channel = await channelFor(interaction.guild, interaction.values[0]);
             config[action === 'midappcfg-approval' ? 'approvalChannelId' : 'channelId'] = channel.id;
@@ -454,10 +476,10 @@ function createMiddleApplications(deps) {
             try { await save(); } catch (error) { state(interaction.guildId).panels[config.id] = previous; throw error; }
             session.panelId = null; await interaction.editReply(overview(session)); return true;
           } else if (action === 'midappcfg-publish') {
-            if (!config.prerequisiteRoleIds.length || !config.roleId || !config.approvalChannelId || !config.channelId
+            if (!config.prerequisiteRoleIds.length || !awardRoleIds(config).length || !config.approvalChannelId || !config.channelId
               || !managerRoleId(interaction.guildId)) throw new Error('请设置前置身份组、发放身份组、审批频道、公开频道和主管理身份组。');
             for (const id of config.prerequisiteRoleIds) if (!(await interaction.guild.roles.fetch(id))) throw new Error('前置身份组已不存在。');
-            await grantableRole(interaction.guild, config.roleId);
+            for (const id of awardRoleIds(config)) await grantableRole(interaction.guild, id);
             await channelFor(interaction.guild, config.approvalChannelId);
             const channel = await channelFor(interaction.guild, config.channelId);
             const existing = config.messages.find((ref) => ref.channelId === channel.id);
@@ -499,7 +521,7 @@ function createMiddleApplications(deps) {
         if (!app || app.status !== 'rejected' || !app.rejectionReason) throw new Error('没有可发送的拒绝通知。');
         if (app.approvalChannelId !== interaction.channelId || app.approvalMessageId !== interaction.message.id) throw new Error('请在原审批卡操作。');
         if (app.userId === interaction.user.id || !(await manager(interaction.guild, interaction.user.id))) throw new Error('只有其他主管理组成员或服务器管理员可以重发通知。');
-        const key = `${interaction.guildId}:${app.userId}:${app.roleId}`;
+        const key = memberLockKey(interaction.guildId, app.userId);
         if (locks.has(key)) throw new Error('申请正在处理，请稍后重试。');
         locks.add(key);
         try {
@@ -538,9 +560,10 @@ function createMiddleApplications(deps) {
         await refreshCounts(interaction.guild, true).catch((error) => logFailure('手动读取中层申请人数失败。', error));
         await refreshPublic(interaction.guild);
         const current = counts.get(interaction.guildId);
-        const error = current?.error || current?.roleErrors.get(config.roleId);
+        const ids = awardRoleIds(config);
+        const error = current?.error || ids.map((id) => current?.roleErrors.get(id)).find(Boolean);
         if (error) throw new Error(error);
-        await interaction.editReply(`人数已刷新：${current.values.get(config.roleId)} 人（含 Bot）。`);
+        await interaction.editReply({ content: `人数已刷新（含 Bot）：\n${ids.map((id) => `<@&${id}>：${current?.values.get(id) ?? '未读取'} 人`).join('\n')}`, allowedMentions: { parse: [] } });
       }
       else if (action === 'midapp-status' && interaction.isButton()) {
         const app = applications.filter((item) => item.panelId === config.id && item.userId === interaction.user.id).at(-1);
@@ -560,16 +583,17 @@ function createMiddleApplications(deps) {
   }
   async function recover(guild, refreshCards = false) {
     for (const app of state(guild.id).applications) {
-      if (locks.has(`${guild.id}:${app.userId}:${app.roleId}`)) continue;
+      if (locks.has(memberLockKey(guild.id, app.userId))) continue;
       let changed = false;
       if (app.status === 'executing') {
         const member = await guild.members.fetch({ user: app.userId, force: true }).catch(() => null);
-        app.status = hasRole(member, app.roleId) ? 'completed' : 'grant_failed';
+        const ids = awardRoleIds(app);
+        app.status = ids.length && ids.every((id) => hasRole(member, id)) ? 'completed' : 'grant_failed';
         if (app.status === 'grant_failed') app.failure = '部署重启后未确认身份组已发放；请管理组重试。';
         else delete app.failure;
         await save();
         changed = true;
-        if (app.status === 'completed' && member) await afterGrant(member, app.roleId).catch((error) => logFailure('恢复中层申请配套身份失败。', error));
+        if (app.status === 'completed' && member) await afterGrant(member, ids).catch((error) => logFailure('恢复中层申请配套身份失败。', error));
       }
       if (app.status === 'pending' && !app.approvalMessageId) {
         app.status = 'delivery_failed'; app.failure = '申请提交期间重启，申请卡未完整保存；请重新提交。'; await save();
@@ -580,7 +604,7 @@ function createMiddleApplications(deps) {
           app.rejectionNotification.status = 'unknown';
           await save(); changed = true;
         } else if (app.rejectionNotification?.status === 'pending') {
-          const key = `${guild.id}:${app.userId}:${app.roleId}`;
+          const key = memberLockKey(guild.id, app.userId);
           locks.add(key);
           try { await notifyRejection(guild, app); changed = true; }
           finally { locks.delete(key); }
