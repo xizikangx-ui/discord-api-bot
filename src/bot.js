@@ -30,6 +30,7 @@ const {
   ModalBuilder, LabelBuilder, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials,
 } = require('discord.js');
 const { createMiddleApplications, configurationCommand: middleApplicationCommand } = require('./middle-applications');
+const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
@@ -293,6 +294,7 @@ const commands = [
     .setName('中层管理面板').setDescription('配置中层管理任命、卸任和公示名单')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   middleApplicationCommand,
+  nicknameCommand,
   new SlashCommandBuilder()
     .setName('中层管理名单').setDescription('查看当前中层管理成员和任职时间')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -3463,6 +3465,7 @@ const middleApplications = createMiddleApplications({
     }
   },
 });
+const nicknamePanel = createNicknamePanel({ client, settingsFor, save: saveGuildData, logFailure });
 let readyWatchdog;
 client.on('shardError', (error) => logFailure('Discord 网关连接错误。', error));
 client.on('shardConnecting', () => console.log('正在连接 Discord 实时网关……'));
@@ -3639,6 +3642,7 @@ client.once('clientReady', async () => {
   }
   schedulePersistedManagementDeleteConfirmations();
   middleApplications.start();
+  nicknamePanel.start();
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -3664,6 +3668,7 @@ client.once('clientReady', async () => {
 });
 client.on('guildMemberUpdate', (oldMember, newMember) => {
   if (storageReady) middleApplications.onMember(newMember);
+  if (storageReady) nicknamePanel.onMember(newMember);
   const setting = guildData.settings[newMember.guild.id];
   if (!setting) return;
   for (const [tier, roleId, track] of managementTracks(setting)) {
@@ -3678,6 +3683,7 @@ client.on('guildMemberUpdate', (oldMember, newMember) => {
 });
 client.on('guildMemberRemove', (member) => {
   if (storageReady) middleApplications.onMember(member, true);
+  if (storageReady) nicknamePanel.onMember(member);
   const setting = guildData.settings[member.guild.id];
   if (!setting) return;
   const seniorRoleId = managementTrack(setting, 'senior').roleId;
@@ -3687,6 +3693,7 @@ client.on('guildMemberRemove', (member) => {
 
 client.on('guildMemberAdd', (member) => {
   if (storageReady) middleApplications.onMember(member);
+  if (storageReady) nicknamePanel.onMember(member);
 });
 
 async function handleManagementSpeechVerification(interaction) {
@@ -4065,6 +4072,7 @@ client.on('interactionCreate', async (interaction) => {
   }
   console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isContextMenuCommand() ? `右键/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
   if (await middleApplications.handle(interaction)) return;
+  if (await nicknamePanel.handle(interaction)) return;
   if (await handleManagementSpeechVerification(interaction)) return;
   if (await handleSpeechArchiveView(interaction)) return;
   if (await handleEmergencyChannelInteraction(interaction)) return;
