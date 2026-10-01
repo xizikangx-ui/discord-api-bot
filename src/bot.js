@@ -2574,6 +2574,26 @@ function hasPermission(interaction, permission) {
   return interaction.memberPermissions?.has(permission) || false;
 }
 
+async function roleMentionOverMemberLimit(guild, roles, limit) {
+  const counts = new Map(roles.map((role) => [role.id, 0]));
+  let after;
+  while (true) {
+    const members = await guild.members.list({ limit: 1000, ...(after ? { after } : {}), cache: false });
+    for (const member of members.values()) {
+      for (const role of roles) {
+        if (!member.roles.cache.has(role.id)) continue;
+        const count = counts.get(role.id) + 1;
+        if (count > limit) return role;
+        counts.set(role.id, count);
+      }
+    }
+    if (members.size < 1000) return null;
+    const nextAfter = members.lastKey();
+    if (!nextAfter || nextAfter === after) throw new Error('成员列表分页未能继续读取。');
+    after = nextAfter;
+  }
+}
+
 function imitatesManagementSpeech(content) {
   const normalized = String(content || '').normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, '');
   return normalized.includes(MANAGEMENT_SPEECH_TITLE)
@@ -5523,6 +5543,20 @@ client.on('interactionCreate', async (interaction) => {
         if (roles.some((role) => !role.mentionable) && !botPermissions.has(PermissionFlagsBits.MentionEveryone)) {
           await interaction.editReply('机器人缺少“提及 @everyone、@here 和所有身份组”权限，无法提醒不可被普通成员提及的身份组；请为机器人开启此权限，或将目标身份组设为可被提及。');
           return;
+        }
+        if (!managementSpeech) {
+          let oversizedRole;
+          try {
+            oversizedRole = await roleMentionOverMemberLimit(interaction.guild, roles, 100);
+          } catch (error) {
+            logFailure('无法核实 /说话 所提及身份组的人数。', error);
+            await interaction.editReply('无法读取完整的服务器成员列表，因此不能核实身份组人数；这次 /说话 未发送。请检查 Bot 的 Server Members Intent 后重试。');
+            return;
+          }
+          if (oversizedRole) {
+            await interaction.editReply(`普通 /说话 不能提及身份组“${oversizedRole.name}”：该组成员超过 100 人。请减少提及范围或由管理组使用 /管理说话。`);
+            return;
+          }
         }
       }
       const replyLink = options.getString('回复消息链接');
