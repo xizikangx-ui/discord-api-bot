@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-**生效日期：2026-09-30**  
+**生效日期：2026-10-01**
 **运营者联系邮箱：`xizikangx@gmail.com`**
 
 本政策适用于使用本仓库代码自行部署的 Discord Bot。每个部署实例由部署者独立运营；部署者应在公开本政策前填写有效联系方式，并根据实际托管方式和服务器配置更新本政策。
@@ -14,6 +14,8 @@
 这些数据用于处罚、撤销、管理组名单、公示、提醒、续禁、表情反应清理和经审批的帖子管理/内容删除等已配置功能。Bot 不读取在线状态；反应清理只检查网关反应事件中的作者/表情信息，不分析消息正文；内容删除申请只读取申请链接指定的目标消息以确认对象，达到审批门槛后才删除。紧急频道功能的聊天记录处理见下文。
 
 ### Bot 发言与 Discord 交互
+
+启用中层申请面板后，Bot 会保存每套面板的名称、说明、前置/发放身份组、审批/公开频道、审批票数和已发布消息 ID；还会保存申请人 ID、申请理由、提交时间、申请时的身份组要求、审批人 ID、票数、处理结果和失败说明。这些记录随服务器状态用 AES-256-GCM 加密保存到部署者的 Discord 私密存储频道，没有自动删除期限。理由和审批信息会显示在管理员配置的审批频道，申请人可查看自己的申请状态；部署者应限制审批频道访问。公开申请面板仅显示要求、目标身份组真人数和待审批人数，不显示申请理由。Bot 通过 Server Members Intent 读取成员身份组，在内存中维护人数，并监听身份组变更和进退服；用于人数统计的完整成员列表不另行持久保存。审批通过后 Bot 发放配置的身份组，申请人不能审批自己的申请。
 
 `/说话` 的文本由 Bot 发送到用户调用命令的频道或子区；Discord 可能会显示谁使用了斜杠命令。`/管理说话` 会先核对主管理组身份组或服务器管理员权限，再发送含发言人 ID 的可核验卡片。卡片认证码由 Bot 的私密密钥签署正文、频道和发言人；密钥不会发到 Discord，核验由 Bot 在内存中完成。正文和发言人信息会显示在目标频道中。`/说话转发` 由有权查看源频道的操作者提交本服务器内某条具体消息的链接；Bot 按该链接获取消息，并请求 Discord 将它原生转发到当前频道或子区。Bot 不会为此扫描其他消息，也不会把源消息正文写入 Bot 的持久状态；转发后的消息保留在目标 Discord 频道，受该频道权限和保留设置约束。对于 Bot 无法读取内容的消息，Discord 可能拒绝转发（错误 160014）。消息作者目前没有应用内自助退出单次转发的开关，可联系运营者处理相关请求。Bot 会接收其斜杠命令、按钮、菜单和表单交互所需的数据。Bot 不监听普通消息事件，反应清理不需要 Message Content Intent。
 
@@ -44,6 +46,8 @@
 Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应遵守适用法律、Discord 开发者条款及服务器规则。功能或数据处理方式发生变化时，部署者应更新此政策并告知受影响用户。
 
 ## English summary
+
+When middle-management application panels are enabled, the bot stores panel configuration, applicant IDs and reasons, submission timestamps, prerequisite and award roles, reviewer IDs, approval counts, results and failure details. These records are encrypted with AES-256-GCM as part of the private Discord operational state and have no automatic deletion period. The configured approval channel displays application reasons and review information; applicants can view their own status. Public panels display requirements, the number of human members holding the award role and pending application counts, without publishing reasons. The bot uses Server Members Intent to read role membership and update in-memory counts on role and membership changes; it does not separately persist the full member list used for counting. Roles are awarded after approval, and applicants cannot approve their own requests.
 
 The `/管理说话` command checks the configured senior management role or server Administrator permission before posting a management announcement. The announcement publicly shows its speaker's Discord ID and message body. Its verification button checks a signature over the body, guild, channel and speaker using a secret that is not posted to Discord. Ordinary `/说话` users cannot create this signed announcement. For both `/说话` and `/管理说话`, the bot first writes an encrypted record to a separate private channel in the same storage server. The private channel shows the operator ID, command, source channel, delivery status and, after success, the bot message link. The message body, reply link, image names and image URLs are encrypted with AES-256-GCM in an attachment; image files themselves are not copied. Storage-server members with Manage Server permission may request a decrypted ephemeral copy. The bot does not send the original message if archive creation fails. These records have no automatic deletion period.
 
