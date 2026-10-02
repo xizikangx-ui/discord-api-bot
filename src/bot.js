@@ -31,6 +31,7 @@ const {
 } = require('discord.js');
 const { createMiddleApplications, configurationCommand: middleApplicationCommand } = require('./middle-applications');
 const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
+const { createPurgePanel, purgeCommand } = require('./purge-panel');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
@@ -295,6 +296,7 @@ const commands = [
     .setDefaultMemberPermissions(null),
   middleApplicationCommand,
   nicknameCommand,
+  purgeCommand,
   new SlashCommandBuilder()
     .setName('中层管理名单').setDescription('查看当前中层管理成员和任职时间')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -3467,6 +3469,8 @@ const middleApplications = createMiddleApplications({
   },
 });
 const nicknamePanel = createNicknamePanel({ client, settingsFor, save: saveGuildData, logFailure });
+const purgePanel = createPurgePanel({ client, settingsFor, save: saveGuildData, logFailure,
+  protectedChannelIds: [storageChannelId, speechArchiveChannelId, legacyStorageChannelId].filter(Boolean) });
 let readyWatchdog;
 client.on('shardError', (error) => logFailure('Discord 网关连接错误。', error));
 client.on('shardConnecting', () => console.log('正在连接 Discord 实时网关……'));
@@ -3644,6 +3648,7 @@ client.once('clientReady', async () => {
   schedulePersistedManagementDeleteConfirmations();
   middleApplications.start();
   nicknamePanel.start();
+  await purgePanel.start().catch((error) => logFailure('冲水任务恢复状态保存失败；未自动执行删除。', error));
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -4077,6 +4082,7 @@ client.on('interactionCreate', async (interaction) => {
   console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isContextMenuCommand() ? `右键/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
   if (await middleApplications.handle(interaction)) return;
   if (await nicknamePanel.handle(interaction)) return;
+  if (await purgePanel.handle(interaction)) return;
   if (await handleManagementSpeechVerification(interaction)) return;
   if (await handleSpeechArchiveView(interaction)) return;
   if (await handleEmergencyChannelInteraction(interaction)) return;
