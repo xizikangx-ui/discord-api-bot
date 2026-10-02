@@ -33,6 +33,7 @@ const { createMiddleApplications, configurationCommand: middleApplicationCommand
 const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
 const { createPurgePanel, purgeCommand } = require('./purge-panel');
 const { createScheduledPunishments, scheduledPunishmentCommands } = require('./scheduled-punishments');
+const { createPolls, pollCommand } = require('./polls');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
@@ -299,6 +300,7 @@ const commands = [
   nicknameCommand,
   purgeCommand,
   ...scheduledPunishmentCommands,
+  pollCommand,
   new SlashCommandBuilder()
     .setName('中层管理名单').setDescription('查看当前中层管理成员和任职时间')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -3485,6 +3487,14 @@ const scheduledPunishments = createScheduledPunishments({ client, settingsFor, s
     || Object.values(pendingPunishmentRecords).some(item => item.userId === userId
       && Number.isFinite(item.createdAt) && Date.now() - item.createdAt < PUNISHMENT_CONFIRM_TTL),
 });
+const polls = createPolls({ client, settingsFor, guildIds: commandGuildIds, save: saveGuildData, logFailure,
+  encrypt: encryptJson, decrypt: decryptJson,
+  archiveChannelId: '1555055810818605107', archiveGuildId: '1554018151094689853',
+  manager: interaction => isConfiguredSeniorManagementMember(interaction)
+    || interaction.member?.permissions?.has(PermissionFlagsBits.Administrator),
+  scopeFor: guildId => punishmentGuildIds().includes(guildId) ? punishmentGuildIds() : [guildId],
+  validatePunishment: validatePunishmentRequest, executePunishment: executePunishmentRequest,
+});
 let readyWatchdog;
 client.on('shardError', (error) => logFailure('Discord 网关连接错误。', error));
 client.on('shardConnecting', () => console.log('正在连接 Discord 实时网关……'));
@@ -3664,6 +3674,7 @@ client.once('clientReady', async () => {
   nicknamePanel.start();
   await purgePanel.start().catch((error) => logFailure('冲水任务恢复状态保存失败；未自动执行删除。', error));
   await scheduledPunishments.start().catch((error) => logFailure('预约处罚恢复失败，未启动自动执行。', error));
+  await polls.start().catch((error) => logFailure('投票恢复失败，未启用投票操作。', error));
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -4099,6 +4110,7 @@ client.on('interactionCreate', async (interaction) => {
   if (await nicknamePanel.handle(interaction)) return;
   if (await purgePanel.handle(interaction)) return;
   if (await scheduledPunishments.handle(interaction)) return;
+  if (await polls.handle(interaction)) return;
   if (await handleManagementSpeechVerification(interaction)) return;
   if (await handleSpeechArchiveView(interaction)) return;
   if (await handleEmergencyChannelInteraction(interaction)) return;

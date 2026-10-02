@@ -15,6 +15,8 @@
 
 ### Bot 发言与 Discord 交互
 
+启用 `/投票` 后，本服务器真人成员可创建或参与普通/处罚投票，不限制身份组。公开投票消息仅显示选项、票数、截止时间及结果；处罚投票还显示目标、处罚方式和原因，不显示投票人名单、投票人身份或各人的选择。Bot 在内存中按用户 ID 限制每人一票，支持修改和撤回；创建人、投票人及选择、修改/撤回/取消/批准事件、时间和处罚结果仅保存在私密存储服务器 `1554018151094689853` 的频道 `1555055810818605107` 的 AES-256-GCM 加密投票附件中。共享运行数据仅保存投票 ID、频道和记录消息指针、截止时间及状态，不另存投票人名单。存储服务器拥有“管理服务器”权限的成员可在该频道请求仅本人可见的解密文件。投票通过不会自动处罚，须由已配置主管理组或服务器管理员确认；实际处罚及确认人仍进入现有处罚审计记录。投票记录无自动删除期限，用户可联系运营者请求删除。投票消息在 Discord 上显示汇总数量，因此不承诺对能够结合其他信息推断选择的观察者实现绝对匿名。
+
 启用预约处罚后，已配置管理组或中层成员可预约24小时后执行警告、禁言、警告并禁言或永封。Bot 保存预约及处罚编号、目标/发起人/解除人 ID、服务器范围、源/公示频道及消息 ID、原因、时长、执行时间、状态和结果，随运行数据以 AES-256-GCM 加密存储，无自动删除期限。预约公示频道会显示目标、发起人、原因、方式、时间及处理状态。其他有权限的管理组或中层成员可在到期前解除；实际执行仍需符合当时的发起人身份组和 Bot 权限。执行结果不确定时停止自动重试，关闭预约不会撤销已经实际执行的处罚。
 
 中层申请被拒绝时，管理组可在表单中填写或修改拒绝理由，Bot 会私信申请人告知申请结果和理由。默认拒绝理由、实际拒绝理由、处理人 ID、私信发送状态及成功发送后的消息 ID 会随申请记录加密保存。私信、申请人自己的进度页和拒绝审批卡不显示拒绝人身份；处理人 ID 保留在内部加密状态中用于审计。管理员填写理由时应避免主动包含处理人的身份。申请人关闭私信时可能无法投递，Bot 会记录失败并允许管理组重发，申请人也可在原面板查看理由。
@@ -54,6 +56,8 @@
 Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应遵守适用法律、Discord 开发者条款及服务器规则。功能或数据处理方式发生变化时，部署者应更新此政策并告知受影响用户。
 
 ## English summary
+
+The `/投票` command permits human guild members to create and vote in ordinary or punishment polls without a role requirement. Public cards display options, aggregate counts, deadlines and results, plus the target, action and reason for punishment polls; they do not display voter identities or individual choices. The bot enforces one current vote per user in memory and supports changing or withdrawing a vote. Creator/voter IDs, individual choices, change/withdrawal/cancellation/approval events, timestamps and execution results are stored only in AES-256-GCM encrypted poll attachments in channel `1555055810818605107` of the private storage server `1554018151094689853`. Shared operational state contains pointers, deadlines and status, without voter lists. Members with Manage Server permission in the storage server may request an ephemeral decrypted file from that channel. Passing a punishment poll does not automatically punish: a configured senior manager or guild Administrator must confirm, and actual punishment actions remain covered by the existing moderation audit. Poll records have no automatic deletion period; users may contact the operator for deletion requests. Public aggregate counts may permit inference when combined with other information, so absolute anonymity is not promised.
 
 Configured management and middle-management members may schedule a warning, timeout, combined warning and timeout, or permanent ban after a 24-hour waiting period. The bot stores appointment and punishment IDs, target/operator/cancelling-user IDs, server scope, source/notice channel and message IDs, reason, duration, timestamps, status and results in the AES-256-GCM encrypted operational state, without automatic expiry. The public appointment notice shows the target, operator, reason, action, deadline and status. Authorized members may cancel before the deadline. Execution rechecks the original operator's configured role and the bot's permissions. Ambiguous execution is not automatically retried; closing an appointment does not revoke any punishment already applied.
 
