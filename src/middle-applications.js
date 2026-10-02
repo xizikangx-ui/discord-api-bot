@@ -33,6 +33,7 @@ function createMiddleApplications(deps) {
   const refreshing = new Map();
   const refreshAgain = new Set();
   const forceRefresh = new Set();
+  const publicRefreshErrors = new Map();
 
   function configurationManager(interaction) {
     return hasRole(interaction.member, managerRoleId(interaction.guildId));
@@ -226,15 +227,40 @@ function createMiddleApplications(deps) {
     }
     const work = (async () => {
       await refreshCounts(guild, force).catch((error) => logFailure('中层申请人数读取失败。', error));
+      let pruned = false;
       for (const config of Object.values(state(guild.id).panels)) {
-        for (const ref of config.messages) {
+        for (const ref of [...config.messages]) {
+          const key = `${guild.id}:${ref.channelId}:${ref.messageId}`;
           try {
             const channel = await guild.channels.fetch(ref.channelId);
+            if (!channel) {
+              const error = new Error('公开申请频道已不存在。');
+              error.code = 10003;
+              throw error;
+            }
             const message = await channel.messages.fetch(ref.messageId);
             await message.edit(publicPayload(guild.id, config));
-          } catch (error) { logFailure('中层申请公开面板更新失败。', error); }
+            publicRefreshErrors.delete(key);
+          } catch (error) {
+            if ([10008, 10003].includes(Number(error.code ?? error.rawError?.code))) {
+              // Prune only the missing reference, preserving the panel's settings and applications.
+              const live = state(guild.id).panels[config.id];
+              if (live) {
+                const before = live.messages.length;
+                live.messages = live.messages.filter(item => item.channelId !== ref.channelId || item.messageId !== ref.messageId);
+                pruned ||= before !== live.messages.length;
+              }
+              publicRefreshErrors.delete(key);
+              console.log(`已清理失效的中层申请公开面板引用：${key}，可在配置面板重新发布。`);
+            } else if (Date.now() - (publicRefreshErrors.get(key) || 0) > 5 * 60 * 1000) {
+              publicRefreshErrors.set(key, Date.now());
+              logFailure('中层申请公开面板更新失败（同一消息每5分钟最多记录一次）。', error);
+              if (publicRefreshErrors.size > 1000) publicRefreshErrors.delete(publicRefreshErrors.keys().next().value);
+            }
+          }
         }
       }
+      if (pruned) await save();
     })();
     refreshing.set(guild.id, work);
     try { await work; } finally {

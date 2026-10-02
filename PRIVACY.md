@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-**生效日期：2026-10-01**
+**生效日期：2026-10-02**
 **运营者联系邮箱：`xizikangx@gmail.com`**
 
 本政策适用于使用本仓库代码自行部署的 Discord Bot。每个部署实例由部署者独立运营；部署者应在公开本政策前填写有效联系方式，并根据实际托管方式和服务器配置更新本政策。
@@ -14,6 +14,8 @@
 这些数据用于处罚、撤销、管理组名单、公示、提醒、续禁、表情反应清理和经审批的帖子管理/内容删除等已配置功能。Bot 不读取在线状态；反应清理只检查网关反应事件中的作者/表情信息，不分析消息正文；内容删除申请只读取申请链接指定的目标消息以确认对象，达到审批门槛后才删除。紧急频道功能的聊天记录处理见下文。
 
 ### Bot 发言与 Discord 交互
+
+启用预约处罚后，已配置管理组或中层成员可预约24小时后执行警告、禁言、警告并禁言或永封。Bot 保存预约及处罚编号、目标/发起人/解除人 ID、服务器范围、源/公示频道及消息 ID、原因、时长、执行时间、状态和结果，随运行数据以 AES-256-GCM 加密存储，无自动删除期限。预约公示频道会显示目标、发起人、原因、方式、时间及处理状态。其他有权限的管理组或中层成员可在到期前解除；实际执行仍需符合当时的发起人身份组和 Bot 权限。执行结果不确定时停止自动重试，关闭预约不会撤销已经实际执行的处罚。
 
 中层申请被拒绝时，管理组可在表单中填写或修改拒绝理由，Bot 会私信申请人告知申请结果和理由。默认拒绝理由、实际拒绝理由、处理人 ID、私信发送状态及成功发送后的消息 ID 会随申请记录加密保存。私信、申请人自己的进度页和拒绝审批卡不显示拒绝人身份；处理人 ID 保留在内部加密状态中用于审计。管理员填写理由时应避免主动包含处理人的身份。申请人关闭私信时可能无法投递，Bot 会记录失败并允许管理组重发，申请人也可在原面板查看理由。
 
@@ -52,6 +54,8 @@
 Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应遵守适用法律、Discord 开发者条款及服务器规则。功能或数据处理方式发生变化时，部署者应更新此政策并告知受影响用户。
 
 ## English summary
+
+Configured management and middle-management members may schedule a warning, timeout, combined warning and timeout, or permanent ban after a 24-hour waiting period. The bot stores appointment and punishment IDs, target/operator/cancelling-user IDs, server scope, source/notice channel and message IDs, reason, duration, timestamps, status and results in the AES-256-GCM encrypted operational state, without automatic expiry. The public appointment notice shows the target, operator, reason, action, deadline and status. Authorized members may cancel before the deadline. Execution rechecks the original operator's configured role and the bot's permissions. Ambiguous execution is not automatically retried; closing an appointment does not revoke any punishment already applied.
 
 When a middle-management application is rejected, a reviewer supplies or edits a rejection reason, and the bot sends the applicant a direct message with the result and reason. Default and actual rejection reasons, the internal reviewer ID, delivery status and successful DM message ID are stored with the encrypted application state. The DM, applicant-facing status view and rejected approval card do not display the rejecting reviewer's identity; the ID remains in encrypted state for internal auditing. Reviewers should avoid including identifying information in their free-text reasons. If DMs cannot be delivered, the bot records failure, allows reviewers to resend and keeps the reason available through the applicant's status view.
 

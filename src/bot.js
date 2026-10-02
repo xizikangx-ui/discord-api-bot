@@ -32,6 +32,7 @@ const {
 const { createMiddleApplications, configurationCommand: middleApplicationCommand } = require('./middle-applications');
 const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
 const { createPurgePanel, purgeCommand } = require('./purge-panel');
+const { createScheduledPunishments, scheduledPunishmentCommands } = require('./scheduled-punishments');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
@@ -297,6 +298,7 @@ const commands = [
   middleApplicationCommand,
   nicknameCommand,
   purgeCommand,
+  ...scheduledPunishmentCommands,
   new SlashCommandBuilder()
     .setName('中层管理名单').setDescription('查看当前中层管理成员和任职时间')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -901,7 +903,10 @@ async function executePunishmentRequest(interaction, request, targetLockHeld = f
 async function executePunishmentRequestUnlocked(interaction, request) {
   const { user, contexts, absentGuilds, hasWarning, hasTimeout, hasBan } = await validatePunishmentRequest(interaction, request);
   const { mode, reason, timeoutDays, warningDays } = request;
-  const caseId = randomBytes(6).toString('hex');
+  const caseId = request.caseId || randomBytes(6).toString('hex');
+  if (request.caseId && guildData.punishmentCases.some(item => item.id === caseId)) {
+    throw new Error(`处罚编号 ${caseId} 已有执行记录，禁止重复执行，请人工核对。`);
+  }
   const applied = [];
   try {
     for (const context of contexts) {
@@ -3471,6 +3476,15 @@ const middleApplications = createMiddleApplications({
 const nicknamePanel = createNicknamePanel({ client, settingsFor, save: saveGuildData, logFailure });
 const purgePanel = createPurgePanel({ client, settingsFor, save: saveGuildData, logFailure,
   protectedChannelIds: [storageChannelId, speechArchiveChannelId, legacyStorageChannelId].filter(Boolean) });
+const scheduledPunishments = createScheduledPunishments({ client, settingsFor, save: saveGuildData, logFailure,
+  guildIds: commandGuildIds,
+  scopeFor: guildId => punishmentGuildIds().includes(guildId) ? punishmentGuildIds() : [guildId],
+  authorized: isConfiguredManagementMember, validate: validatePunishmentRequest, execute: executePunishmentRequest,
+  hasCase: caseId => guildData.punishmentCases.some(item => item.id === caseId),
+  targetBusy: userId => activePunishmentLocks.has(userId) || pendingPunishmentTargetClaims.has(userId)
+    || Object.values(pendingPunishmentRecords).some(item => item.userId === userId
+      && Number.isFinite(item.createdAt) && Date.now() - item.createdAt < PUNISHMENT_CONFIRM_TTL),
+});
 let readyWatchdog;
 client.on('shardError', (error) => logFailure('Discord 网关连接错误。', error));
 client.on('shardConnecting', () => console.log('正在连接 Discord 实时网关……'));
@@ -3649,6 +3663,7 @@ client.once('clientReady', async () => {
   middleApplications.start();
   nicknamePanel.start();
   await purgePanel.start().catch((error) => logFailure('冲水任务恢复状态保存失败；未自动执行删除。', error));
+  await scheduledPunishments.start().catch((error) => logFailure('预约处罚恢复失败，未启动自动执行。', error));
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -4083,6 +4098,7 @@ client.on('interactionCreate', async (interaction) => {
   if (await middleApplications.handle(interaction)) return;
   if (await nicknamePanel.handle(interaction)) return;
   if (await purgePanel.handle(interaction)) return;
+  if (await scheduledPunishments.handle(interaction)) return;
   if (await handleManagementSpeechVerification(interaction)) return;
   if (await handleSpeechArchiveView(interaction)) return;
   if (await handleEmergencyChannelInteraction(interaction)) return;
