@@ -33,7 +33,7 @@ const { createMiddleApplications, configurationCommand: middleApplicationCommand
 const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
 const { createPurgePanel, purgeCommand } = require('./purge-panel');
 const { createScheduledPunishments, scheduledPunishmentCommands } = require('./scheduled-punishments');
-const { createPolls, pollCommand } = require('./polls');
+const { createPolls, pollCommand, pollPanelCommand } = require('./polls');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
@@ -301,6 +301,7 @@ const commands = [
   purgeCommand,
   ...scheduledPunishmentCommands,
   pollCommand,
+  pollPanelCommand,
   new SlashCommandBuilder()
     .setName('中层管理名单').setDescription('查看当前中层管理成员和任职时间')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)

@@ -1,6 +1,7 @@
 const { randomBytes } = require('node:crypto');
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  StringSelectMenuBuilder, MessageFlags, PermissionFlagsBits, ChannelType } = require('discord.js');
+  StringSelectMenuBuilder, MessageFlags, PermissionFlagsBits, ChannelType, ModalBuilder,
+  LabelBuilder, TextInputBuilder, TextInputStyle, escapeMarkdown } = require('discord.js');
 
 const punishmentModes = { warning: '仅警告', timeout: '仅禁言', both: '警告并禁言', ban: '永封' };
 const statusLabels = { publishing: '正在发布', open: '投票中', closed: '已截止', awaiting: '投票通过，等待管理组确认',
@@ -8,7 +9,7 @@ const statusLabels = { publishing: '正在发布', open: '投票中', closed: '�
   completed: '已执行处罚', uncertain: '处罚结果需管理组核对，未自动重试', failed: '发布未完成' };
 const pollCommand = new SlashCommandBuilder().setName('投票').setDescription('创建不公开投票名单的普通投票或处罚投票')
   .setDefaultMemberPermissions(null)
-  .addStringOption(o => o.setName('主题').setDescription('投票主题').setRequired(true).setMaxLength(256))
+  .addStringOption(o => o.setName('主题').setDescription('投票主题，留空直接打开创建弹窗').setMaxLength(256))
   .addStringOption(o => o.setName('类型').setDescription('默认普通投票；处罚投票通过后仍需管理组确认')
     .addChoices({ name: '普通投票', value: 'ordinary' }, { name: '处罚投票', value: 'punishment' }))
   .addStringOption(o => o.setName('选项').setDescription('普通投票的2到10项，用竖线 | 或换行分隔；留空为赞成/反对').setMaxLength(1000))
@@ -18,7 +19,11 @@ const pollCommand = new SlashCommandBuilder().setName('投票').setDescription('
   .addStringOption(o => o.setName('处罚方式').setDescription('仅处罚投票填写').addChoices(...Object.entries(punishmentModes).map(([value, name]) => ({ value, name }))))
   .addStringOption(o => o.setName('处罚原因').setDescription('仅处罚投票必填').setMaxLength(400))
   .addIntegerOption(o => o.setName('禁言天数').setDescription('禁言或警告并禁言必填').setMinValue(1).setMaxValue(90))
-  .addIntegerOption(o => o.setName('警告天数').setDescription('警告保留天数，留空不自动移除').setMinValue(1).setMaxValue(90));
+  .addIntegerOption(o => o.setName('警告天数').setDescription('警告保留天数，留空不自动移除').setMinValue(1).setMaxValue(90))
+  .addIntegerOption(o => o.setName('最多选项').setDescription('普通投票每人最多选几项，默认可选全部；填1为单选').setMinValue(1).setMaxValue(10))
+  .addStringOption(o => o.setName('说明').setDescription('投票卡片中的补充说明（可选）').setMaxLength(500));
+const pollPanelCommand = new SlashCommandBuilder().setName('投票面板').setDescription('打开投票操作面板，使用弹窗创建普通或处罚投票')
+  .setDefaultMemberPermissions(null);
 const row = (...items) => new ActionRowBuilder().addComponents(...items);
 const button = (id, label, style = ButtonStyle.Secondary) => new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style);
 const clone = value => structuredClone(value);
@@ -33,6 +38,7 @@ function createPolls(deps) {
   const cache = new Map();
   const queues = new Map();
   const confirmations = new Map();
+  const drafts = new Map();
   const ticking = new Set();
   const retryAt = new Map();
   let started = false;
@@ -96,19 +102,38 @@ function createPolls(deps) {
       throw error;
     }
   }
+  function choicesFor(vote, data) {
+    return [...new Set(Array.isArray(vote?.choices) ? vote.choices : [vote?.choice])]
+      .filter(choice => Number.isInteger(choice) && choice >= 0 && choice < data.options.length).sort((a, b) => a - b);
+  }
+  const maxChoices = data => data.type === 'punishment' ? 1 : Math.max(1, Math.min(data.options.length, data.maxChoices || 1));
   function totals(data) {
     const counts = data.options.map(() => 0);
-    for (const vote of Object.values(data.votes)) if (Number.isInteger(vote.choice) && counts[vote.choice] !== undefined) counts[vote.choice]++;
+    for (const vote of Object.values(data.votes)) for (const choice of choicesFor(vote, data)) counts[choice]++;
     return counts;
   }
   function publicPayload(data) {
     const counts = totals(data);
     const total = counts.reduce((a, b) => a + b, 0);
-    const embed = new EmbedBuilder().setTitle(data.title).setColor(data.status === 'open' ? 0x5865F2 : 0x57F287)
-      .setDescription(data.options.map((option, index) => `${index + 1}. ${option} — **${counts[index]}票**`).join('\n'))
-      .addFields({ name: '状态', value: statusLabels[data.status] }, { name: '有效票数', value: `${total}票`, inline: true },
-        { name: '截止时间', value: `<t:${Math.floor(data.endsAt / 1000)}:F>`, inline: true })
-      .setFooter({ text: `投票编号 ${data.id} · 每人一票，可修改或撤回；不公开投票名单` });
+    const participants = Object.values(data.votes).filter(vote => choicesFor(vote, data).length).length;
+    const limit = maxChoices(data);
+    const color = ['cancelled', 'failed'].includes(data.status) ? 0x747F8D
+      : ['rejected', 'uncertain'].includes(data.status) ? 0xED4245
+        : ['awaiting', 'executing'].includes(data.status) ? 0xFEE75C : data.status === 'open' ? 0x5865F2 : 0x57F287;
+    const embed = new EmbedBuilder().setAuthor({ name: data.type === 'punishment' ? '⚖️ 处罚联动投票' : '🗳️ 社区投票' })
+      .setTitle(data.title).setColor(color)
+      .setDescription(data.description || (limit > 1 ? `可同时选择最多 **${limit}项**，重新提交会替换你的全部选择。` : '请选择一个选项，重新提交可修改选择。'))
+      .addFields({ name: '📌 状态', value: statusLabels[data.status], inline: true },
+        { name: '👥 参与情况', value: `**${participants}人** · ${total}票次`, inline: true },
+        { name: '⏳ 截止', value: `<t:${Math.floor(data.endsAt / 1000)}:R>\n<t:${Math.floor(data.endsAt / 1000)}:f>`, inline: true });
+    data.options.forEach((option, index) => {
+      const percent = participants ? Math.round(counts[index] / participants * 100) : 0;
+      const filled = Math.round(percent / 10);
+      embed.addFields({ name: `${String(index + 1).padStart(2, '0')} · ${escapeMarkdown(option)}`,
+        value: `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)}  **${percent}%**\n${counts[index]}票`, inline: false });
+    });
+    embed.addFields({ name: '🔒 投票规则', value: `${limit > 1 ? `每人最多选${limit}项，同一项只计一票` : '每人只选一项'} · 可修改或撤回\n只展示汇总结果，不公开投票人名单。${limit > 1 ? '\n百分比按参与人数计算，合计可能超过100%。' : ''}` })
+      .setFooter({ text: `投票编号 ${data.id}` }).setTimestamp(data.createdAt);
     if (data.type === 'punishment') embed.addFields({ name: '处罚目标', value: `<@${data.userId}> (${data.userId})` },
       { name: '处罚方式', value: punishmentModes[data.mode], inline: true }, { name: '原因', value: data.reason },
       { name: '通过条件', value: '投票截止后，赞成票多于反对票才通过；通过后仍需管理组确认，不自动处罚。' });
@@ -123,10 +148,12 @@ function createPolls(deps) {
     if (data.caseId && ['completed', 'uncertain', 'executing'].includes(data.status)) embed.addFields({ name: '处罚编号', value: data.caseId });
     const components = [];
     if (data.status === 'open') {
-      components.push(row(new StringSelectMenuBuilder().setCustomId(`poll-vote:${data.id}`).setPlaceholder('选择投票选项（仅自己知道选择）')
+      components.push(row(new StringSelectMenuBuilder().setCustomId(`poll-vote:${data.id}`)
+        .setPlaceholder(limit > 1 ? `选择1到${limit}项，选好后提交` : '选择一个选项')
+        .setMinValues(1).setMaxValues(limit)
         .addOptions(data.options.map((label, index) => ({ label, value: String(index) })))));
-      components.push(row(button(`poll-withdraw:${data.id}`, '撤回我的投票'), button(`poll-mine:${data.id}`, '我的选择'),
-        button(`poll-refresh:${data.id}`, '刷新票数'), button(`poll-cancel:${data.id}`, '取消投票')));
+      components.push(row(button(`poll-withdraw:${data.id}`, '撤回投票'), button(`poll-mine:${data.id}`, '查看我的选择', ButtonStyle.Primary),
+        button(`poll-refresh:${data.id}`, '刷新结果'), button(`poll-cancel:${data.id}`, '取消投票')));
     } else if (data.status === 'awaiting') components.push(row(button(`poll-approve:${data.id}`, '管理组确认处罚', ButtonStyle.Danger),
       button(`poll-cancel:${data.id}`, '取消处罚联动'), button(`poll-refresh:${data.id}`, '刷新结果')));
     else components.push(row(button(`poll-refresh:${data.id}`, '刷新结果')));
@@ -170,9 +197,8 @@ function createPolls(deps) {
     const member = await memberFor(interaction);
     return manager({ guildId: interaction.guildId, member });
   }
-  async function create(interaction) {
+  async function create(interaction, o = interaction.options) {
     await memberFor(interaction);
-    const o = interaction.options;
     const type = o.getString('类型') || 'ordinary';
     const title = o.getString('主题', true).trim();
     if (!title) throw new Error('投票主题不能为空。');
@@ -182,9 +208,11 @@ function createPolls(deps) {
     const reason = o.getString('处罚原因')?.trim();
     const timeoutDays = o.getInteger('禁言天数');
     const warningDays = o.getInteger('警告天数');
+    const requestedMax = o.getInteger('最多选项');
     let options;
     let userId;
     if (type === 'punishment') {
+      if (requestedMax && requestedMax !== 1) throw new Error('处罚投票只能赞成或反对二选一。');
       if (o.getString('选项')) throw new Error('处罚投票固定为“赞成处罚 / 反对处罚”，不能另填选项。');
       if (!punishmentModes[mode] || !reason) throw new Error('处罚投票需要填写处罚方式及处罚原因。');
       if (Boolean(selected) === Boolean(raw)) throw new Error('处罚目标请在成员和user_id中任选一项。');
@@ -201,6 +229,7 @@ function createPolls(deps) {
       if (options.length < 2 || options.length > 10 || new Set(options).size !== options.length || options.some(value => value.length > 100)) {
         throw new Error('请提供2到10个不重复选项，每项最多100字，用 | 或换行分隔。');
       }
+      if (requestedMax && requestedMax > options.length) throw new Error('最多选项不能超过实际选项数量。');
     }
     const channel = interaction.channel || await client.channels.fetch(interaction.channelId);
     const send = channel?.isThread() ? PermissionFlagsBits.SendMessagesInThreads : PermissionFlagsBits.SendMessages;
@@ -213,7 +242,9 @@ function createPolls(deps) {
     const data = { kind: 'anonymous-poll', version: 1, id: randomBytes(8).toString('hex'), guildId: interaction.guildId,
       channelId: interaction.channelId, creatorId: interaction.user.id, title, type, options, userId, mode, reason,
       timeoutDays, warningDays, scopeGuildIds: scopeFor(interaction.guildId), createdAt: now,
-      endsAt: now + (o.getInteger('截止分钟') || 1440) * 60000, status: 'publishing', votes: {},
+      endsAt: now + (o.getInteger('截止分钟') || 1440) * 60000,
+      maxChoices: type === 'punishment' ? 1 : requestedMax || options.length, description: o.getString('说明')?.trim() || '',
+      status: 'publishing', votes: {},
       events: [{ action: 'create', actorId: interaction.user.id, at: now }] };
     const record = await archive.send(archivePayload(data));
     const meta = { id: data.id, guildId: data.guildId, channelId: data.channelId, archiveMessageId: record.id,
@@ -238,7 +269,7 @@ function createPolls(deps) {
         throw error;
       }
       // A failed ephemeral delivery must not invalidate an already published poll.
-      await interaction.editReply(`投票已发布：${published.url}\n公开面板不显示投票人名单；每人一票，可修改或撤回。`);
+      await interaction.editReply(`投票已发布：${published.url}\n${data.maxChoices > 1 ? `每人最多选${data.maxChoices}项` : '每人只选一项'}，可修改或撤回，不公开名单。`);
     });
   }
   async function recordView(interaction, id) {
@@ -305,15 +336,124 @@ function createPolls(deps) {
     await interaction.editReply({ content: finished.status === 'completed' ? finished.result
       : `结果需要人工核对，处罚编号：${finished.caseId}。未自动重试，请检查日志及实际处罚状态。`, components: [], allowedMentions: { parse: [] } });
   }
+  const optionAdapter = values => ({ getString: name => values[name] ?? null, getInteger: name => values[name] ?? null,
+    getUser: name => values[name] ?? null });
+  function draftFor(interaction, token) {
+    const draft = drafts.get(token);
+    if (!draft || draft.userId !== interaction.user.id || draft.guildId !== interaction.guildId
+      || draft.channelId !== interaction.channelId || Date.now() >= draft.expiresAt) {
+      throw new Error('创建面板已过期或不属于你，请重新运行 /投票 或 /投票面板。');
+    }
+    return draft;
+  }
+  function input(id, label, maxLength, value = '', required = true, paragraph = false) {
+    const field = new TextInputBuilder().setCustomId(id).setStyle(paragraph ? TextInputStyle.Paragraph : TextInputStyle.Short)
+      .setRequired(required).setMaxLength(maxLength);
+    if (String(value)) field.setValue(String(value));
+    return new LabelBuilder().setLabel(label).setTextInputComponent(field);
+  }
+  function composeForm(token, draft) {
+    const v = draft.values;
+    const modal = new ModalBuilder().setCustomId(`poll-form:${token}`)
+      .setTitle(v['类型'] === 'punishment' ? '创建处罚投票 · 基本信息' : '创建社区投票');
+    if (v['类型'] === 'punishment') return modal.addComponents(
+      input('title', '投票主题', 256, v['主题'] || ''),
+      input('target', '目标用户数字ID（可以不在当前服务器）', 32, v['成员']?.id || v['user_id'] || ''),
+      input('reason', '处罚原因', 400, v['处罚原因'] || '', true, true),
+      input('minutes', '多少分钟后截止（1–10080）', 5, v['截止分钟'] || 1440),
+      new LabelBuilder().setLabel('处罚方式').setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId('mode')
+        .setRequired(true).setMinValues(1).setMaxValues(1).addOptions(Object.entries(punishmentModes).map(([value, label]) =>
+          ({ value, label, default: value === (v['处罚方式'] || 'warning') })))));
+    return modal.addComponents(input('title', '投票主题', 256, v['主题'] || ''),
+      input('options', '投票选项（每行一项或用 | 分隔，2–10项）', 1000, v['选项'] || '赞成\n反对', true, true),
+      input('minutes', '多少分钟后截止（1–10080）', 5, v['截止分钟'] || 1440),
+      input('max', '每人最多选几项（留空可选全部，1为单选）', 2, v['最多选项'] || '', false),
+      input('description', '补充说明（可选）', 500, v['说明'] || '', false, true));
+  }
+  async function showCompose(interaction, type, initial = {}) {
+    if (!interaction.guildId || !interaction.member || interaction.user.bot) throw new Error('请在服务器内使用投票面板。');
+    const token = randomBytes(8).toString('hex');
+    const draft = { userId: interaction.user.id, guildId: interaction.guildId, channelId: interaction.channelId,
+      expiresAt: Date.now() + 10 * 60000, values: { ...initial, '类型': type } };
+    drafts.set(token, draft);
+    await interaction.showModal(composeForm(token, draft));
+  }
+  function integerText(interaction, field, label, min, max, fallback = null) {
+    const text = interaction.fields.getTextInputValue(field).trim();
+    if (!text) return fallback;
+    const value = Number(text);
+    if (!/^\d+$/.test(text) || !Number.isInteger(value) || value < min || value > max) throw new Error(`${label}请填${min}到${max}的整数。`);
+    return value;
+  }
+  async function submitForm(interaction, token, duration = false) {
+    const draft = draftFor(interaction, token);
+    const v = draft.values;
+    if (duration) {
+      v['禁言天数'] = integerText(interaction, 'timeout', '禁言天数', 1, 90);
+      v['警告天数'] = integerText(interaction, 'warning', '警告天数', 1, 90);
+    } else {
+      v['主题'] = interaction.fields.getTextInputValue('title').trim();
+      if (!v['主题']) throw new Error('投票主题不能为空。');
+      v['截止分钟'] = integerText(interaction, 'minutes', '截止分钟', 1, 10080, 1440);
+      if (v['类型'] === 'ordinary') {
+        v['选项'] = interaction.fields.getTextInputValue('options');
+        v['最多选项'] = integerText(interaction, 'max', '最多选项', 1, 10);
+        v['说明'] = interaction.fields.getTextInputValue('description').trim();
+      } else {
+        v['成员'] = null; v['user_id'] = interaction.fields.getTextInputValue('target').trim();
+        v['处罚原因'] = interaction.fields.getTextInputValue('reason').trim();
+        if (!v['处罚原因']) throw new Error('处罚原因不能为空。');
+        v['处罚方式'] = interaction.fields.getStringSelectValues('mode')[0];
+        if (v['处罚方式'] !== 'ban') {
+          await interaction.editReply({ content: '基本信息已填写。点击下方按钮填写处罚时长并发布；这一步不会执行处罚。',
+            embeds: [new EmbedBuilder().setColor(0xFEE75C).setTitle(v['主题']).setDescription(`方式：${punishmentModes[v['处罚方式']]}\n原因：${v['处罚原因']}`)],
+            components: [row(button(`poll-duration:${token}`, '填写时长并发布', ButtonStyle.Primary))], allowedMentions: { parse: [] } });
+          return;
+        }
+        v['禁言天数'] = null; v['警告天数'] = null;
+      }
+    }
+    // Consume before creating so two modal submissions cannot publish twice.
+    drafts.delete(token);
+    await create(interaction, optionAdapter(v));
+  }
   async function handle(interaction) {
-    const command = interaction.isChatInputCommand() && interaction.commandName === '投票';
-    const component = (interaction.isButton() || interaction.isStringSelectMenu()) && interaction.customId.startsWith('poll-');
+    const command = interaction.isChatInputCommand() && ['投票', '投票面板'].includes(interaction.commandName);
+    const component = (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) && interaction.customId.startsWith('poll-');
     if (!command && !component) return false;
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     try {
       if (!started) throw new Error('投票功能正在恢复加密记录，请稍后再试。');
+      const [action, id] = (interaction.customId || '').split(':');
+      if (command && interaction.commandName === '投票' && !interaction.options.getString('主题')) {
+        const initial = {};
+        for (const name of ['选项', 'user_id', '处罚方式', '处罚原因', '说明']) initial[name] = interaction.options.getString(name);
+        for (const name of ['截止分钟', '禁言天数', '警告天数', '最多选项']) initial[name] = interaction.options.getInteger(name);
+        initial['成员'] = interaction.options.getUser('成员');
+        await showCompose(interaction, interaction.options.getString('类型') || 'ordinary', initial); return true;
+      }
+      if (interaction.isButton() && action === 'poll-open') {
+        if (!['ordinary', 'punishment'].includes(id)) throw new Error('投票类型无效。');
+        await showCompose(interaction, id); return true;
+      }
+      if (interaction.isButton() && action === 'poll-duration') {
+        const draft = draftFor(interaction, id);
+        await interaction.showModal(new ModalBuilder().setCustomId(`poll-duration-form:${id}`).setTitle('处罚投票 · 时长设置')
+          .addComponents(input('timeout', '禁言天数（1–90，禁言方式必填）', 2, draft.values['禁言天数'] || '', false),
+            input('warning', '警告天数（1–90，留空不自动移除）', 2, draft.values['警告天数'] || '', false)));
+        return true;
+      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      if (command && interaction.commandName === '投票面板') {
+        await memberFor(interaction);
+        await interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x5865F2).setTitle('🗳️ 投票操作面板')
+          .setDescription('选择投票类型，弹窗填写后发布到当前频道。\n普通投票支持多选，处罚投票通过后由管理组确认。\n公开只显示票数，投票名单加密留档。')],
+          components: [row(button('poll-open:ordinary', '创建普通投票', ButtonStyle.Primary), button('poll-open:punishment', '创建处罚投票'))] });
+        return true;
+      }
       if (command) { await create(interaction); return true; }
-      const [action, id] = interaction.customId.split(':');
+      if (interaction.isModalSubmit() && ['poll-form', 'poll-duration-form'].includes(action)) {
+        await submitForm(interaction, id, action === 'poll-duration-form'); return true;
+      }
       if (action === 'poll-record') { await enqueue(id, () => recordView(interaction, id)); return true; }
       if (action === 'poll-execute' || action === 'poll-abort') {
         const session = confirmations.get(id);
@@ -337,7 +477,8 @@ function createPolls(deps) {
         if (action === 'poll-refresh') { await refresh(meta, data); await interaction.editReply(`已刷新：${statusLabels[data.status]}。`); return; }
         if (action === 'poll-mine') {
           const vote = data.votes[interaction.user.id];
-          await interaction.editReply(vote ? `你的选择：${data.options[vote.choice]}。` : '你当前没有有效投票。'); return;
+          const selected = choicesFor(vote, data);
+          await interaction.editReply(selected.length ? `你的选择：${selected.map(choice => data.options[choice]).join('、')}。` : '你当前没有有效投票。'); return;
         }
         if (action === 'poll-cancel') {
           const allowed = data.type === 'ordinary' ? data.creatorId === interaction.user.id || await isManager(interaction) : await isManager(interaction);
@@ -356,20 +497,26 @@ function createPolls(deps) {
           delete next.votes[interaction.user.id];
           next.events.push({ action: 'withdraw', actorId: interaction.user.id, at: Date.now() });
         } else if (action === 'poll-vote') {
-          const choice = Number(interaction.values[0]);
-          if (!Number.isInteger(choice) || !next.options[choice]) throw new Error('投票选项无效。');
-          if (next.votes[interaction.user.id]?.choice === choice) { await interaction.editReply('已投给此选项，每人只计算一票。'); return; }
-          next.votes[interaction.user.id] = { choice, at: Date.now() };
-          next.events.push({ action: 'vote', actorId: interaction.user.id, choice, at: Date.now() });
+          const choices = [...new Set(interaction.values.map(Number))].sort((a, b) => a - b);
+          if (!choices.length || choices.length > maxChoices(next) || choices.some(choice => !Number.isInteger(choice) || !next.options[choice])) {
+            throw new Error(`请选择1到${maxChoices(next)}个有效选项。`);
+          }
+          if (JSON.stringify(choicesFor(next.votes[interaction.user.id], next)) === JSON.stringify(choices)) {
+            await interaction.editReply('已投给这些选项，同一项不会重复计票。'); return;
+          }
+          next.votes[interaction.user.id] = { choices, at: Date.now() };
+          next.events.push({ action: 'vote', actorId: interaction.user.id, choices, at: Date.now() });
         } else throw new Error('投票操作无效。');
         await store(meta, next);
         await refreshAfter(meta, next);
-        await interaction.editReply(action === 'poll-withdraw' ? '已撤回你的投票。' : `已记录你的选择：${next.options[next.votes[interaction.user.id].choice]}。其他人看不到投票名单。`);
+        await interaction.editReply(action === 'poll-withdraw' ? '已撤回你的投票。' : `已记录你的选择：${choicesFor(next.votes[interaction.user.id], next).map(choice => next.options[choice]).join('、')}。其他人看不到投票名单。`);
       });
     } catch (error) {
       // Do not put voter IDs or selected choices in production logs.
       if (error.code || error.cause) logFailure('投票操作失败，详见私密加密记录及频道权限。', error);
-      await interaction.editReply({ content: String(error.message || '操作未完成，请稍后重试。').slice(0, 1800), components: [], allowedMentions: { parse: [] } }).catch(() => {});
+      const payload = { content: String(error.message || '操作未完成，请稍后重试。').slice(0, 1800), components: [], allowedMentions: { parse: [] } };
+      if (interaction.deferred || interaction.replied) await interaction.editReply(payload).catch(() => {});
+      else await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
     return true;
   }
@@ -393,6 +540,7 @@ function createPolls(deps) {
   }
   function tick() {
     for (const [token, session] of confirmations) if (session.expiresAt < Date.now()) confirmations.delete(token);
+    for (const [token, draft] of drafts) if (draft.expiresAt < Date.now()) drafts.delete(token);
     for (const meta of allIndexes()) {
       if (!['open', 'publishing', 'executing'].includes(meta.status) || ticking.has(meta.id)
         || (meta.status === 'open' && Date.now() < meta.endsAt) || Date.now() < (retryAt.get(meta.id) || 0)) continue;
@@ -407,7 +555,7 @@ function createPolls(deps) {
     if (started) return;
     // Load only unresolved polls. Closed records remain in the designated channel.
     for (const meta of allIndexes().filter(item => ['open', 'publishing', 'executing', 'awaiting', 'uncertain'].includes(item.status))) {
-      try { await enqueue(meta.id, () => reconcile(meta)); }
+      try { await enqueue(meta.id, async () => { await reconcile(meta); await refreshAfter(meta, await load(meta)); }); }
       catch (error) { retryAt.set(meta.id, Date.now() + 60000); logFailure('投票加密记录恢复失败，此投票停止处理。', error); }
     }
     started = true;
@@ -417,4 +565,4 @@ function createPolls(deps) {
   return { handle, start };
 }
 
-module.exports = { createPolls, pollCommand };
+module.exports = { createPolls, pollCommand, pollPanelCommand };
