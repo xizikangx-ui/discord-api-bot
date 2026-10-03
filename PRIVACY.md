@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-**生效日期：2026-10-02**
+**生效日期：2026-10-03**
 **运营者联系邮箱：`xizikangx@gmail.com`**
 
 本政策适用于使用本仓库代码自行部署的 Discord Bot。每个部署实例由部署者独立运营；部署者应在公开本政策前填写有效联系方式，并根据实际托管方式和服务器配置更新本政策。
@@ -20,6 +20,8 @@
 启用预约处罚后，已配置管理组或中层成员可预约24小时后执行警告、禁言、警告并禁言或永封。Bot 保存预约及处罚编号、目标/发起人/解除人 ID、服务器范围、源/公示频道及消息 ID、原因、时长、执行时间、状态和结果，随运行数据以 AES-256-GCM 加密存储，无自动删除期限。预约公示频道会显示目标、发起人、原因、方式、时间及处理状态。其他有权限的管理组或中层成员可在到期前解除；实际执行仍需符合当时的发起人身份组和 Bot 权限。执行结果不确定时停止自动重试，关闭预约不会撤销已经实际执行的处罚。
 
 中层申请被拒绝时，管理组可在表单中填写或修改拒绝理由，Bot 会私信申请人告知申请结果和理由。默认拒绝理由、实际拒绝理由、处理人 ID、私信发送状态及成功发送后的消息 ID 会随申请记录加密保存。私信、申请人自己的进度页和拒绝审批卡不显示拒绝人身份；处理人 ID 保留在内部加密状态中用于审计。管理员填写理由时应避免主动包含处理人的身份。申请人关闭私信时可能无法投递，Bot 会记录失败并允许管理组重发，申请人也可在原面板查看理由。
+
+本版本上线后审批通过的中层申请，在全部目标身份组发放和状态保存成功后，Bot 按目标身份组逐一私信通过回信，配套身份组不另发信，历史已通过申请不补发。每个服务器按身份组保存共用回信模板，正文最多 2000 字；正式通过时将正文、服务器/面板/身份组名称与身份组 ID 冻结到该申请记录。按申请和身份组记录投递状态、尝试次数、尝试/送达/失败时间及成功投递的私信消息 ID，随运行数据以 AES-256-GCM 加密保存，没有自动删除期限。审批频道显示投递状态，申请人可在仅本人可见的“我的申请”中按身份组读取回信。回信和申请人页面不自动显示审批人身份；管理员应避免在自定义正文中填写须隐藏的身份信息。私信失败不撤销发放，管理组可重发未送达回信；已记录成功的回信不会重复发送，重启后投递结果不确定的回信须确认可能重复投递后手动重发。
 
 启用违规改名面板后，Bot 保存允许操作的身份组、目标必需违规身份组、启停状态和当前昵称锁定记录（目标/操作者 ID、改名理由、违规身份组、时间）。这些设置与记录随服务器状态加密保存。获授权的操作员提交改名后，Bot 将目标服务器昵称改为其数字用户 ID，通过成员更新事件及定期检查保持该昵称；移除指定违规身份组、离服或手动解除锁定后删除该成员的锁定记录并停止自动改回。更换面板中的违规身份组会解除全部已有锁定。暂停功能会保留记录。Bot 不改变账号名或用户数字 ID，不为此保存聊天内容。
 
@@ -62,6 +64,8 @@ The `/投票` command permits human guild members to create and vote in ordinary
 Configured management and middle-management members may schedule a warning, timeout, combined warning and timeout, or permanent ban after a 24-hour waiting period. The bot stores appointment and punishment IDs, target/operator/cancelling-user IDs, server scope, source/notice channel and message IDs, reason, duration, timestamps, status and results in the AES-256-GCM encrypted operational state, without automatic expiry. The public appointment notice shows the target, operator, reason, action, deadline and status. Authorized members may cancel before the deadline. Execution rechecks the original operator's configured role and the bot's permissions. Ambiguous execution is not automatically retried; closing an appointment does not revoke any punishment already applied.
 
 When a middle-management application is rejected, a reviewer supplies or edits a rejection reason, and the bot sends the applicant a direct message with the result and reason. Default and actual rejection reasons, the internal reviewer ID, delivery status and successful DM message ID are stored with the encrypted application state. The DM, applicant-facing status view and rejected approval card do not display the rejecting reviewer's identity; the ID remains in encrypted state for internal auditing. Reviewers should avoid including identifying information in their free-text reasons. If DMs cannot be delivered, the bot records failure, allows reviewers to resend and keeps the reason available through the applicant's status view.
+
+For middle-management applications approved after this release, the bot sends one approval DM per application award role after all award roles and the completed state have been saved. Companion roles receive no additional DM, and historical completed applications are not backfilled. Each server stores shared, per-role reply templates of up to 2,000 characters. Approval freezes the body, server/panel/role names and role ID in the application record. Per-application and per-role delivery status, attempt count, attempt/delivery/failure timestamps and successful DM message IDs are stored in the AES-256-GCM encrypted operational state, with no automatic expiry. Approval cards show delivery status; applicants can read their own per-role replies through an ephemeral status view even if DMs are closed. Replies and applicant-facing views do not automatically identify reviewers; administrators should avoid adding confidential identities to custom text. Delivery failure does not revoke awarded roles. Reviewers may resend undelivered replies, skipping recorded successes; ambiguous results after interruption require explicit manual confirmation because a duplicate DM may result.
 
 The optional nickname panel stores authorized operator roles, the prerequisite violation role, an enabled flag and current locks containing target/operator IDs, reason, role and time. This state is encrypted with the other operational settings. An authorized operator can rename an eligible member's server nickname to their numeric user ID; the bot maintains that nickname through member updates and periodic checks. The lock is removed when the violation role is removed, the member leaves, or an operator releases it. Changing the configured violation role clears existing locks; pausing preserves them. The bot does not change account usernames or numeric user IDs, or store chat content for this purpose.
 
