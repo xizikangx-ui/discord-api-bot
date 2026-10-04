@@ -1,4 +1,6 @@
 require('dotenv').config();
+const { addPunishmentDurationOptions, readPunishmentDurations, validatePunishmentDurations,
+  formatPunishmentDuration, parsePunishmentDurationText, MAX_MINUTES } = require('./punishment-duration');
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -191,8 +193,8 @@ function recoverPunishmentFromConfirmationMessage(interaction) {
   const content = interaction.message?.content || '';
   const targetId = content.match(/^目标成员：<@!?([0-9]+)>$/m)?.[1];
   const modeText = content.match(/^处罚方式：(封禁并踢出|警告并禁言|仅禁言|仅警告)$/m)?.[1];
-  const timeoutDays = content.match(/^禁言时长：([0-9]+) 天$/m)?.[1];
-  const warningDaysText = content.match(/^警告时长：([0-9]+) 天$/m)?.[1];
+  const timeoutDays = parsePunishmentDurationText(content.match(/^禁言时长：([^\n]+)$/m)?.[1]);
+  const warningDays = parsePunishmentDurationText(content.match(/^警告时长：([^\n]+)$/m)?.[1]);
   const reasonMatch = content.match(/^原因：(.*?)(?:\n\n此确认仅限你本人操作，)/ms);
   if (!targetId || !modeText || !reasonMatch) return null;
   const mode = modeText === '封禁并踢出' ? 'ban' : modeText === '警告并禁言' ? 'both' : modeText === '仅禁言' ? 'timeout' : 'warning';
@@ -202,8 +204,8 @@ function recoverPunishmentFromConfirmationMessage(interaction) {
     userId: targetId,
     mode,
     reason: reasonMatch[1].trim(),
-    timeoutDays: timeoutDays ? Number(timeoutDays) : undefined,
-    warningDays: warningDaysText ? Number(warningDaysText) : undefined,
+    timeoutDays: timeoutDays || undefined,
+    warningDays: warningDays || undefined,
     createdAt,
     moderatorId: interaction.message.interactionMetadata?.user?.id || interaction.user.id,
   };
@@ -310,15 +312,14 @@ const commands = [
     .setName('中层管理卸任').setDescription('当前中层管理成员自行申请卸任')
     .addRoleOption((o) => o.setName('身份组').setDescription('选择要卸任的中层身份组').setRequired(true))
     .addStringOption((o) => o.setName('理由').setDescription('卸任理由（可选）').setRequired(false).setMaxLength(400)),
-  new SlashCommandBuilder()
+  addPunishmentDurationOptions(new SlashCommandBuilder()
     .setName('处罚').setDescription('警告或禁言成员')
+    .setDefaultMemberPermissions(null)
     .addStringOption((o) => o.setName('方式').setDescription('选择处罚方式').setRequired(true)
       .addChoices({ name: '仅警告', value: 'warning' }, { name: '仅禁言', value: 'timeout' }, { name: '警告并禁言', value: 'both' }))
     .addStringOption((o) => o.setName('原因').setDescription('处罚原因').setRequired(true).setMaxLength(400))
     .addUserOption((o) => o.setName('成员').setDescription('从当前服务器选择成员（与用户 ID 二选一）').setRequired(false))
-    .addStringOption((o) => o.setName('user_id').setDescription('目标在另一互通服务器时填用户 ID 或提及（与成员二选一）').setRequired(false).setMaxLength(32))
-    .addIntegerOption((o) => o.setName('禁言天数').setDescription('禁言时长（1 到 90 天；仅禁言或警告并禁言时填写）').setRequired(false).setMinValue(1).setMaxValue(90))
-    .addIntegerOption((o) => o.setName('警告天数').setDescription('警告身份组保留天数（1 到 90；留空则不自动移除）').setRequired(false).setMinValue(1).setMaxValue(90)),
+    .addStringOption((o) => o.setName('user_id').setDescription('目标在另一互通服务器时填用户 ID 或提及（与成员二选一）').setRequired(false).setMaxLength(32))),
   new SlashCommandBuilder()
     .setName('永封').setDescription('永久封禁并移出目标成员')
     .addStringOption((o) => o.setName('原因').setDescription('封禁原因').setRequired(true).setMaxLength(400))
@@ -326,7 +327,9 @@ const commands = [
     .addStringOption((o) => o.setName('user_id').setDescription('服务器外用户：输入用户 ID 或用户提及（可选）').setRequired(false).setMaxLength(32)),
   new SlashCommandBuilder()
     .setName('撤销处罚').setDescription('按处罚 ID 撤销警告、禁言或封禁')
-    .addStringOption((o) => o.setName('处罚编号').setDescription('处罚记录中的编号').setRequired(true).setMaxLength(32)),
+    .setDefaultMemberPermissions(null)
+    .addStringOption((o) => o.setName('处罚编号').setDescription('处罚记录中的编号').setRequired(true).setMaxLength(32))
+    .addStringOption((o) => o.setName('理由').setDescription('撤销理由，会记入撤销公示和留档').setRequired(true).setMaxLength(400)),
   new SlashCommandBuilder()
     .setName('定时提醒').setDescription('管理定时提及提醒')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -749,8 +752,8 @@ function punishmentNoticeEmbed({ user, moderator, reason, timeoutDays, hasWarnin
       { name: '成员', value: `<@${user.id}>`, inline: true },
       { name: '管理员', value: `<@${moderator.id}>`, inline: true },
       { name: '原因', value: reason.slice(0, 1024) },
-      ...(timeoutDays ? [{ name: '禁言时长', value: `${timeoutDays} 天`, inline: true }] : []),
-      ...(hasWarning ? [{ name: '警告', value: warningDays ? `${warningDays} 天` : '不自动移除', inline: true }] : []),
+      ...(timeoutDays ? [{ name: '禁言时长', value: formatPunishmentDuration(timeoutDays), inline: true }] : []),
+      ...(hasWarning ? [{ name: '警告', value: warningDays ? formatPunishmentDuration(warningDays) : '不自动移除', inline: true }] : []),
       { name: '处罚 ID', value: caseId, inline: false },
       ...(replacedCaseId ? [{ name: '覆盖处罚', value: replacedCaseId, inline: false }] : []),
     ).setThumbnail(user.displayAvatarURL({ size: 128 })).setTimestamp();
@@ -772,6 +775,7 @@ async function postPunishmentRevocation(guild, record, moderator) {
   const fields = [
     { name: '成员', value: `<@${record.userId}>`, inline: true },
     { name: '撤销人', value: `<@${moderator.id}>`, inline: true },
+    { name: '撤销理由', value: record.revocationReason || '旧记录未填写理由' },
     { name: '被撤销处罚 ID', value: record.id, inline: false },
     { name: '撤销内容', value: [record.hasWarning ? '警告' : null, record.hasTimeout ? '禁言' : null, record.hasBan || record.mode === 'ban' ? '封禁' : null].filter(Boolean).join(' + '), inline: true },
   ];
@@ -801,6 +805,7 @@ async function sendPunishmentEmbed(guild, embed) {
 }
 
 async function validatePunishmentRequest(interaction, request) {
+  validatePunishmentDurations(request);
   const hasBan = request.mode === 'ban';
   const hasWarning = !hasBan && request.mode !== 'timeout';
   const hasTimeout = !hasBan && request.mode !== 'warning';
@@ -1023,8 +1028,8 @@ async function executePunishmentRequestUnlocked(interaction, request) {
   }
   const summary = [`已在“${executedGuildNames.join('、')}”执行处罚，编号：\`${caseId}\`。`,
     ...(hasBan ? ['目标已被封禁并移出对应服务器；撤销可使用此处罚编号。'] : []),
-    ...(hasWarning ? [`警告身份组${warningDays ? `将在 ${warningDays} 天后自动移除` : '不会自动移除'}。`] : []),
-    ...(hasTimeout ? [`已禁言 ${timeoutDays} 天${timeoutDays > 28 ? '，并保存自动续期计划' : ''}。`] : []),
+    ...(hasWarning ? [`警告身份组${warningDays ? `将在 ${formatPunishmentDuration(warningDays)}后自动移除` : '不会自动移除'}。`] : []),
+    ...(hasTimeout ? [`已禁言 ${formatPunishmentDuration(timeoutDays)}${timeoutDays > 28 ? '，并保存自动续期计划' : ''}。`] : []),
     ...(absentGuilds.length ? [`目标不在“${absentGuildNames.join('、')}”，该服未执行警告或禁言，已向该服公示。`] : []),
     ...(hasWarning && contexts.some((context) => context.setting.secondWarningReminder) ? ['已安排 24 小时后的二次私信提醒。'] : []),
     ...(cleanupFailures.length ? [`旧处罚清理在以下服务器失败：${[...new Set(cleanupFailures)].join('、')}。`] : []),
@@ -1100,7 +1105,7 @@ async function processSchedulesUnlocked() {
 function punishmentPanelEmbed(guildId) {
   const setting = settingsFor(guildId);
   return new EmbedBuilder().setColor(0x5865F2).setTitle('处罚设置面板')
-    .setDescription(`处罚记录频道：${setting.logChannelId ? `<#${setting.logChannelId}>` : '尚未设置'}\n留痕频道：${setting.auditChannelId ? `<#${setting.auditChannelId}>` : '未启用'}\n警告身份组：${setting.warningRoleId ? `<@&${setting.warningRoleId}>` : '尚未设置'}\n警告二次提醒：${setting.secondWarningReminder ? '已开启（24 小时后私信成员）' : '关闭'}\n\n使用下方菜单配置。面板仅供本服务器管理员使用。`);
+    .setDescription(`处罚记录频道：${setting.logChannelId ? `<#${setting.logChannelId}>` : '尚未设置'}\n留痕频道：${setting.auditChannelId ? `<#${setting.auditChannelId}>` : '未启用'}\n警告身份组：${setting.warningRoleId ? `<@&${setting.warningRoleId}>` : '尚未设置'}\n警告二次提醒：${setting.secondWarningReminder ? '已开启（24 小时后私信成员）' : '关闭'}\n额外处罚操作身份组：${(setting.punishmentOperatorRoleIds || []).map(id => `<@&${id}>`).join('、') || '未设置'}\n\n本服已配置的管理组/中层及上列身份组可处罚、永封和撤销。使用下方菜单配置。面板仅供本服务器管理员使用。`);
 }
 
 function punishmentPanel(guildId) {
@@ -1109,9 +1114,12 @@ function punishmentPanel(guildId) {
     new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`punish-log:${guildId}`).setPlaceholder('选择处罚记录频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(new ChannelSelectMenuBuilder().setCustomId(`punish-audit:${guildId}`).setPlaceholder('选择可选留痕频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`punish-role:${guildId}`).setPlaceholder('选择警告身份组')),
+    new ActionRowBuilder().addComponents(new RoleSelectMenuBuilder().setCustomId(`punish-operators:${guildId}`)
+      .setPlaceholder('选择本服务器额外处罚操作身份组（最多10个）').setMinValues(1).setMaxValues(10)),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`punish-toggle:${guildId}`).setLabel(setting.secondWarningReminder ? '关闭二次提醒' : '开启二次提醒').setStyle(setting.secondWarningReminder ? ButtonStyle.Secondary : ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`punish-audit-clear:${guildId}`).setLabel('清除留痕频道').setStyle(ButtonStyle.Secondary).setDisabled(!setting.auditChannelId),
+      new ButtonBuilder().setCustomId(`punish-operators-clear:${guildId}`).setLabel('清除额外操作身份组').setStyle(ButtonStyle.Secondary).setDisabled(!setting.punishmentOperatorRoleIds?.length),
     ),
   ];
 }
@@ -2684,6 +2692,42 @@ function isConfiguredManagementMember(interaction) {
   return [...managementRoleIds].some((roleId) => memberRoleIds.has(roleId));
 }
 
+function isPunishmentOperator(interaction) {
+  if (!interaction.guildId) return false;
+  if (isConfiguredManagementMember(interaction)) return true;
+  const roles = interaction.member?.roles;
+  return (settingsFor(interaction.guildId).punishmentOperatorRoleIds || []).some(id =>
+    roles?.cache?.has(id) || (Array.isArray(roles) && roles.includes(id)));
+}
+
+function punishmentAccessDenied(interaction) {
+  const setting = settingsFor(interaction.guildId);
+  const allowed = [...new Set([...configuredManagementRoleIds(setting), ...(setting.punishmentOperatorRoleIds || [])])];
+  return allowed.length
+    ? '您不具备该权限。需要本服务器已配置的管理组、中层或处罚操作身份组。'
+    : '本服务器尚未配置处罚操作身份组，请让管理员在本服 /处罚面板 设置操作身份组，或配置 /管理组面板。';
+}
+
+async function repairPairedPunishmentAccess() {
+  // Verified existing role in the user's affected paired guild. Use its exact
+  // ID, never a role-name match or another server's operator membership.
+  const guildId = '1380075940285124724';
+  const roleId = '1380075940746493959';
+  if (!commandGuildIds().includes(guildId) || !punishmentGuildIds().includes(guildId)) return;
+  const setting = settingsFor(guildId);
+  if (setting.punishmentAccessRepairVersion || setting.punishmentOperatorRoleIds !== undefined
+    || configuredManagementRoleIds(setting).size || !setting.logChannelId) return;
+  const guild = await client.guilds.fetch(guildId);
+  const role = await guild.roles.fetch(roleId);
+  if (!role || role.managed || role.id === guild.id) throw new Error('分服管理组身份组不存在，未自动修复处罚权限。');
+  setting.punishmentOperatorRoleIds = [role.id];
+  setting.punishmentAccessRepairVersion = 1;
+  try { await saveGuildData(); } catch (error) {
+    delete setting.punishmentOperatorRoleIds; delete setting.punishmentAccessRepairVersion; throw error;
+  }
+  console.log(`已修复分服 ${guildId} 处罚操作身份组配置：${role.id}。`);
+}
+
 function isConfiguredSeniorManagementMember(interaction) {
   if (!interaction.guildId) return false;
   const roleId = managementTrack(settingsFor(interaction.guildId), 'senior').roleId;
@@ -3482,7 +3526,7 @@ const purgePanel = createPurgePanel({ client, settingsFor, save: saveGuildData, 
 const scheduledPunishments = createScheduledPunishments({ client, settingsFor, save: saveGuildData, logFailure,
   guildIds: commandGuildIds,
   scopeFor: guildId => punishmentGuildIds().includes(guildId) ? punishmentGuildIds() : [guildId],
-  authorized: isConfiguredManagementMember, validate: validatePunishmentRequest, execute: executePunishmentRequest,
+  authorized: isPunishmentOperator, validate: validatePunishmentRequest, execute: executePunishmentRequest,
   hasCase: caseId => guildData.punishmentCases.some(item => item.id === caseId),
   targetBusy: userId => activePunishmentLocks.has(userId) || pendingPunishmentTargetClaims.has(userId)
     || Object.values(pendingPunishmentRecords).some(item => item.userId === userId
@@ -3663,6 +3707,7 @@ client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   try {
     await loadPlatformStorage();
+    await repairPairedPunishmentAccess().catch(error => logFailure('分服处罚权限配置修复失败。', error));
     storageReady = true;
   } catch (error) {
     logFailure('Discord 私密存储初始化失败；为避免使用空数据覆盖记录，机器人不会处理指令。', error);
@@ -4323,8 +4368,8 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({ content: '这张处罚确认卡只能由发起命令的人操作。', embeds: [], components: [] });
         return;
       }
-      if (!isConfiguredManagementMember(interaction)) {
-        await interaction.editReply({ content: '您不具备该权限。', embeds: [], components: [] });
+      if (!isPunishmentOperator(interaction)) {
+        await interaction.editReply({ content: punishmentAccessDenied(interaction), embeds: [], components: [], allowedMentions: { parse: [] } });
         return;
       }
       if (pending.guildId !== interaction.guildId) {
@@ -4860,6 +4905,28 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
       setting.warningRoleId = role.id;
+    } else if (action === 'punish-operators' && interaction.isRoleSelectMenu()) {
+      const ids = [...new Set(interaction.values)];
+      if (!ids.length || ids.length > 10 || ids.includes(guildId)) throw new Error('请选择1–10个普通操作身份组，不能授权 @everyone。');
+      for (const id of ids) {
+        const role = await interaction.guild.roles.fetch(id);
+        if (!role || role.managed) throw new Error('操作身份组必须是本服务器的普通身份组。');
+      }
+      const previous = setting.punishmentOperatorRoleIds;
+      setting.punishmentOperatorRoleIds = ids;
+      try { await saveGuildData(); } catch (error) {
+        if (previous === undefined) delete setting.punishmentOperatorRoleIds; else setting.punishmentOperatorRoleIds = previous;
+        throw error;
+      }
+      await interaction.message.edit({ embeds: [punishmentPanelEmbed(guildId)], components: punishmentPanel(guildId) });
+      return;
+    }
+    else if (action === 'punish-operators-clear' && interaction.isButton()) {
+      const previous = setting.punishmentOperatorRoleIds;
+      setting.punishmentOperatorRoleIds = [];
+      try { await saveGuildData(); } catch (error) { setting.punishmentOperatorRoleIds = previous; throw error; }
+      await interaction.message.edit({ embeds: [punishmentPanelEmbed(guildId)], components: punishmentPanel(guildId) });
+      return;
     }
     else if (action === 'punish-toggle' && interaction.isButton()) setting.secondWarningReminder = !setting.secondWarningReminder;
     else if (action === 'punish-audit-clear' && interaction.isButton()) setting.auditChannelId = null;
@@ -4928,8 +4995,8 @@ client.on('interactionCreate', async (interaction) => {
   let options = interaction.options;
   try {
     if ((messageCommand || userCommand) && ['处罚', '永封'].includes(commandName)) {
-      if (!isConfiguredManagementMember(interaction)) {
-        await interaction.reply({ content: '您不具备该权限。', flags: MessageFlags.Ephemeral });
+      if (!isPunishmentOperator(interaction)) {
+        await interaction.reply({ content: punishmentAccessDenied(interaction), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
         return;
       }
       const ban = commandName === '永封';
@@ -4953,8 +5020,11 @@ client.on('interactionCreate', async (interaction) => {
               { label: '仅禁言', value: 'timeout' },
               { label: '警告并禁言', value: 'both' },
             )),
-        field('timeout', '禁言天数（1–90；有禁言时必填）', false, 2),
-        field('warning', '警告天数（1–90；留空不自动移除）', false, 2));
+        field('timeout', '禁言时长（按下方单位；有禁言时必填）', false, 6),
+        field('warning', '警告时长（按下方单位；留空不自动移除）', false, 6),
+        new LabelBuilder().setLabel('时长单位（最低1分钟，最高90天）')
+          .setStringSelectMenuComponent(new StringSelectMenuBuilder().setCustomId('durationUnit').setRequired(true)
+            .addOptions({ label: '分钟', value: 'minutes', default: true }, { label: '天', value: 'days' })));
       await interaction.showModal(modal);
       return;
     }
@@ -4984,10 +5054,14 @@ client.on('interactionCreate', async (interaction) => {
       if (commandName === '处罚') {
         values.方式 = interaction.fields.getStringSelectValues('mode')[0];
         if (!values.方式) { await interaction.editReply('处罚方式请填写：仅警告、仅禁言或警告并禁言。'); return; }
-        for (const [id, name] of [['timeout', '禁言天数'], ['warning', '警告天数']]) {
+        const unit = interaction.fields.fields.has('durationUnit') ? interaction.fields.getStringSelectValues('durationUnit')[0] : 'days';
+        if (!['minutes', 'days'].includes(unit)) { await interaction.editReply('请选择有效的时长单位。'); return; }
+        const maximum = unit === 'minutes' ? MAX_MINUTES : 90;
+        for (const [id, label] of [['timeout', '禁言'], ['warning', '警告']]) {
           const input = interaction.fields.getTextInputValue(id).trim();
-          if (input && (!/^\d{1,2}$/.test(input) || Number(input) < 1 || Number(input) > 90)) {
-            await interaction.editReply(`${name}必须为 1 到 90 的整数。`);
+          const name = `${label}${unit === 'minutes' ? '分钟' : '天数'}`;
+          if (input && (!/^\d{1,6}$/.test(input) || Number(input) < 1 || Number(input) > maximum)) {
+            await interaction.editReply(`${name}必须为 1 到 ${maximum} 的整数。`);
             return;
           }
           values[name] = input ? Number(input) : null;
@@ -5041,7 +5115,7 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: '需要“管理服务器”权限才能配置处罚面板。', flags: MessageFlags.Ephemeral });
         return;
       }
-      await interaction.reply({ content: '处罚面板已创建。请使用下方菜单配置处罚记录频道、可选留痕频道、警告身份组和二次提醒。', embeds: [punishmentPanelEmbed(interaction.guildId)], components: punishmentPanel(interaction.guildId) });
+      await interaction.reply({ content: '处罚面板已创建。请配置处罚记录频道、可选留痕频道、警告身份组、额外操作身份组和二次提醒。', embeds: [punishmentPanelEmbed(interaction.guildId)], components: punishmentPanel(interaction.guildId) });
       return;
     }
 
@@ -5351,8 +5425,8 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === '处罚' || commandName === '永封') {
-      if (!isConfiguredManagementMember(interaction)) {
-        await interaction.editReply('您不具备该权限。');
+      if (!isPunishmentOperator(interaction)) {
+        await interaction.editReply({ content: punishmentAccessDenied(interaction), allowedMentions: { parse: [] } });
         return;
       }
       const isPermanentBan = commandName === '永封';
@@ -5377,12 +5451,9 @@ client.on('interactionCreate', async (interaction) => {
         catch { await interaction.editReply('无法通过这个 ID 找到 Discord 用户，请检查 ID 是否正确。'); return; }
       }
       const reason = options.getString('原因', true);
-      const timeoutDays = isPermanentBan ? null : options.getInteger('禁言天数');
-      const warningDays = isPermanentBan ? null : options.getInteger('警告天数');
-      if (hasTimeout && !timeoutDays) { await interaction.editReply('此处罚方式需要填写“禁言天数”。'); return; }
-      if (!hasTimeout && timeoutDays) { await interaction.editReply('此处罚方式不能填写禁言天数，请更改处罚方式。'); return; }
-      if (!hasWarning && warningDays) { await interaction.editReply('此处罚方式不能填写警告天数，请更改处罚方式。'); return; }
+      const { timeoutDays, warningDays } = isPermanentBan ? { timeoutDays: null, warningDays: null } : readPunishmentDurations(options);
       const request = { guildId: interaction.guildId, userId: user.id, mode, reason, timeoutDays, warningDays };
+      validatePunishmentDurations(request);
       const targetId = user.id;
       const now = Date.now();
       const hasPendingForTarget = Object.values(pendingPunishmentRecords).some((item) => item.userId === targetId
@@ -5448,8 +5519,8 @@ client.on('interactionCreate', async (interaction) => {
           `执行范围：${isPermanentBan ? '按 ID 在互通服务器封禁' : context.absentGuilds.length ? '单边执行，另一边仅公示' : context.contexts.length > 1 ? '双边同步执行' : '当前服务器执行'}`,
           `实际执行服务器：${context.contexts.map((item) => item.guild.name).join('、')}`,
           ...(context.absentGuilds.length ? [`仅公示服务器：${context.absentGuilds.map((guild) => guild.name).join('、')}（目标不在该服，不执行警告或禁言）`] : []),
-          ...(hasWarning ? [`警告身份组：${context.warningRole}` , `警告时长：${warningDays ? `${warningDays} 天` : '不自动移除'}`] : []),
-          ...(hasTimeout ? [`禁言时长：${timeoutDays} 天`] : []),
+          ...(hasWarning ? [`警告身份组：${context.warningRole}` , `警告时长：${warningDays ? formatPunishmentDuration(warningDays) : '不自动移除'}`] : []),
+          ...(hasTimeout ? [`禁言时长：${formatPunishmentDuration(timeoutDays)}`] : []),
           ...(hasBan ? [`封禁效果：目标将从${context.contexts.length > 1 ? '两个服务器' : '当前服务器'}移出；撤销处罚可按编号解封。`] : []),
           `目标当前是否在警告期：${warningActive ? '是' : '否'}`,
           `当前警告剩余时长：${warningActive ? (warningEndAt > createdAt ? remaining(warningEndAt) : '无自动到期记录') : '—'}`,
@@ -5480,11 +5551,13 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (commandName === '撤销处罚') {
-      if (!isConfiguredManagementMember(interaction)) {
-        await interaction.editReply('您不具备该权限。');
+      if (!isPunishmentOperator(interaction)) {
+        await interaction.editReply({ content: punishmentAccessDenied(interaction), allowedMentions: { parse: [] } });
         return;
       }
       const caseId = options.getString('处罚编号', true).trim();
+      const revocationReason = options.getString('理由', true).trim();
+      if (!revocationReason || revocationReason.length > 400) { await interaction.editReply('请填写1–400字的撤销理由。'); return; }
       const pairedGuildIds = punishmentGuildIds();
       const searchableGuildIds = pairedGuildIds.includes(interaction.guildId) ? pairedGuildIds : [interaction.guildId];
       const record = guildData.punishmentCases.find((item) => searchableGuildIds.includes(item.guildId) && item.id === caseId);
@@ -5553,15 +5626,15 @@ client.on('interactionCreate', async (interaction) => {
       try {
         for (const context of revokeContexts) {
           if (context.role && context.hadWarning) {
-            await context.member.roles.remove(context.role, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
+            await context.member.roles.remove(context.role, `撤销处罚 ${record.id}（${interaction.user.id}）：${revocationReason}`);
             context.removedWarning = true;
           }
           if (context.linked.hasTimeout) {
-            await context.member.timeout(null, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
+            await context.member.timeout(null, `撤销处罚 ${record.id}（${interaction.user.id}）：${revocationReason}`);
             context.clearedTimeout = true;
           }
           if (context.hasBan && context.existingBan) {
-            await context.guild.members.unban(context.linked.userId, `撤销处罚 ${record.id}（由 ${interaction.user.tag} 操作）`);
+            await context.guild.members.unban(context.linked.userId, `撤销处罚 ${record.id}（${interaction.user.id}）：${revocationReason}`);
             context.removedBan = true;
           }
         }
@@ -5581,6 +5654,7 @@ client.on('interactionCreate', async (interaction) => {
         context.linked.status = 'revoked';
         context.linked.revokedAt = revokedAt;
         context.linked.revokedBy = interaction.user.id;
+        context.linked.revocationReason = revocationReason;
       }
       guildData.warningExpirations = guildData.warningExpirations.filter((item) => item.caseId !== record.id);
       guildData.warningFollowups = guildData.warningFollowups.filter((item) => item.caseId !== record.id);
@@ -5943,7 +6017,10 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
     const managementCommands = ['管理删帖', '管理锁定', '管理解锁', '解锁'];
-    const message = managementCommands.includes(commandName)
+    const punishmentCommands = ['处罚', '永封', '撤销处罚'];
+    const message = punishmentCommands.includes(commandName)
+      ? `${commandName}未完成：${error.message || '未知错误'}`
+      : managementCommands.includes(commandName)
       ? `${commandName}执行失败：${error.message || '未知错误'}。请检查管理组身份组、审批/公示频道配置和 Bot 权限。`
       : '操作失败。请检查机器人权限、身份组层级和控制台错误信息。';
     if (interaction.deferred || interaction.replied) await interaction.editReply({ content: message, allowedMentions: { parse: [] } }).catch(() => {});

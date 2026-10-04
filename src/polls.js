@@ -2,12 +2,13 @@ const { randomBytes } = require('node:crypto');
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
   StringSelectMenuBuilder, MessageFlags, PermissionFlagsBits, ChannelType, ModalBuilder,
   LabelBuilder, TextInputBuilder, TextInputStyle, escapeMarkdown } = require('discord.js');
+const { addPunishmentDurationOptions, readPunishmentDurations, formatPunishmentDuration, MAX_MINUTES } = require('./punishment-duration');
 
 const punishmentModes = { warning: '仅警告', timeout: '仅禁言', both: '警告并禁言', ban: '永封' };
 const statusLabels = { publishing: '正在发布', open: '投票中', closed: '已截止', awaiting: '投票通过，等待管理组确认',
   rejected: '投票未通过，不执行处罚', cancelled: '已取消', executing: '管理组已确认，正在执行处罚',
   completed: '已执行处罚', uncertain: '处罚结果需管理组核对，未自动重试', failed: '发布未完成' };
-const pollCommand = new SlashCommandBuilder().setName('投票').setDescription('创建不公开投票名单的普通投票或处罚投票')
+const pollCommand = addPunishmentDurationOptions(new SlashCommandBuilder().setName('投票').setDescription('创建不公开投票名单的普通投票或处罚投票')
   .setDefaultMemberPermissions(null)
   .addStringOption(o => o.setName('主题').setDescription('投票主题，留空直接打开创建弹窗').setMaxLength(256))
   .addStringOption(o => o.setName('类型').setDescription('默认普通投票；处罚投票通过后仍需管理组确认')
@@ -18,10 +19,8 @@ const pollCommand = new SlashCommandBuilder().setName('投票').setDescription('
   .addStringOption(o => o.setName('user_id').setDescription('处罚目标用户ID或提及，与成员二选一').setMaxLength(32))
   .addStringOption(o => o.setName('处罚方式').setDescription('仅处罚投票填写').addChoices(...Object.entries(punishmentModes).map(([value, name]) => ({ value, name }))))
   .addStringOption(o => o.setName('处罚原因').setDescription('仅处罚投票必填').setMaxLength(400))
-  .addIntegerOption(o => o.setName('禁言天数').setDescription('禁言或警告并禁言必填').setMinValue(1).setMaxValue(90))
-  .addIntegerOption(o => o.setName('警告天数').setDescription('警告保留天数，留空不自动移除').setMinValue(1).setMaxValue(90))
   .addIntegerOption(o => o.setName('最多选项').setDescription('普通投票每人最多选几项，默认可选全部；填1为单选').setMinValue(1).setMaxValue(10))
-  .addStringOption(o => o.setName('说明').setDescription('投票卡片中的补充说明（可选）').setMaxLength(500));
+  .addStringOption(o => o.setName('说明').setDescription('投票卡片中的补充说明（可选）').setMaxLength(500)));
 const pollPanelCommand = new SlashCommandBuilder().setName('投票面板').setDescription('打开投票操作面板，使用弹窗创建普通或处罚投票')
   .setDefaultMemberPermissions(null);
 const row = (...items) => new ActionRowBuilder().addComponents(...items);
@@ -137,9 +136,9 @@ function createPolls(deps) {
     if (data.type === 'punishment') embed.addFields({ name: '处罚目标', value: `<@${data.userId}> (${data.userId})` },
       { name: '处罚方式', value: punishmentModes[data.mode], inline: true }, { name: '原因', value: data.reason },
       { name: '通过条件', value: '投票截止后，赞成票多于反对票才通过；通过后仍需管理组确认，不自动处罚。' });
-    if (data.timeoutDays) embed.addFields({ name: '禁言时长', value: `${data.timeoutDays}天`, inline: true });
+    if (data.timeoutDays) embed.addFields({ name: '禁言时长', value: formatPunishmentDuration(data.timeoutDays), inline: true });
     if (data.type === 'punishment' && ['warning', 'both'].includes(data.mode)) {
-      embed.addFields({ name: '警告时长', value: data.warningDays ? `${data.warningDays}天` : '不自动移除', inline: true });
+      embed.addFields({ name: '警告时长', value: data.warningDays ? formatPunishmentDuration(data.warningDays) : '不自动移除', inline: true });
     }
     if (data.type === 'ordinary' && data.status === 'closed') {
       const highest = Math.max(...counts);
@@ -206,8 +205,7 @@ function createPolls(deps) {
     const selected = o.getUser('成员');
     const raw = o.getString('user_id')?.trim();
     const reason = o.getString('处罚原因')?.trim();
-    const timeoutDays = o.getInteger('禁言天数');
-    const warningDays = o.getInteger('警告天数');
+    const { timeoutDays, warningDays } = readPunishmentDurations(o);
     const requestedMax = o.getInteger('最多选项');
     let options;
     let userId;
@@ -219,8 +217,8 @@ function createPolls(deps) {
       const match = raw?.match(/^(?:<@!?(\d{17,20})>|(\d{17,20}))$/);
       if (raw && !match) throw new Error('目标用户ID格式不正确。');
       userId = selected?.id || match[1] || match[2];
-      if (['timeout', 'both'].includes(mode) !== Boolean(timeoutDays)) throw new Error('禁言和警告并禁言须填写禁言天数，其他方式不能填写。');
-      if (!['warning', 'both'].includes(mode) && warningDays) throw new Error('此方式不能填写警告天数。');
+      if (['timeout', 'both'].includes(mode) !== Boolean(timeoutDays)) throw new Error('禁言和警告并禁言须填写禁言时长，其他方式不能填写。');
+      if (!['warning', 'both'].includes(mode) && warningDays) throw new Error('此方式不能填写警告时长。');
       await validatePunishment(interaction, { guildId: interaction.guildId, userId, mode, reason, timeoutDays, warningDays });
       options = ['赞成处罚', '反对处罚'];
     } else {
@@ -293,7 +291,7 @@ function createPolls(deps) {
     await validatePunishment(interaction, data);
     const token = randomBytes(8).toString('hex');
     confirmations.set(token, { id: meta.id, guildId: meta.guildId, userId: interaction.user.id, expiresAt: Date.now() + 60000 });
-    await interaction.editReply({ content: `确定执行这笔投票处罚吗？\n目标：<@${data.userId}> (${data.userId})\n方式：${punishmentModes[data.mode]}\n原因：${data.reason}\n${data.timeoutDays ? `禁言：${data.timeoutDays}天\n` : ''}确认后会实际处罚，此确认卡1分钟有效。`,
+    await interaction.editReply({ content: `确定执行这笔投票处罚吗？\n目标：<@${data.userId}> (${data.userId})\n方式：${punishmentModes[data.mode]}\n原因：${data.reason}\n${data.timeoutDays ? `禁言：${formatPunishmentDuration(data.timeoutDays)}\n` : ''}确认后会实际处罚，此确认卡1分钟有效。`,
       allowedMentions: { parse: [] }, components: [row(button(`poll-execute:${token}`, '确认执行处罚', ButtonStyle.Danger), button(`poll-abort:${token}`, '返回，不执行'))] });
   }
   async function execute(interaction, meta, data) {
@@ -389,8 +387,13 @@ function createPolls(deps) {
     const draft = draftFor(interaction, token);
     const v = draft.values;
     if (duration) {
-      v['禁言天数'] = integerText(interaction, 'timeout', '禁言天数', 1, 90);
-      v['警告天数'] = integerText(interaction, 'warning', '警告天数', 1, 90);
+      const unit = interaction.fields.fields.has('durationUnit') ? interaction.fields.getStringSelectValues('durationUnit')[0] : 'days';
+      if (!['minutes', 'days'].includes(unit)) throw new Error('请选择有效时长单位。');
+      const suffix = unit === 'minutes' ? '分钟' : '天数';
+      const timeout = integerText(interaction, 'timeout', `禁言${suffix}`, 1, unit === 'minutes' ? MAX_MINUTES : 90);
+      const warning = integerText(interaction, 'warning', `警告${suffix}`, 1, unit === 'minutes' ? MAX_MINUTES : 90);
+      for (const name of ['禁言天数', '警告天数', '禁言分钟', '警告分钟']) v[name] = null;
+      v[`禁言${suffix}`] = timeout; v[`警告${suffix}`] = warning;
     } else {
       v['主题'] = interaction.fields.getTextInputValue('title').trim();
       if (!v['主题']) throw new Error('投票主题不能为空。');
@@ -410,7 +413,7 @@ function createPolls(deps) {
             components: [row(button(`poll-duration:${token}`, '填写时长并发布', ButtonStyle.Primary))], allowedMentions: { parse: [] } });
           return;
         }
-        v['禁言天数'] = null; v['警告天数'] = null;
+        v['禁言天数'] = null; v['警告天数'] = null; v['禁言分钟'] = null; v['警告分钟'] = null;
       }
     }
     // Consume before creating so two modal submissions cannot publish twice.
@@ -427,7 +430,7 @@ function createPolls(deps) {
       if (command && interaction.commandName === '投票' && !interaction.options.getString('主题')) {
         const initial = {};
         for (const name of ['选项', 'user_id', '处罚方式', '处罚原因', '说明']) initial[name] = interaction.options.getString(name);
-        for (const name of ['截止分钟', '禁言天数', '警告天数', '最多选项']) initial[name] = interaction.options.getInteger(name);
+        for (const name of ['截止分钟', '禁言天数', '警告天数', '禁言分钟', '警告分钟', '最多选项']) initial[name] = interaction.options.getInteger(name);
         initial['成员'] = interaction.options.getUser('成员');
         await showCompose(interaction, interaction.options.getString('类型') || 'ordinary', initial); return true;
       }
@@ -437,9 +440,13 @@ function createPolls(deps) {
       }
       if (interaction.isButton() && action === 'poll-duration') {
         const draft = draftFor(interaction, id);
+        const { timeoutDays, warningDays } = readPunishmentDurations(optionAdapter(draft.values));
         await interaction.showModal(new ModalBuilder().setCustomId(`poll-duration-form:${id}`).setTitle('处罚投票 · 时长设置')
-          .addComponents(input('timeout', '禁言天数（1–90，禁言方式必填）', 2, draft.values['禁言天数'] || '', false),
-            input('warning', '警告天数（1–90，留空不自动移除）', 2, draft.values['警告天数'] || '', false)));
+          .addComponents(input('timeout', '禁言时长（按下方单位，禁言方式必填）', 6, timeoutDays ? Math.round(timeoutDays * 1440) : '', false),
+            input('warning', '警告时长（按下方单位，留空不自动移除）', 6, warningDays ? Math.round(warningDays * 1440) : '', false),
+            new LabelBuilder().setLabel('时长单位（最低1分钟，最高90天）').setStringSelectMenuComponent(
+              new StringSelectMenuBuilder().setCustomId('durationUnit').setRequired(true).addOptions(
+                { label: '分钟', value: 'minutes', default: true }, { label: '天', value: 'days' }))));
         return true;
       }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });

@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-**生效日期：2026-10-03**
+**生效日期：2026-10-04**
 **运营者联系邮箱：`xizikangx@gmail.com`**
 
 本政策适用于使用本仓库代码自行部署的 Discord Bot。每个部署实例由部署者独立运营；部署者应在公开本政策前填写有效联系方式，并根据实际托管方式和服务器配置更新本政策。
@@ -14,6 +14,8 @@
 这些数据用于处罚、撤销、管理组名单、公示、提醒、续禁、表情反应清理和经审批的帖子管理/内容删除等已配置功能。Bot 不读取在线状态；反应清理只检查网关反应事件中的作者/表情信息，不分析消息正文；内容删除申请只读取申请链接指定的目标消息以确认对象，达到审批门槛后才删除。紧急频道功能的聊天记录处理见下文。
 
 ### Bot 发言与 Discord 交互
+
+处罚面板可独立配置本服务器额外处罚操作身份组，Bot 会将这些身份组 ID 随服务器配置加密保存，仅用于本服处罚、永封、撤销及预约鉴权，不根据其他服务器成员身份授权。警告和禁言时长可按整分钟设置（最低 1 分钟）；存储仍使用兼容旧记录的天数数值。撤销处罚需填写理由，Bot 保存撤销人 ID、撤销时间和理由；理由显示在配置的处罚公示/留痕频道及 Discord 审计原因中，随既有处罚记录加密存储，无自动删除期限。
 
 启用 `/投票` 后，本服务器真人成员可创建或参与普通/处罚投票，不限制身份组。公开投票消息仅显示选项、票数、截止时间及结果；处罚投票还显示目标、处罚方式和原因，不显示投票人名单、投票人身份或各人的选择。普通投票可配置每人最多选择多个选项，每人每项只计一票；处罚投票仍限二选一。Bot 在内存中按用户 ID 限制选项数量，支持修改和撤回；创建人、投票人及选择、修改/撤回/取消/批准事件、时间和处罚结果仅保存在私密存储服务器 `1554018151094689853` 的频道 `1555055810818605107` 的 AES-256-GCM 加密投票附件中。共享运行数据仅保存投票 ID、频道和记录消息指针、截止时间及状态，不另存投票人名单。存储服务器拥有“管理服务器”权限的成员可在该频道请求仅本人可见的解密文件。投票通过不会自动处罚，须由已配置主管理组或服务器管理员确认；实际处罚及确认人仍进入现有处罚审计记录。投票记录无自动删除期限，用户可联系运营者请求删除。投票消息在 Discord 上显示汇总数量，因此不承诺对能够结合其他信息推断选择的观察者实现绝对匿名。
 
@@ -58,6 +60,8 @@
 Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应遵守适用法律、Discord 开发者条款及服务器规则。功能或数据处理方式发生变化时，部署者应更新此政策并告知受影响用户。
 
 ## English summary
+
+Guilds may configure additional punishment-operator role IDs, encrypted with their settings and used only to authorize local punishment, permanent-ban, revocation and scheduling operations. Membership in another server does not authorize these operations. Warning and timeout durations support whole minutes starting at one minute while retaining the existing day-based stored format. Revocation requires a reason; the bot stores the revoking user's ID, time and reason, includes the reason in configured notice/audit channels and Discord audit reasons, and encrypts it with existing case records without automatic expiry.
 
 The `/投票` command permits human guild members to create and vote in ordinary or punishment polls without a role requirement. Public cards display options, aggregate counts, deadlines and results, plus the target, action and reason for punishment polls; they do not display voter identities or individual choices. Ordinary polls may allow multiple selected options per user, counting each option at most once per person; punishment polls remain single-choice. The bot enforces the configured selection limit in memory and supports changing or withdrawing selections. Creator/voter IDs, individual choices, change/withdrawal/cancellation/approval events, timestamps and execution results are stored only in AES-256-GCM encrypted poll attachments in channel `1555055810818605107` of the private storage server `1554018151094689853`. Shared operational state contains pointers, deadlines and status, without voter lists. Members with Manage Server permission in the storage server may request an ephemeral decrypted file from that channel. Passing a punishment poll does not automatically punish: a configured senior manager or guild Administrator must confirm, and actual punishment actions remain covered by the existing moderation audit. Poll records have no automatic deletion period; users may contact the operator for deletion requests. Public aggregate counts may permit inference when combined with other information, so absolute anonymity is not promised.
 

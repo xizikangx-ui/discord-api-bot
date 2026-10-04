@@ -1,19 +1,18 @@
 const { randomBytes } = require('node:crypto');
 const { SlashCommandBuilder, MessageFlags, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { addPunishmentDurationOptions, readPunishmentDurations, validatePunishmentDurations, formatPunishmentDuration } = require('./punishment-duration');
 
 const DAY = 24 * 60 * 60 * 1000;
 const modes = { warning: '仅警告', timeout: '仅禁言', both: '警告并禁言', ban: '永封' };
 const statuses = { pending: '等待执行，可解除', preparing: '正在检查执行条件', executing: '正在执行',
   cancelled: '已解除，不执行', completed: '已执行', failed: '检查或保存失败，未执行', uncertain: '执行结果需要人工核对，未自动重试' };
 const commands = [
-  new SlashCommandBuilder().setName('预约处罚').setDescription('预约24小时后执行处罚，期间可解除').setDefaultMemberPermissions(null)
+  addPunishmentDurationOptions(new SlashCommandBuilder().setName('预约处罚').setDescription('预约24小时后执行处罚，期间可解除').setDefaultMemberPermissions(null)
     .addStringOption(o => o.setName('方式').setDescription('到期执行的处罚方式').setRequired(true)
       .addChoices(...Object.entries(modes).map(([value, name]) => ({ value, name }))))
     .addStringOption(o => o.setName('原因').setDescription('处罚原因').setRequired(true).setMaxLength(400))
     .addUserOption(o => o.setName('成员').setDescription('目标成员，与用户ID二选一'))
-    .addStringOption(o => o.setName('user_id').setDescription('目标用户ID或提及，与成员二选一').setMaxLength(32))
-    .addIntegerOption(o => o.setName('禁言天数').setDescription('禁言或警告并禁言必填，1到90天').setMinValue(1).setMaxValue(90))
-    .addIntegerOption(o => o.setName('警告天数').setDescription('警告保留天数，留空不自动移除').setMinValue(1).setMaxValue(90)),
+    .addStringOption(o => o.setName('user_id').setDescription('目标用户ID或提及，与成员二选一').setMaxLength(32))),
   new SlashCommandBuilder().setName('解除预约处罚').setDescription('按预约编号解除尚未到期的预约处罚').setDefaultMemberPermissions(null)
     .addStringOption(o => o.setName('编号').setDescription('预约卡或预约处罚列表中的编号').setRequired(true).setMaxLength(32)),
   new SlashCommandBuilder().setName('预约处罚列表').setDescription('查看本服及互通服务器的预约处罚与最近结果').setDefaultMemberPermissions(null),
@@ -37,8 +36,8 @@ function createScheduledPunishments(deps) {
         { name: '发起人', value: `<@${job.moderatorId}>`, inline: true }, { name: '方式', value: modes[job.mode], inline: true },
         { name: '原因', value: job.reason }, { name: '执行时间', value: `<t:${Math.floor(job.dueAt / 1000)}:F> · <t:${Math.floor(job.dueAt / 1000)}:R>` },
         { name: '状态', value: statuses[job.status] || job.status }, { name: '预约编号', value: job.id });
-    if (job.timeoutDays) embed.addFields({ name: '禁言时长', value: `${job.timeoutDays} 天`, inline: true });
-    if (['warning', 'both'].includes(job.mode)) embed.addFields({ name: '警告时长', value: job.warningDays ? `${job.warningDays} 天` : '不自动移除', inline: true });
+    if (job.timeoutDays) embed.addFields({ name: '禁言时长', value: formatPunishmentDuration(job.timeoutDays), inline: true });
+    if (['warning', 'both'].includes(job.mode)) embed.addFields({ name: '警告时长', value: job.warningDays ? formatPunishmentDuration(job.warningDays) : '不自动移除', inline: true });
     if (job.cancelledBy) embed.addFields({ name: '解除人', value: `<@${job.cancelledBy}>` });
     if (job.startedAt) embed.addFields({ name: '执行处罚编号', value: job.caseId });
     if (job.result) embed.addFields({ name: '执行结果', value: clipped(job.result) });
@@ -74,14 +73,9 @@ function createScheduledPunishments(deps) {
     const match = raw?.match(/^(?:<@!?(\d{17,20})>|(\d{17,20}))$/);
     if (raw && !match) throw new Error('请填写17到20位数字用户ID或用户提及。');
     const mode = options.getString('方式', true);
-    const timeoutDays = options.getInteger('禁言天数');
-    const warningDays = options.getInteger('警告天数');
-    const hasTimeout = ['timeout', 'both'].includes(mode);
-    const hasWarning = ['warning', 'both'].includes(mode);
+    const { timeoutDays, warningDays } = readPunishmentDurations(options);
     if (!modes[mode]) throw new Error('处罚方式无效。');
-    if (hasTimeout && !timeoutDays) throw new Error('禁言或警告并禁言需要填写禁言天数。');
-    if (!hasTimeout && timeoutDays) throw new Error('该方式不能填写禁言天数。');
-    if (!hasWarning && warningDays) throw new Error('该方式不能填写警告天数。');
+    validatePunishmentDurations({ mode, timeoutDays, warningDays });
     return { guildId: interaction.guildId, userId: selected?.id || match[1] || match[2], mode,
       reason: options.getString('原因', true).trim(), timeoutDays, warningDays };
   }
@@ -151,7 +145,7 @@ function createScheduledPunishments(deps) {
       const member = await guild.members.fetch({ user: job.moderatorId, force: true, cache: false });
       const user = member.user;
       const context = { guild, guildId: guild.id, user, member, channelId: job.sourceChannelId };
-      if (!authorized(context)) throw new Error('原发起人已不具备管理组或中层权限，预约未执行。');
+      if (!authorized(context)) throw new Error('原发起人已不具备本服管理组、中层或处罚操作身份组，预约未执行。');
       let channel = await guild.channels.fetch(job.sourceChannelId).catch(error => {
         if (Number(error.code ?? error.rawError?.code) === 10003) return null;
         throw error;
