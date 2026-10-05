@@ -67,7 +67,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
     const migration = migrate(state);
     if (migration) {
       state.revision++;
-      state.events.push({ id: 'rpg-upgrade-2', at: Date.now(), actorId: client.user.id, label: '跑团物品与活动升级', result: migration, revision: state.revision });
+      state.events.push({ id: 'rpg-upgrade-' + state.upgrade, at: Date.now(), actorId: client.user.id, label: '跑团存档升级', result: migration, revision: state.revision });
       await persist(guild, state);
     }
     states.set(guild, state); frozen.delete(guild);

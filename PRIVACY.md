@@ -7,6 +7,8 @@
 
 ## 跑团功能的数据与公开范围
 
+势力功能保存角色所选势力、天启重工部门及修改时间，并在公开角色卡中显示归属；未建卡成员只读取背景文案。GM收购面板仅向配置GM展示指定玩家的背包、可出售数量和不可出售原因，保存临时报价步骤、数量、总价和确认结果。开箱保存1—6件物品的整批结果及各公示分段的发送状态，待领取批次不会在重启时重新生成；这些数据沿用下述加密存储、访问与审计规则。
+
 仅在运营者指定的跑团服务器启用。Bot处理角色创建者ID、角色名称、属性与掷骰、等级、经验、生命、背包实例和冻结的模板版本、弹药和配件、游戏币、抽取次数和待领取掉落、装备槽位、交易报价及确认、NPC、战斗地图和阵营、行动预算、异常计时、攻防响应，以及GM和玩家的操作编号与时间。身份组领取配置、领取人ID、变更意图及结果也保存。配置和录入中的草稿绑定创建者和服务器，退出或重启后仍可继续。
 
 角色属性和等级、战场HP/动作点/位置和异常摘要向该频道可见成员公开；背包、余额、抽取次数仅本人和配置的GM可以通过私密交互查看，交易详情仅参与方和GM可见。战场消息和申请/领取面板仍受Discord频道权限控制。跑团指令不扫描或保存普通聊天内容，不为参加、行动、投骰或自动推进收取现实费用。
@@ -78,6 +80,8 @@ Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应�
 ## English summary
 
 The RPG upgrade stores food/medicine templates, healing dice, condition cures, temporary modifiers and action-count or absolute expiry times in the existing encrypted guild state. Draws publicly disclose the drawing user, item, rarity, description, weight, in-game value, ID and pending-claim status in the command channel; inventory, balances and remaining tickets stay private to the owner and configured GMs. GM checks publicly disclose the task, rule, thresholds, participant, dice and outcome. Scheduled RPG sessions store GM and participant IDs, title, description, start time, source message and per-batch reminder delivery states; at start the bot verifies listed members are still in the guild and mentions them in that channel. These records, saved drafts and audit history have no fixed automatic expiry. Short-lived private-interaction handles remain only in process memory; reopening is required after restart. Ending combat removes usable controls while preserving public results and audit records.
+
+Faction selections, department and change timestamps are stored with the character and shown on public character cards. GM buyback panels privately display the selected player's inventory to configured GMs and store quote drafts, quantities, prices and confirmations. Container draws persist batches of one to six items and delivery state for each public message; a pending batch survives restart without rerolling. These records use the same encrypted storage and audit rules.
 
 Guilds may configure additional punishment-operator role IDs, encrypted with their settings and used only to authorize local punishment, permanent-ban, revocation and scheduling operations. Membership in another server does not authorize these operations. Warning and timeout durations support whole minutes starting at one minute while retaining the existing day-based stored format. Revocation requires a reason; the bot stores the revoking user's ID, time and reason, includes the reason in configured notice/audit channels and Discord audit reasons, and encrypts it with existing case records without automatic expiry.
 

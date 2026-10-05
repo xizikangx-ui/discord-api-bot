@@ -5,6 +5,7 @@ const D = require('discord.js');
 const C = require('../src/rpg/constants'), M = require('../src/rpg/model'), B = require('../src/rpg/combat');
 const F = require('../src/rpg/forms'), U = require('../src/rpg/ui');
 const A = require('../src/rpg/activities'), AU = require('../src/rpg/activities-ui');
+const FA = require('../src/rpg/factions'), BB = require('../src/rpg/buyback');
 const { commands } = require('../src/rpg/commands'), { createStore } = require('../src/rpg/store'), { createRpg } = require('../src/rpg');
 const minRng = min => min;
 function state() {
@@ -994,7 +995,7 @@ test('upgrade cards and commands meet full Discord limits with long real IDs and
   validateMessage(U.characterView(p)); validateMessage(U.inventoryView(s, '1', '1234567890123456789'));
   validateMessage(AU.checkView(A.createCheck(s, 'GM', 'channel', { name: '鉴定', description: '字'.repeat(2000), rule: 'd20', threshold: 10 })));
   validateMessage(AU.sessionView(A.createSession(s, 'GM', 'channel', { name: '开团', description: '字'.repeat(2000), startsAt: Date.now() + 100000 })));
-  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 21); assert.equal(new Set(all.map(c => c.name)).size, all.length);
+  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 22); assert.equal(new Set(all.map(c => c.name)).size, all.length);
   function validOptions(options) {
     let optional = false;
     for (const o of options || []) { if (o.type > 2) { if (!o.required) optional = true; else assert.equal(optional, false, o.name); }
@@ -1017,7 +1018,7 @@ test('restart preserves minute deadlines, action duration and published template
     return { deadline: p.temporaryEffects[0].expiresAt, oldRef: old.id };
   });
   const restore = createStore(h.deps); await restore.load(C.DEFAULT_GUILD_ID); const saved = restore.snapshot(C.DEFAULT_GUILD_ID);
-  assert.equal(saved.upgrade, 2); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
+  assert.equal(saved.upgrade, 3); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
   assert.equal(saved.players['1'].temporaryEffects[1].skipTurnId, 'use-turn');
   assert.equal(saved.players['1'].temporaryEffects[1].remaining, 2);
   assert.equal(saved.catalog[data.oldRef].description, C.seedCatalog()[data.oldRef].description);
@@ -1113,5 +1114,305 @@ test('failed private UI response invalidates the consumed step instead of allowi
     await rpg.handle(first); assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory[ref].quantity, 1);
     const again = h.interaction('1', null, {}, id); await rpg.handle(again);
     assert.match(again.result.content, /失效/); assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory[ref].quantity, 1);
+  } finally { rpg.stop(); }
+});
+
+test('GM buyback autocomplete reads raw user ID with actual Discord resolver and excludes unavailable goods', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const ref = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'sellable', 'GM', s => M.issue(s, '1', food(s).id, 4)[0].id);
+    const Resolver = D.CommandInteractionOptionResolver;
+    const i = h.interaction('GM', 'gm'); i.isAutocomplete = () => true;
+    i.options = new Resolver({}, [{ name: '收购', type: 1, options: [
+      { name: '成员', type: 6, value: '1' }, { name: '物品', type: 3, value: '', focused: true }
+    ] }]);
+    assert.equal(i.options.getUser('成员'), null); i.respond = async value => { i.choices = value; };
+    await rpg.handle(i); assert.equal(i.choices[0].value, ref); assert.match(i.choices[0].name, /可售 4/);
+    await rpg.store.transact(C.DEFAULT_GUILD_ID, 'reserved-for-other', 'GM', s => M.createOffer(s, 'GM', '1', 'buyback', ref, 4, 1));
+    await rpg.handle(i); assert.deepEqual(i.choices, []);
+    const nonGM = h.interaction('2', 'gm'); nonGM.isAutocomplete = () => true; nonGM.options = i.options;
+    nonGM.respond = async value => { nonGM.choices = value; }; await rpg.handle(nonGM); assert.deepEqual(nonGM.choices, []);
+  } finally { rpg.stop(); }
+});
+
+test('GM without a card selects backpack item, previews quote and seller alone completes exactly once', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const ref = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'buyback-stock', 'GM', s => M.issue(s, '1', food(s).id, 4)[0].id);
+    assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players.GM, undefined);
+    const opened = h.interaction('GM', 'gm', { sub: '收购', 成员: '1' }); await rpg.handle(opened);
+    assert.equal(opened.deferOptions.flags, D.MessageFlags.Ephemeral);
+    const item = await click(h, rpg, 'GM', opened, '选择收购物品', [ref]);
+    const edit = await click(h, rpg, 'GM', item, '填写 / 修改报价');
+    const preview = await submit(h, rpg, 'GM', edit, { quantity: '2', price: '500' });
+    assert.match(bodyOf(preview.result), /总价 \*\*500/);
+    const confirmId = control(preview.result, '确认并向玩家报价');
+    await click(h, rpg, 'GM', preview, '确认并向玩家报价');
+    const saved = rpg.store.snapshot(C.DEFAULT_GUILD_ID), offer = Object.values(saved.offers)[0];
+    assert.equal(saved.players['1'].balance, 0); assert.equal(saved.players['1'].inventory[ref].quantity, 4);
+    const duplicate = h.interaction('GM', null, {}, confirmId); await rpg.handle(duplicate); assert.match(duplicate.result.content, /失效/);
+    assert.equal(Object.keys(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers).length, 1);
+    const seller = h.interaction('1', null, {}, 'rpg:offer:' + offer.id); await rpg.handle(seller);
+    const confirmation = control(seller.result, '确认当前报价'); await click(h, rpg, '1', seller, '确认当前报价');
+    const twice = h.interaction('1', null, {}, confirmation); await rpg.handle(twice);
+    const completed = rpg.store.snapshot(C.DEFAULT_GUILD_ID); assert.equal(completed.players['1'].balance, 500);
+    assert.equal(completed.players['1'].inventory[ref].quantity, 2); assert.equal(completed.offers[offer.id].status, 'completed');
+  } finally { rpg.stop(); }
+});
+
+test('buyback pages empty and large backpacks, explains equipped and reserved goods and handles cancellation', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const empty = h.interaction('GM', 'gm', { sub: '收购', 成员: '2' }); await rpg.handle(empty); assert.match(bodyOf(empty.result), /背包为空/);
+    const refs = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'large-buyback-stock', 'GM', s => {
+      const t = food(s), ids = Array.from({ length: 17 }, () => M.issue(s, '1', t.id, 1)[0].id);
+      const w = M.issue(s, '1', weapon(s).id)[0]; M.equip(s, '1', w.id);
+      M.createOffer(s, 'GM', '1', 'buyback', ids[0], 1, 0); return ids;
+    });
+    const opened = h.interaction('GM', 'gm', { sub: '收购', 成员: '1' }); await rpg.handle(opened);
+    assert.match(bodyOf(opened.result), /预留/);
+    const page = await click(h, rpg, 'GM', opened, '下一页'); assert.match(bodyOf(page.result), /装备/);
+    const selected = await click(h, rpg, 'GM', page, '选择收购物品', [refs[16]]);
+    await click(h, rpg, 'GM', selected, '取消收购');
+    assert.equal(Object.keys(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers).length, 1);
+    assert.equal(BB.availability(rpg.store.snapshot(C.DEFAULT_GUILD_ID), '1', rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory[refs[0]]).quantity, 0);
+  } finally { rpg.stop(); }
+});
+
+test('buyback rechecks quantities after preview and rejects a stale modal or another operator', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const ref = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'stock-race', 'GM', s => M.issue(s, '1', food(s).id, 3)[0].id);
+    const opened = h.interaction('GM', 'gm', { sub: '收购', 成员: '1' }); await rpg.handle(opened);
+    const picked = await click(h, rpg, 'GM', opened, '选择收购物品', [ref]);
+    const edit = await click(h, rpg, 'GM', picked, '填写 / 修改报价');
+    const preview = await submit(h, rpg, 'GM', edit, { quantity: '3', price: '900' });
+    await rpg.store.transact(C.DEFAULT_GUILD_ID, 'consume-between', '1', s => { s.players['1'].inventory[ref].quantity = 2; });
+    const rejected = await click(h, rpg, 'GM', preview, '确认并向玩家报价'); assert.match(rejected.result.content, /数量不足/);
+    assert.equal(Object.keys(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers).length, 0);
+    const oldModal = await submit(h, rpg, 'GM', edit, { quantity: '1', price: '10' }); assert.match(oldModal.result.content, /失效/);
+    const outsider = h.interaction('2', 'gm', { sub: '收购', 成员: '1' }); await rpg.handle(outsider); assert.match(outsider.result.content, /GM/);
+  } finally { rpg.stop(); }
+});
+
+test('quick buyback retains explicit parameters and rejects missing price before creating an offer', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const ref = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'quick-stock', 'GM', s => M.issue(s, '1', food(s).id, 2)[0].id);
+    const missing = h.interaction('GM', 'gm', { sub: '收购', 成员: '1', 物品: ref }); await rpg.handle(missing);
+    assert.match(missing.result.content, /价格/); assert.equal(Object.keys(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers).length, 0);
+    const quick = h.interaction('GM', 'gm', { sub: '收购', 成员: '1', 物品: ref, 数量: 2, 价格: 0 }); await rpg.handle(quick);
+    assert.equal(Object.values(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers)[0].price, 0);
+  } finally { rpg.stop(); }
+});
+
+test('container draws 1 to 6 independently weighted items, allows duplicates and card draw remains one', () => {
+  const s = state(), p = s.players['1']; p.attributes.strength = 100; p.attributes.constitution = 100;
+  p.tickets.boxes['饭盒'] = 3;
+  const one = M.openLoot(s, '1', '饭盒', minRng); assert.equal(one.items.length, 1);
+  let first = true;
+  const six = M.openLoot(s, '1', '饭盒', (min, max) => { if (first) { first = false; return 6; } return min; });
+  assert.equal(six.items.length, 6); assert.equal(new Set(six.items.map(i => i.id)).size, 6);
+  assert.equal(new Set(six.items.map(i => i.templateId)).size, 1); assert.equal(p.tickets.boxes['饭盒'], 1);
+  let n = 0; const weights = [0, 5, 15, 100, 300, 550];
+  const mixed = M.openLoot(s, '1', '饭盒', (min, max) => {
+    if (min === 1 && max === 7) return 6;
+    if (min === 0 && max === 1000) return weights[n++]; return min;
+  });
+  assert.deepEqual(mixed.items.map(i => i.snapshot.rarity), ['red', 'gold', 'purple', 'blue', 'green', 'white']);
+  p.tickets.card = 1; const card = M.openLoot(s, '1', 'card', minRng); assert.equal(card.items.length, 1); assert.equal(p.tickets.card, 0);
+});
+
+test('whole container pending batch survives encrypted restart, retains all values and debits once on claim', async () => {
+  const h = harness(), store = createStore(h.deps); await store.load(C.DEFAULT_GUILD_ID);
+  const first = await store.transact(C.DEFAULT_GUILD_ID, 'six-pending', '1', s => {
+    Object.assign(s.players, state().players); const p = s.players['1'];
+    p.tickets.boxes['饭盒'] = 1; p.inventory.heavy = { id: 'heavy', quantity: 1, snapshot: { weight: 99999 } };
+    let start = true; return M.openLoot(s, '1', '饭盒', (min, max) => { if (start) { start = false; return 6; } return min; });
+  });
+  assert.ok(first.pending); assert.equal(first.items.length, 6);
+  const restore = createStore(h.deps); await restore.load(C.DEFAULT_GUILD_ID);
+  const again = await restore.transact(C.DEFAULT_GUILD_ID, 'retry-six', '1', s => M.openLoot(s, '1', '饭盒', () => { throw new Error('reroll'); }));
+  assert.deepEqual(again, first); assert.equal(restore.snapshot(C.DEFAULT_GUILD_ID).players['1'].tickets.boxes['饭盒'], 1);
+  const result = await restore.transact(C.DEFAULT_GUILD_ID, 'claim-six', '1', s => {
+    delete s.players['1'].inventory.heavy; return M.openLoot(s, '1', '饭盒', () => { throw new Error('reroll'); });
+  });
+  assert.equal(result.pending, false); assert.deepEqual(result.items, first.items);
+  assert.equal(Object.keys(restore.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory).length, 6);
+  assert.equal(restore.snapshot(C.DEFAULT_GUILD_ID).players['1'].tickets.boxes['饭盒'], 0);
+});
+
+test('upgrade 3 migrates legacy pending item without changing history, templates, assets or faction', () => {
+  const s = state(); s.upgrade = 2; const p = s.players['1']; delete p.faction;
+  const item = M.makeItem(Object.values(s.catalog).find(t => t.boxes.includes('大衣')));
+  p.pendingLoot['大衣'] = item; p.tickets.boxes['大衣'] = 1;
+  s.lootPublications.old = { id: 'old', result: { item: C.clone(item), pending: true }, messageId: '123' };
+  s.events.push({ id: 'historic', result: C.clone(item) });
+  const history = JSON.stringify(s.events), publicRecord = JSON.stringify(s.lootPublications.old), templates = JSON.stringify(s.catalog);
+  const report = A.migrate(s); assert.equal(report.pendingBatches, 1); assert.equal(p.faction, null);
+  assert.deepEqual(p.pendingLoot['大衣'].items, [item]); assert.equal(A.migrate(s), null);
+  assert.equal(JSON.stringify(s.events), history); assert.equal(JSON.stringify(s.lootPublications.old), publicRecord);
+  assert.equal(JSON.stringify(s.catalog), templates);
+  const claimed = M.openLoot(s, '1', '大衣', () => { throw new Error('reroll'); }); assert.equal(claimed.items[0].id, item.id);
+});
+
+test('batch public messages fit Discord limits, contain every description and never reveal balance or tickets', () => {
+  const s = state(), p = s.players['1']; p.attributes.strength = 100; p.attributes.constitution = 100; p.tickets.boxes['饭盒'] = 1;
+  let first = true; const result = M.openLoot(s, '1', '饭盒', min => { if (first) { first = false; return 6; } return min; });
+  for (const item of result.items) item.snapshot.description = '说明'.repeat(1000);
+  const record = { id: 'public', userId: '1356391807285727337', result };
+  const messages = AU.lootMessages(record); assert.ok(messages.length > 1); messages.forEach(validateMessage);
+  const text = messages.map(m => JSON.stringify(m.embeds.map(e => e.toJSON()))).join('');
+  result.items.forEach(item => assert.ok(text.includes(item.id)));
+  assert.equal(messages.flatMap(m => m.embeds).filter(e => e.toJSON().description === '说明'.repeat(1000)).length, 6);
+  assert.ok(!text.includes('余额')); assert.ok(!text.includes('剩余次数'));
+});
+
+test('partial batch publication resends only missing parts, preserves IDs and does not debit again', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const record = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'publish-six-setup', '1', s => {
+      const p = s.players['1']; p.attributes.strength = 100; p.attributes.constitution = 100; p.tickets.boxes['饭盒'] = 1;
+      let first = true; const result = M.openLoot(s, '1', '饭盒', min => { if (first) { first = false; return 6; } return min; });
+      result.items.forEach(i => { i.snapshot.description = '物品描述'.repeat(500); });
+      const r = { id: 'ltest', userId: '1', channelId: 'channel', at: Date.now(), result, publication: { status: 'pending' } };
+      s.lootPublications[r.id] = r; return r;
+    });
+    const original = h.ch.send; let publicSends = 0;
+    h.ch.send = async opts => { if (opts.embeds && ++publicSends === 2) throw Object.assign(new Error('cannot send'), { code: 50013 }); return original(opts); };
+    await assert.rejects(rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', record.id));
+    const failed = rpg.store.snapshot(C.DEFAULT_GUILD_ID).lootPublications[record.id];
+    assert.equal(failed.publicationParts[0].status, 'sent'); assert.equal(failed.publicationParts[1].status, 'failed');
+    const firstMessageId = failed.messageId; h.ch.send = original;
+    const before = h.sent.filter(m => m.lastPayload.embeds).length;
+    await rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', record.id, true);
+    const saved = rpg.store.snapshot(C.DEFAULT_GUILD_ID), r = saved.lootPublications[record.id];
+    assert.equal(r.messageId, firstMessageId); assert.ok(r.publicationParts.every(p => p.status === 'sent'));
+    assert.equal(h.sent.filter(m => m.lastPayload.embeds).length - before, r.publicationParts.length - 1);
+    assert.equal(saved.players['1'].tickets.boxes['饭盒'], 0); assert.deepEqual(r.result.items, record.result.items);
+    const done = h.sent.length; await rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', record.id, true); assert.equal(h.sent.length, done);
+  } finally { rpg.stop(); }
+});
+
+test('missing drop pool fails without partial inventory or charged ticket', () => {
+  const s = state(), p = s.players['1']; p.tickets.boxes['饭盒'] = 1;
+  for (const t of Object.values(s.catalog)) if (t.rarity === 'gold') t.boxes = [];
+  let n = 0;
+  assert.throws(() => M.openLoot(s, '1', '饭盒', (min, max) => {
+    if (min === 1 && max === 7) return 2;
+    if (min === 0 && max === 1000) return n++ === 0 ? 550 : 5; return min;
+  }), /掉落池/);
+  assert.equal(Object.keys(p.inventory).length, 0); assert.equal(p.tickets.boxes['饭盒'], 1); assert.equal(p.pendingLoot['饭盒'], undefined);
+});
+
+test('faction lore is available without a card; all factions and departments can be freely chosen and shown publicly', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const guest = h.interaction('stranger', '势力'); await rpg.handle(guest); assert.match(bodyOf(guest.result), /确认角色卡/);
+    const world = await click(h, rpg, 'stranger', guest, '世界背景'); assert.match(bodyOf(world.result), /2055/);
+    const returned = await click(h, rpg, 'stranger', world, '返回势力面板');
+    const lore = await click(h, rpg, 'stranger', returned, '阅读势力介绍', ['apocalypse']); assert.match(bodyOf(lore.result), /死亡部｜内政/);
+    const before = rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'];
+    for (const [faction, department] of [['explorer', null], ['scavenger', null], ...Object.keys(FA.DEPARTMENTS).map(d => ['apocalypse', d])]) {
+      const panel = h.interaction('1', '势力'); await rpg.handle(panel);
+      const select = await click(h, rpg, '1', panel, '选择 / 修改势力');
+      let chosen = await click(h, rpg, '1', select, '选择角色所属势力', [faction]);
+      if (department) chosen = await click(h, rpg, '1', chosen, '选择一个部门', [department]);
+      await click(h, rpg, '1', chosen, '确认归属');
+      const p = rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1']; assert.equal(p.faction.id, faction); assert.equal(p.faction.department, department);
+      assert.match(bodyOf(U.characterView(p)), new RegExp(FA.FACTIONS[faction].name));
+      if (department) assert.match(bodyOf(U.characterView(p)), new RegExp(FA.DEPARTMENTS[department].name));
+      assert.deepEqual(p.attributes, before.attributes); assert.equal(p.balance, before.balance); assert.equal(p.hp, before.hp);
+    }
+    const restored = createStore(h.deps); await restored.load(C.DEFAULT_GUILD_ID);
+    assert.equal(restored.snapshot(C.DEFAULT_GUILD_ID).players['1'].faction.department, 'famine');
+  } finally { rpg.stop(); }
+});
+
+test('faction preview cancellation writes nothing, rejects another owner and stale recreated character', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const panel = h.interaction('1', '势力'); await rpg.handle(panel);
+    const selecting = await click(h, rpg, '1', panel, '选择 / 修改势力');
+    const chosen = await click(h, rpg, '1', selecting, '选择角色所属势力', ['explorer']);
+    const old = control(chosen.result, '确认归属');
+    const stranger = h.interaction('2', null, {}, old); await rpg.handle(stranger); assert.match(stranger.result.content, /失效/);
+    await click(h, rpg, '1', chosen, '取消'); assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].faction, null);
+    const stale = h.interaction('1', null, {}, old); await rpg.handle(stale); assert.match(stale.result.content, /失效/);
+    const s = rpg.store.snapshot(C.DEFAULT_GUILD_ID); assert.throws(() => FA.choose(s, '1', 'old-character', 'explorer'), /角色卡已变化/);
+    assert.throws(() => FA.choose(s, '1', s.players['1'].id, 'apocalypse', 'missing'), /无效/);
+  } finally { rpg.stop(); }
+});
+
+test('failed buyback announcement can publish the same saved offer without creating or charging another', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    const ref = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'notification-stock', 'GM', s => M.issue(s, '1', food(s).id)[0].id);
+    const opened = h.interaction('GM', 'gm', { sub: '收购', 成员: '1' }); await rpg.handle(opened);
+    const item = await click(h, rpg, 'GM', opened, '选择收购物品', [ref]);
+    const edit = await click(h, rpg, 'GM', item, '填写 / 修改报价');
+    const preview = await submit(h, rpg, 'GM', edit, { quantity: '1', price: '50' });
+    const send = h.ch.send; h.ch.send = async options => {
+      if (options.content?.includes('待确认的')) throw Object.assign(new Error('send denied'), { code: 50013 }); return send(options);
+    };
+    const saved = await click(h, rpg, 'GM', preview, '确认并向玩家报价'); assert.match(saved.result.content, /报价已保存/);
+    h.ch.send = send; await click(h, rpg, 'GM', saved, '核对后补发报价通知');
+    const s = rpg.store.snapshot(C.DEFAULT_GUILD_ID); assert.equal(Object.keys(s.offers).length, 1);
+    assert.equal(s.players['1'].balance, 0); assert.equal(s.players['1'].inventory[ref].quantity, 1);
+    assert.equal(h.sent.filter(m => m.content?.includes('待确认的GM收购报价')).length, 1);
+  } finally { rpg.stop(); }
+});
+
+test('claim during batch publication refreshes all original public messages to the saved claimed state', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    await rpg.store.transact(C.DEFAULT_GUILD_ID, 'pending-concurrent', '1', s => {
+      const p = s.players['1']; p.tickets.boxes['饭盒'] = 1; p.inventory.heavy = { id: 'heavy', quantity: 1, snapshot: { weight: 999999 } };
+      let first = true; const result = M.openLoot(s, '1', '饭盒', min => { if (first) { first = false; return 6; } return min; });
+      s.lootPublications.race = { id: 'race', userId: '1', channelId: 'channel', result, at: Date.now(), publication: { status: 'pending' } };
+    });
+    const send = h.ch.send; let changed = false;
+    h.ch.send = async options => {
+      if (options.embeds && !changed) {
+        changed = true;
+        await rpg.store.transact(C.DEFAULT_GUILD_ID, 'claim-concurrent', '1', s => {
+          delete s.players['1'].inventory.heavy; s.lootPublications.race.result = M.openLoot(s, '1', '饭盒', () => { throw new Error('reroll'); });
+        });
+      }
+      return send(options);
+    };
+    await rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'race');
+    h.ch.send = send;
+    const s = rpg.store.snapshot(C.DEFAULT_GUILD_ID), ids = s.lootPublications.race.publicationParts.map(p => p.messageId), before = h.sent.length;
+    await rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'race');
+    const saved = rpg.store.snapshot(C.DEFAULT_GUILD_ID); assert.equal(h.sent.length, before);
+    assert.deepEqual(saved.lootPublications.race.publicationParts.map(p => p.messageId), ids);
+    assert.ok(saved.lootPublications.race.publicationParts.every(p => p.pending === false));
+    ids.forEach(id => assert.match(JSON.stringify(h.messages.get(id).lastPayload.embeds.map(e => e.toJSON())), /已入包/));
+    assert.equal(saved.players['1'].tickets.boxes['饭盒'], 0); assert.equal(Object.keys(saved.players['1'].inventory).length, 6);
+  } finally { rpg.stop(); }
+});
+
+test('deleted or uncertain batch segments require explicit resend and do not reannounce completed segments', async () => {
+  const h = harness(), rpg = createRpg(h.deps); await setupUpgrade(h, rpg);
+  try {
+    await rpg.store.transact(C.DEFAULT_GUILD_ID, 'uncertain-batch', '1', s => {
+      const p = s.players['1']; p.attributes.strength = 100; p.attributes.constitution = 100; p.tickets.boxes['饭盒'] = 1;
+      let first = true; const result = M.openLoot(s, '1', '饭盒', min => { if (first) { first = false; return 6; } return min; });
+      s.lootPublications.uncertain = { id: 'uncertain', userId: '1', channelId: 'channel', result, at: Date.now() };
+    });
+    const send = h.ch.send; h.ch.send = async options => { if (options.embeds) throw new Error('timeout'); return send(options); };
+    await assert.rejects(rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'uncertain'));
+    assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).lootPublications.uncertain.publicationParts[0].status, 'uncertain');
+    h.ch.send = send;
+    const restored = createStore(h.deps); await restored.load(C.DEFAULT_GUILD_ID);
+    assert.equal(restored.snapshot(C.DEFAULT_GUILD_ID).lootPublications.uncertain.publicationParts[0].status, 'uncertain');
+    await assert.rejects(rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'uncertain'), /待核对/);
+    await rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'uncertain', true);
+    const r = rpg.store.snapshot(C.DEFAULT_GUILD_ID).lootPublications.uncertain;
+    const deleted = r.publicationParts[1].messageId; h.messages.delete(deleted);
+    await assert.rejects(rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'uncertain'), /删除/);
+    const before = h.sent.length; await rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'uncertain', true);
+    assert.equal(h.sent.length, before + 1); assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].tickets.boxes['饭盒'], 0);
   } finally { rpg.stop(); }
 });

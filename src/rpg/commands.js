@@ -22,7 +22,8 @@ function commands() {
     int(str(cmd('分配属性点', '为自己的角色分配自由属性点'), '属性', '选择属性', true,
       Object.entries(C.ATTRIBUTES).map(([value, name]) => ({ name, value }))), '点数', '增加的点数', false, 1, 100000),
     cmd('抽卡', '消耗一次抽卡次数；超重时保留待领取结果'),
-    str(cmd('开箱', '消耗对应箱型次数，领取一件现代物品'), '箱型', '要开启的箱子', true, C.BOXES),
+    str(cmd('开箱', '消耗一次对应箱型次数，整批领取1至6件随机物品'), '箱型', '要开启的箱子', true, C.BOXES),
+    cmd('势力', '查看世界背景、势力介绍并选择角色归属'),
     user(cmd('背包', '私密查看自己的资产；GM可查看他人'), false),
     item(cmd('使用', '使用自己的食物、药品或消耗品')),
     cmd('开团', 'GM创建跑团报名及定时提及，管理已有开团'),
@@ -34,7 +35,7 @@ function commands() {
     str(cmd('录入物品', 'GM分步录入物品、装备、卡牌或技能'), '类型', '模板种类', false, C.ITEM_KINDS),
     cmd('录入词条', 'GM录入结构化词条或展示文字'),
     cmd('录入异常', 'GM录入异常、各级效果与恶化规则'),
-    str(cmd('规则', '跑团规则、公式及示例'), '章节', '速查章节', false, ['总览', '建卡', '升级', '负重', '装备', '交易', '抽取', '食物药品', '鉴定', '开团', '战斗', '异常', '指令']),
+    str(cmd('规则', '跑团规则、公式及示例'), '章节', '速查章节', false, ['总览', '世界背景', '势力', '建卡', '升级', '负重', '装备', '交易', '抽取', '食物药品', '鉴定', '开团', '战斗', '异常', '指令']),
   ];
   const check = cmd('鉴定', 'GM发布或管理玩家鉴定');
   check.addSubcommand(s => {
@@ -52,7 +53,7 @@ function commands() {
   gm.addSubcommand(s => int(user(s.setName('属性点').setDescription('额外发放自由属性点')), '数量', '点数', true, 1, 100000));
   gm.addSubcommand(s => int(item(user(s.setName('发放').setDescription('发放模板物品或技能'))), '数量', '发放数量', false, 1, 100));
   gm.addSubcommand(s => int(str(user(s.setName('次数').setDescription('发放抽卡或指定箱型次数')), '类型', '抽卡或箱型', true, ['抽卡', ...C.BOXES]), '数量', '发放次数', true, 1, 100000));
-  gm.addSubcommand(s => int(int(item(user(s.setName('收购').setDescription('向玩家报价，玩家确认后移除物品并入账'))), '价格', '收购总价', true, 0, C.MAX_MONEY), '数量', '收购数量', false, 1, 100000));
+  gm.addSubcommand(s => int(int(item(user(s.setName('收购').setDescription('GM私有选物报价面板，或填写完整参数快捷收购')), '物品', false), '价格', '快捷收购总价，面板中可填写', false, 0, C.MAX_MONEY), '数量', '收购数量', false, 1, 100000));
   gm.addSubcommand(s => user(s.setName('销卡').setDescription('确认后清空角色与财产，保留审计')));
   gm.addSubcommand(s => s.setName('npc').setDescription('创建或继续NPC模板草稿'));
   gm.addSubcommand(s => str(s.setName('草稿').setDescription('恢复自己的持久录入草稿'), '编号', '草稿编号', false));

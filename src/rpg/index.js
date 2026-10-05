@@ -8,6 +8,8 @@ const A = require('./activities');
 const { createActivities } = require('./activities-ui');
 const { createBattleGM } = require('./battle-gm');
 const { createNavigation } = require('./navigation');
+const { createBuyback, availability } = require('./buyback');
+const { createFactions } = require('./factions');
 const { requireThat: ok, number: num } = C;
 const { D, E, row, button, select, payload, modal } = U;
 const commandNames = new Set(commands().map(c => c.name));
@@ -239,15 +241,18 @@ function createRpg(deps) {
     let entries = fromCatalog ? Object.values(s.catalog).filter(t => t.published) : Object.values(s.players[i.user.id]?.inventory || {});
     if (i.commandName === 'gm' && sub === '收购') {
       if (!U.gm(s, i.member)) { await i.respond([]); return; }
-      entries = Object.values(s.players[i.options.getUser('成员')?.id]?.inventory || {});
+      const target = i.options.get('成员')?.value;
+      entries = Object.values(s.players[target]?.inventory || {}).filter(t => !availability(s, target, t).reason);
     }
     if (i.commandName === '使用') entries = entries.filter(t => C.CONSUMABLES.includes(t.snapshot.kind));
     await i.respond(entries.filter(t => ((t.snapshot?.name || t.name) + t.id).toLowerCase().includes(q)).slice(0, 25)
-      .map(t => ({ name: ((t.snapshot?.name || t.name) + ' · ' + t.id).slice(0, 100), value: t.id })));
+      .map(t => ({ name: ((t.snapshot?.name || t.name).slice(0, 60) + ' · ' + t.id +
+        (i.commandName === 'gm' && sub === '收购' ? ' · 可售 ' + availability(s, i.options.get('成员').value, t).quantity : '')).slice(0, 100), value: t.id })));
   }
   async function slash(i, member) {
     const s = snapshot(i.guildId), uid = i.user.id, name = i.commandName;
     const o = i.options, target = () => o.getUser('成员')?.id || uid;
+    if (name === '势力') return factions.home(s, uid);
     if (name === '开团' || name === '鉴定') return activities.slash(i, member);
     if (name === '跑团配置面板') { needConfig(member); return configView(s); }
     if (name === '规则') return payload('规则 · ' + (o.getString('章节') || '总览'), chapters[o.getString('章节') || '总览']);
@@ -268,18 +273,21 @@ function createRpg(deps) {
     if (name === '抽卡' || name === '开箱') {
       const record = await tx(i, st => {
         const result = M.openLoot(st, uid, name === '抽卡' ? 'card' : o.getString('箱型'));
-        const previous = Object.values(st.lootPublications).find(r => r.userId === uid && r.result.item.id === result.item.id && r.channelId === i.channelId);
+        const previous = Object.values(st.lootPublications).find(r => r.userId === uid &&
+          (r.result.batchId === result.batchId || r.result.item.id === result.item.id) && r.channelId === i.channelId);
         const r = previous || { id: C.id('l'), userId: uid, channelId: i.channelId, at: Date.now(), publication: { status: 'pending' } };
+        if (previous?.messageId && !previous.publicationParts) previous.publicationParts = [{ id: C.id('n'), status: 'sent',
+          messageId: previous.messageId, pending: previous.result.pending }];
         r.result = C.clone(result); st.lootPublications[r.id] = r; return r;
       }, '抽取并保存公示');
       try { await activities.publish(i.guildId, 'loot', record.id); }
       catch (e) {
         logFailure('抽取公示未完成。', e);
-        return payload('结果已保存 · 公示待补发', record.result.item.snapshot.name + '\n' + e.message, [
+        return payload('结果已保存 · 公示待补发', record.result.items.length + '件物品 · 批次 ' + record.result.batchId + '\n' + e.message, [
           row(button('activity:loot:repost:' + record.id, '核对后补发已存结果'), button('activity:loot:menu:0', '查看抽取记录'))]);
       }
       const saved = snapshot(i.guildId).lootPublications[record.id];
-      return payload('抽取结果已公示', record.result.item.snapshot.name + (record.result.pending ? ' · 待领取，未扣次数' : ' · 已入包') +
+      return payload('抽取结果已公示', record.result.items.length + '件物品 · 批次 ' + record.result.batchId + (record.result.pending ? ' · 整批待领取，未扣次数' : ' · 已入包') +
         '\nhttps://discord.com/channels/' + i.guildId + '/' + saved.channelId + '/' + saved.messageId,
         [row(button('activity:loot:menu:0', '查看公示记录'), button('bag:' + uid + ':' + uid + ':0', '查看个人背包'))]);
     }
@@ -351,7 +359,7 @@ function createRpg(deps) {
     if (sub === '模板库') return catalogView(s, o.getString('类型') || '物品', 0);
     if (sub === '抽取公示') return activities.slash(i, member);
     if (sub === '草稿') {
-      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete'].includes(f.kind));
+      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback'].includes(f.kind));
       if (ref) return formView(s, ref, uid);
       return pickView('选择持久草稿', forms.map(f => ({ value: f.id, label: f.data?.name || f.data?.title || f.kind, description: f.id })), 'drafts', 0);
     }
@@ -370,6 +378,8 @@ function createRpg(deps) {
         row(button('deleteconfirm:' + f.id, '确认销卡', D.ButtonStyle.Danger))]);
     }
     if (sub === '收购') {
+      if (!o.getString('物品')) return buyback.list(s, target);
+      ok(o.getInteger('价格') !== null, '快捷收购需要填写价格；不指定物品可打开收购面板。');
       const offer = await tx(i, st => { needGM(st, member); return M.createOffer(st, uid, target, 'buyback', o.getString('物品'), o.getInteger('数量') || 1, o.getInteger('价格')); });
       await announceOffer(i, offer); return U.offerView(snapshot(i.guildId), offer, uid);
     }
@@ -460,6 +470,8 @@ function createRpg(deps) {
   }
   const activities = createActivities({ snapshot, tx, store, textChannel, client, needGM, logFailure });
   const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
+  const buyback = createBuyback({ snapshot, tx, needGM, announceOffer });
+  const factions = createFactions({ snapshot, tx });
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
     configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI });
   async function handle(i) {
@@ -480,7 +492,7 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await activities.openModal(i, s) || await gmUI.openModal(i, s) || await openModal(i, s))) return true;
+      if (i.customId && (await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       const privateSource = !!i.message?.flags?.has(E);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
@@ -488,6 +500,8 @@ function createRpg(deps) {
       const member = await i.guild.members.fetch({ user: i.user.id, force: true });
       const result = i.isChatInputCommand?.() ? await slash(i, member) :
         i.customId.startsWith('rpg:activity:') ? await activities.component(i, member) :
+        i.customId.startsWith('rpg:buyback:') ? await buyback.component(i, member) :
+        i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
         i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) : await component(i, member);
       const response = result || payload('已完成', '操作已保存。');
       await i.editReply(publicResult ? response : navigation.wrap(i, response));

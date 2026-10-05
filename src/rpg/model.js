@@ -13,7 +13,7 @@ function newCharacter(name, attributes, adaptation = 1) {
     hp: attributes.constitution * 3, balance: 0, inventory: {}, conditions: [], temporaryEffects: [], ap: 0,
     equipped: { weapon: null, armor: [], accessories: [], cards: [] },
     slots: { head: 1, body: 3, ring: 1, card: 5 }, tickets: { card: 0, boxes: {} }, pendingLoot: {},
-    createdAt: Date.now() };
+    faction: null, createdAt: Date.now() };
 }
 function rollCharacter(state, userId, name, reroll = false, rng = randomInt) {
   ok(!state.players[userId], '已有角色卡，重建需要GM销卡。');
@@ -329,26 +329,34 @@ function openLoot(state, userId, box = 'card', rng = randomInt) {
   ok(box === 'card' || C.BOXES.includes(box), '箱型无效。');
   const count = box === 'card' ? p.tickets.card : (p.tickets.boxes[box] || 0);
   ok(count > 0, '没有对应次数，请找GM发放。');
-  let item = p.pendingLoot[box];
-  if (!item) {
-    const r = C.rarity(rng);
-    let pool = Object.values(state.catalog).filter(t => t.published && t.rarity === r.id &&
-      (box === 'card' ? t.kind === '卡牌' : (t.boxes || []).includes(box)));
-    if (!pool.length && box === 'card') pool = [{ id: 'blank_' + r.id, version: 1, kind: '卡牌',
-      name: r.name + '色空白卡牌', rarity: r.id, weight: 0, value: 0, effects: [], traitIds: [],
-      uniqueText: '等待GM定义能力。', description: '同色占位卡牌。' }];
-    ok(pool.length, '该箱型的' + r.name + '色掉落池未配置，本次未扣次数。');
-    const template = pool[rng(0, pool.length)];
-    item = makeItem(template);
-    if (box !== 'card') item.snapshot.value = rng(r.min, r.max + 1);
-    p.pendingLoot[box] = item;
+  let batch = p.pendingLoot[box];
+  if (batch && !batch.items) batch = { id: batch.id, items: [batch] };
+  if (!batch) {
+    batch = { id: id('z'), items: [] };
+    const size = box === 'card' ? 1 : rng(1, 7);
+    for (let n = 0; n < size; n++) {
+      const r = C.rarity(rng);
+      let pool = Object.values(state.catalog).filter(t => t.published && t.rarity === r.id &&
+        (box === 'card' ? t.kind === '卡牌' : (t.boxes || []).includes(box)));
+      if (!pool.length && box === 'card') pool = [{ id: 'blank_' + r.id, version: 1, kind: '卡牌',
+        name: r.name + '色空白卡牌', rarity: r.id, weight: 0, value: 0, effects: [], traitIds: [],
+        uniqueText: '等待GM定义能力。', description: '同色占位卡牌。' }];
+      ok(pool.length, '该箱型的' + r.name + '色掉落池未配置，本次未扣次数。');
+      const template = pool[rng(0, pool.length)];
+      const item = makeItem(template);
+      if (box !== 'card') item.snapshot.value = rng(r.min, r.max + 1);
+      batch.items.push(item);
+    }
   }
-  if (weight(p) + itemWeight(item) > stats(p).limit) {
-    return { item, pending: true };
+  p.pendingLoot[box] = batch;
+  const result = { batchId: batch.id, box, items: clone(batch.items), item: clone(batch.items[0]), pending: true };
+  if (weight(p) + batch.items.reduce((sum, item) => sum + itemWeight(item), 0) > stats(p).limit) {
+    return result;
   }
-  receive(p, item); delete p.pendingLoot[box];
+  for (const item of batch.items) receive(p, item);
+  delete p.pendingLoot[box];
   if (box === 'card') p.tickets.card--; else p.tickets.boxes[box]--;
-  return { item, pending: false };
+  result.pending = false; return result;
 }
 function drop(state, userId, itemId, quantity) {
   const p = player(state, userId);

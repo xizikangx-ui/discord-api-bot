@@ -4,8 +4,8 @@ const C = require('./constants'), M = require('./model');
 const { requireThat: ok, clone, number: num } = C;
 
 function migrate(state) {
-  if (state.upgrade === 2) return null;
-  const report = { descriptions: 0, players: 0 };
+  if (state.upgrade >= 3) return null;
+  const report = { descriptions: 0, players: 0, pendingBatches: 0 };
   state.checks ||= {}; state.sessions ||= {}; state.lootPublications ||= {};
   const seeds = C.seedCatalog();
   function replace(item, ref) {
@@ -20,11 +20,15 @@ function migrate(state) {
   }
   function character(p) {
     if (!p.temporaryEffects) { p.temporaryEffects = []; report.players++; }
-    for (const item of [...Object.values(p.inventory), ...Object.values(p.pendingLoot || {})]) replace(item.snapshot, item.templateId);
+    p.faction ??= null;
+    for (const [box, item] of Object.entries(p.pendingLoot || {})) if (!item.items) {
+      p.pendingLoot[box] = { id: item.id, items: [item] }; report.pendingBatches++;
+    }
+    for (const item of [...Object.values(p.inventory), ...Object.values(p.pendingLoot || {}).flatMap(b => b.items)]) replace(item.snapshot, item.templateId);
   }
   for (const p of Object.values(state.players)) character(p);
   for (const b of Object.values(state.battles)) for (const a of b.actors) if (!a.userId && !a.finalCharacter) character(a.character);
-  state.upgrade = 2;
+  state.upgrade = 3;
   return report;
 }
 function parseBeijing(value, now = Date.now()) {

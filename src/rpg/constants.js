@@ -136,7 +136,7 @@ function seedCatalog() {
   return catalog;
 }
 function newState(guildId) {
-  return { kind: 'tabletop-rpg', schema: 1, upgrade: 2, guildId, revision: 0,
+  return { kind: 'tabletop-rpg', schema: 1, upgrade: 3, guildId, revision: 0,
     config: { gmRoleIds: [], playerRoleIds: [], announcementChannelId: null },
     players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(), checks: {}, sessions: {}, lootPublications: {},
     traits: { neutral: { id: 'neutral', version: 1, published: true, name: '无附加效果', description: '只展示，不修改数值。', effects: [] } }, conditionTemplates: {},

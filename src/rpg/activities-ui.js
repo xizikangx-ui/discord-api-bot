@@ -36,13 +36,39 @@ function sessionView(s) {
   result.embeds[0].setFooter({ text: '开团 ' + s.id + ' · 输入时间使用北京时间' }); return result;
 }
 function lootView(record) {
+  if (record.result.items?.length > 1) {
+    const items = record.result.items;
+    const view = payload(record.result.pending ? '开箱结果 · 整批待领取' : '开箱结果 · 整批已入包',
+      '<@' + record.userId + '> 开启 **' + record.result.box + '**，获得 **' + items.length + '件物品**\n\n' +
+      items.map((item, n) => (n + 1) + '. **' + item.snapshot.name + '** · ' + item.id).join('\n') + '\n\n' +
+      (record.result.pending ? '⚠️ 总重量超限：整批未入包、未扣次数；再次开启仍是这一批物品。' : '✅ 整批已入包，只消耗一次开箱次数。'));
+    view.embeds[0].addFields(field('总重量', C.kg(items.reduce((sum, item) => sum + require('./model').itemWeight(item), 0)), true),
+      field('物品总价值', items.reduce((sum, item) => sum + item.snapshot.value * item.quantity, 0), true));
+    view.embeds[0].setFooter({ text: '批次 ' + record.result.batchId + ' · 抽取记录 ' + record.id }); return view;
+  }
   const t = record.result.item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity);
   const view = payload(record.result.pending ? '抽取结果 · 待领取' : '抽取结果 · 已入包',
     '<@' + record.userId + '> 抽到 **' + t.name + '**\n\n' + (t.description || '暂无描述') +
     '\n\n' + (record.result.pending ? '⚠️ 超重：未入包、未扣次数，再次开启仍是此物品。' : '✅ 已保存到背包，本次消耗一次抽取次数。'), [], r?.color);
   view.embeds[0].addFields(field('稀有度 / 分类', (r?.name || '未知') + ' / ' + t.kind, true),
     field('重量', C.kg(require('./model').itemWeight(record.result.item)), true), field('价值', t.value, true));
-  view.embeds[0].setFooter({ text: record.result.item.id + ' · 抽取记录 ' + record.id }); return view;
+  view.embeds[0].setFooter({ text: record.result.item.id + (record.result.batchId ? ' · 批次 ' + record.result.batchId : '') + ' · 抽取记录 ' + record.id }); return view;
+}
+function lootMessages(record) {
+  if (!(record.result.items?.length > 1)) return [lootView(record)];
+  const messages = [lootView(record)]; let embeds = [], size = 0;
+  for (const [n, item] of record.result.items.entries()) {
+    const t = item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity);
+    const e = U.embed('开箱物品 ' + (n + 1) + '/' + record.result.items.length + ' · ' + t.name, t.description || '暂无描述', r?.color)
+      .addFields(field('稀有度 / 分类', r.name + ' / ' + t.kind, true), field('重量', C.kg(require('./model').itemWeight(item)), true),
+        field('价值', t.value, true), field('开箱者 / 状态', '<@' + record.userId + '> · ' + (record.result.pending ? '整批待领取' : '已入包')))
+      .setFooter({ text: item.id + ' · 批次 ' + record.result.batchId });
+    const j = e.toJSON(), length = j.title.length + j.description.length + j.footer.text.length + j.fields.reduce((s, f) => s + f.name.length + f.value.length, 0);
+    if (embeds.length && size + length > 5500) { messages.push({ embeds, components: [], allowedMentions: { parse: [] } }); embeds = []; size = 0; }
+    embeds.push(e); size += length;
+  }
+  if (embeds.length) messages.push({ embeds, components: [], allowedMentions: { parse: [] } });
+  return messages;
 }
 function createActivities(context) {
   const { snapshot, tx, store, textChannel, client, needGM, logFailure } = context;
@@ -62,6 +88,7 @@ function createActivities(context) {
   async function publish(guild, type, ref, force = false) {
     return locked(guild + ':' + type + ':' + ref, async () => {
       let s = snapshot(guild), r = record(s, type, ref); ok(r, '记录不存在。');
+      if (type === 'loot' && r.result.items) return publishLoot(guild, ref, force);
       if (type === 'attempt') {
         const c = Object.values(s.checks).find(c => Object.values(c.attempts).flat().some(a => a.id === ref));
         r.channelId = c.channelId;
@@ -93,6 +120,51 @@ function createActivities(context) {
         throw new Error('结果已保存，但公示发送失败或待核对。请通过管理面板核对后补发；不会重新抽取或扣次数。');
       }
     });
+  }
+  async function publishLoot(guild, ref, force) {
+    let r = snapshot(guild).lootPublications[ref];
+    const ch = await textChannel(guild, r.channelId), pages = lootMessages(r), publishedPending = r.result.pending;
+    if (!r.publicationParts) await store.transact(guild, 'loot-parts:' + ref, client.user.id, st => {
+      const live = st.lootPublications[ref]; live.publicationParts = pages.map((_, n) => ({ id: C.id('n'), status: n === 0 && live.messageId ? 'sent' : 'pending',
+        ...(n === 0 && live.messageId ? { messageId: live.messageId, pending: live.result.pending } : {}) }));
+    }, '保存开箱公示分段');
+    for (let n = 0; n < pages.length; n++) {
+      r = snapshot(guild).lootPublications[ref]; const part = r.publicationParts[n];
+      if (part.messageId) {
+        const m = await ch.messages.fetch(part.messageId).catch(e => { if (e.code === 10008) return null; throw e; });
+        if (m) {
+          if (part.pending !== publishedPending) {
+            await m.edit(pages[n]);
+            await store.transact(guild, 'loot-refresh:' + ref + ':' + n + ':' + publishedPending, client.user.id, st => {
+              st.lootPublications[ref].publicationParts[n].pending = publishedPending;
+            }, '更新整批领取公示');
+          }
+          continue;
+        }
+        ok(force, '部分公示消息已删除，请核对后补发。');
+      }
+      ok(force || !['sending', 'uncertain'].includes(part.status), '部分公示发送结果待核对，请检查频道后补发。');
+      await store.transact(guild, 'loot-send:' + ref + ':' + n + ':' + C.id('t'), client.user.id, st => {
+        st.lootPublications[ref].publicationParts[n].status = 'sending'; st.lootPublications[ref].publication = { status: 'sending' };
+      }, '发送开箱公示分段');
+      try {
+        const message = await ch.send({ ...pages[n], nonce: part.id, enforceNonce: true });
+        await store.transact(guild, 'loot-sent:' + part.id + ':' + message.id, client.user.id, st => {
+          const live = st.lootPublications[ref]; live.publicationParts[n] = { ...part, status: 'sent', messageId: message.id,
+            pending: publishedPending, sentAt: Date.now() }; if (n === 0) live.messageId = message.id;
+        }, '开箱公示分段送达');
+      } catch (e) {
+        if (!store.frozen(guild)) await store.transact(guild, 'loot-failed:' + C.id('t'), client.user.id, st => {
+          const live = st.lootPublications[ref], status = typeof e.code === 'number' && e.code >= 10000 ? 'failed' : 'uncertain';
+          live.publicationParts[n].status = status; live.publication = { status, error: String(e.message).slice(0, 300) };
+        }, '开箱公示分段待核对').catch(() => {});
+        throw new Error('整批结果已保存，部分公示发送失败或待核对；补发只处理未送达部分，不重新抽取或扣次数。');
+      }
+    }
+    await store.transact(guild, 'loot-complete:' + ref + ':' + r.result.pending + ':' + C.id('t'), client.user.id, st => {
+      st.lootPublications[ref].publication = { status: 'sent', at: Date.now() };
+    }, '开箱公示完整送达');
+    return snapshot(guild).lootPublications[ref].messageId;
   }
   function selection(title, entries, base, page = 0, extra = []) {
     page = Math.max(0, Math.min(Number(page) || 0, Math.max(0, Math.ceil(entries.length / 20) - 1)));
@@ -137,7 +209,7 @@ function createActivities(context) {
   }
   function lootMenu(state, uid, gm, page = 0) {
     const entries = Object.values(state.lootPublications).filter(r => gm || r.userId === uid).sort((a, b) => b.at - a.at);
-    return selection('抽取公示记录', entries.map(r => ({ value: r.id, label: r.result.item.snapshot.name + ' · ' +
+    return selection('抽取公示记录', entries.map(r => ({ value: r.id, label: (r.result.items?.length > 1 ? r.result.items.length + '件 · ' + r.result.box : r.result.item.snapshot.name) + ' · ' +
       (r.publication?.status === 'sent' ? '已公示' : '待补发') })), 'loot:menu', page);
   }
   async function openModal(i, s) {
@@ -382,4 +454,4 @@ function createActivities(context) {
   }
   return { openModal, slash, component, publish, tick, recover, remember, remind, lootMenu, sessionDraft };
 }
-module.exports = { createActivities, checkView, attemptView, sessionView, lootView };
+module.exports = { createActivities, checkView, attemptView, sessionView, lootView, lootMessages };

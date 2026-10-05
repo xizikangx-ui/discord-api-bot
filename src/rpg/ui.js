@@ -46,7 +46,7 @@ function characterView(p, privateView = false) {
   const body = '**' + p.name + '** · Lv.' + p.level + ' · ' + C.title(p.level) + '\n**HP ' + Math.min(p.hp, s.maxHP) + '/' + s.maxHP + '** ' + bar(p.hp, s.maxHP) +
     '\n' + Object.entries(C.ATTRIBUTES).map(([k, label]) => label + ' ' + p.attributes[k] +
       (s.attributes[k] !== p.attributes[k] ? ' → ' + s.attributes[k] : '')).join('　') +
-    '\n适应性 ' + p.adaptation + '　自由点 ' + p.points + '　经验 ' + (p.xpCenti / 100).toFixed(2) +
+    '\n势力 ' + require('./factions').label(p.faction) + '\n适应性 ' + p.adaptation + '　自由点 ' + p.points + '　经验 ' + (p.xpCenti / 100).toFixed(2) +
     '/' + p.level * 1000 + '\n举起 ' + s.attributes.strength * 10 + 'kg　移动预算 ' + s.move +
     '米\n防御 ' + Object.entries(s.defenses).map(([k, n]) => C.DAMAGE_TYPES[k] + ' ' + n).join('／') +
     '\n学识判定加成 +' + s.attributes.knowledge + '　外貌评级 ' + s.attributes.appearance +
