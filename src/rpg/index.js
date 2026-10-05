@@ -4,6 +4,10 @@ const { createStore } = require('./store');
 const { commands } = require('./commands');
 const { chapters } = require('./rules');
 const { createHandlers } = require('./handlers');
+const A = require('./activities');
+const { createActivities } = require('./activities-ui');
+const { createBattleGM } = require('./battle-gm');
+const { createNavigation } = require('./navigation');
 const { requireThat: ok, number: num } = C;
 const { D, E, row, button, select, payload, modal } = U;
 const commandNames = new Set(commands().map(c => c.name));
@@ -13,10 +17,11 @@ const dangerBits = dangerous.filter(k => D.PermissionFlagsBits[k]).reduce((s, k)
 function createRpg(deps) {
   const { client, guildIds, logFailure } = deps;
   const store = createStore(deps);
-  const ready = new Set(), publishing = new Map(), roleLocks = new Set();
+  const ready = new Set(), publishing = new Map(), roleLocks = new Set(), ticking = new Set();
   let timer;
   const enabled = guild => guildIds().includes(guild);
   function snapshot(guild) { ok(ready.has(guild), '跑团存档正在读取或读取失败，暂未启用。'); return store.snapshot(guild); }
+  const navigation = createNavigation(snapshot);
   const needGM = (s, member) => ok(U.gm(s, member), '需要本服务器配置的GM身份组。');
   const needConfig = member => ok(member.permissions.has(D.PermissionFlagsBits.ManageGuild), '配置面板需要“管理服务器”权限。');
   const owner = (i, uid) => ok(uid === i.user.id, '该个人操作面板不属于你，请重新打开自己的面板。');
@@ -47,6 +52,13 @@ function createRpg(deps) {
         else await store.transact(guild, 'missing-board:' + b.messageId, client.user.id, st => { st.battles[b.id].messageId = null; }, '战场消息失效');
       }
       s = snapshot(guild); b = battle(s, battleId);
+      if (b.status === 'ended') {
+        await navigation.clearBattle(guild, battleId);
+        for (const id of b.auxiliaryMessages || []) {
+          try { const message = await ch.messages.fetch(id); await message.edit({ components: [] }); }
+          catch (e) { if (e.code !== 10008) logFailure('战斗防守按钮清理失败。', e); }
+        }
+      }
       if (!b.messageId) {
         const message = await ch.send(U.battleView(s, b));
         await store.transact(guild, 'board:' + message.id, client.user.id, st => { st.battles[b.id].messageId = message.id; }, '发布战场');
@@ -66,26 +78,38 @@ function createRpg(deps) {
     try { await job; } finally { if (publishing.get(key) === job) publishing.delete(key); }
   }
   async function tickGuild(guild) {
-    if (!ready.has(guild) || store.frozen(guild)) return;
+    if (!ready.has(guild) || store.frozen(guild) || ticking.has(guild)) return;
+    ticking.add(guild);
+    try {
     const s = snapshot(guild), now = Date.now();
     const expiring = Object.values(s.offers).some(o => ['editing', 'ready'].includes(o.status) && o.expiresAt <= now);
     const due = Object.values(s.battles).filter(b => b.pending && b.pending.expiresAt <= now);
-    if (expiring || due.length) {
-      await store.transact(guild, 'timer:' + Math.floor(now / 2000), client.user.id, st => {
+    const effectsDue = Object.values(s.players).concat(Object.values(s.battles).filter(b => b.status !== 'ended')
+      .flatMap(b => b.actors.filter(a => !a.userId).map(a => B.actorCharacter(s, a))))
+      .some(p => p.temporaryEffects?.some(e => e.duration.kind === 'minutes' && e.expiresAt <= now));
+    if (expiring || due.length || effectsDue) {
+      const expiredCharacters = await store.transact(guild, 'timer:' + C.id('t'), client.user.id, st => {
         M.expireOffers(st, now);
+        const expired = A.expireAll(st, now);
         for (const b of Object.values(st.battles)) if (b.pending && b.pending.expiresAt <= now) B.defend(st, b, b.pending.id, 'defend');
-        return { expiredOffers: expiring, defense: due.map(b => b.id) };
+        for (const b of Object.values(st.battles)) if (b.status === 'active') B.nextOpportunity(st, b);
+        return expired;
       }, '到期交易及默认防御');
-      for (const b of due) await publishBattle(guild, b.id);
+      const changed = Object.values(snapshot(guild).battles).filter(b => b.status !== 'ended' &&
+        (due.some(x => x.id === b.id) || b.actors.some(a => expiredCharacters.includes(B.actorCharacter(snapshot(guild), a).id))));
+      for (const b of changed) await publishBattle(guild, b.id);
     }
+    await activities.tick(guild, now);
+    } finally { ticking.delete(guild); }
   }
   async function start() {
     for (const guild of guildIds()) {
       try {
         await store.load(guild); ready.add(guild);
         console.log('跑团加密存档读取正常：' + guild);
+        await activities.recover(guild).catch(e => logFailure('跑团活动恢复失败。', e));
         await tickGuild(guild);
-        for (const b of Object.values(snapshot(guild).battles).filter(b => b.status !== 'ended')) {
+        for (const b of Object.values(snapshot(guild).battles).filter(b => b.status !== 'ended' || b.endedAt >= Date.now() - 86400000)) {
           await publishBattle(guild, b.id).catch(e => logFailure('跑团战场恢复失败。', e));
         }
       } catch (e) { logFailure('跑团初始化失败：' + guild, e); }
@@ -168,7 +192,10 @@ function createRpg(deps) {
       return '身份组已更新。';
     } finally { roleLocks.delete(key); }
   }
-  function formView(s, formId, uid) { return F.view(s, F.owned(s, formId, uid)); }
+  function formView(s, formId, uid) {
+    const f = F.owned(s, formId, uid);
+    return f.kind === 'session' ? activities.sessionDraft(f) : F.view(s, f);
+  }
   function offerAccess(s, offerId, member, uid) {
     const o = s.offers[offerId]; ok(o, '交易不存在。');
     ok([o.creatorId, o.targetId].includes(uid) || U.gm(s, member), '只能查看本人参与的交易。'); return o;
@@ -180,10 +207,29 @@ function createRpg(deps) {
   }
   function pickView(title, options, base, page = 0) {
     const pages = Math.max(1, Math.ceil(options.length / 25)); page = Math.max(0, Math.min(page, pages - 1));
-    return payload(title, '第' + (page + 1) + '/' + pages + '页' + (options.length ? '' : '\n暂无可用选项。'), [
+    const result = payload(title, '第' + (page + 1) + '/' + pages + '页' + (options.length ? '' : '\n暂无可用选项。'), [
       ...(options.length ? [row(select(base + ':select', title, options.slice(page * 25, page * 25 + 25)))] : []),
       row(button(base + ':' + (page - 1), '上一页', undefined, page === 0), button(base + ':' + (page + 1), '下一页', undefined, page === pages - 1))
     ]);
+    const match = base.match(/^[^:]+:(b[0-9a-f]{12}):(a[0-9a-f]{12}):([^:]+):([^:]+)/);
+    if (match) result.components.push(row(button('view:' + match.slice(1).join(':') + ':overview', '返回个人概览'),
+      button('view:' + match.slice(1).join(':') + ':quick', '取消选择')));
+    return result;
+  }
+  async function use(i, ref) {
+    const result = await tx(i, st => {
+      const p = M.player(st, i.user.id), b = M.battleFor(st, i.user.id);
+      ok(M.available(st, i.user.id, ref) > 0, '物品不存在或已被交易预留。');
+      ok(b?.status !== 'paused', '战斗暂停时不能消耗快速行动，请GM恢复战斗后使用。');
+      if (b?.status === 'active') {
+        const a = b.actors.find(a => a.userId === i.user.id);
+        ok(b.current?.actorId === a?.id, '只能在自己的当前行动使用物品。');
+        const result = B.useItem(st, b, b.current.id, ref); B.nextOpportunity(st, b); return result;
+      }
+      return M.consume(p, ref);
+    }, '使用食物药品');
+    const b = M.battleFor(snapshot(i.guildId), i.user.id); if (b) await publishBattle(i.guildId, b.id);
+    return result;
   }
   async function autocomplete(i) {
     if (!enabled(i.guildId) || !ready.has(i.guildId)) { await i.respond([]); return; }
@@ -195,12 +241,14 @@ function createRpg(deps) {
       if (!U.gm(s, i.member)) { await i.respond([]); return; }
       entries = Object.values(s.players[i.options.getUser('成员')?.id]?.inventory || {});
     }
+    if (i.commandName === '使用') entries = entries.filter(t => C.CONSUMABLES.includes(t.snapshot.kind));
     await i.respond(entries.filter(t => ((t.snapshot?.name || t.name) + t.id).toLowerCase().includes(q)).slice(0, 25)
       .map(t => ({ name: ((t.snapshot?.name || t.name) + ' · ' + t.id).slice(0, 100), value: t.id })));
   }
   async function slash(i, member) {
     const s = snapshot(i.guildId), uid = i.user.id, name = i.commandName;
     const o = i.options, target = () => o.getUser('成员')?.id || uid;
+    if (name === '开团' || name === '鉴定') return activities.slash(i, member);
     if (name === '跑团配置面板') { needConfig(member); return configView(s); }
     if (name === '规则') return payload('规则 · ' + (o.getString('章节') || '总览'), chapters[o.getString('章节') || '总览']);
     if (name === 'rd') {
@@ -218,11 +266,28 @@ function createRpg(deps) {
       return U.characterView(M.player(snapshot(i.guildId), uid));
     }
     if (name === '抽卡' || name === '开箱') {
-      const result = await tx(i, st => M.openLoot(st, uid, name === '抽卡' ? 'card' : o.getString('箱型')));
-      const t = result.item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity);
-      return payload(result.pending ? '结果已保存 · 等待腾出负重领取' : '抽取结果', r.name + '色 **' + t.name + '**\n' + t.description +
-        '\n重量 ' + C.kg(M.itemWeight(result.item)) + '　价值 ' + t.value + '\n编号 ' + result.item.id +
-        (result.pending ? '\n未入包、未扣次数；再次开启会返回此结果。' : '\n已入包并扣除一次次数。'), [], r.color);
+      const record = await tx(i, st => {
+        const result = M.openLoot(st, uid, name === '抽卡' ? 'card' : o.getString('箱型'));
+        const previous = Object.values(st.lootPublications).find(r => r.userId === uid && r.result.item.id === result.item.id && r.channelId === i.channelId);
+        const r = previous || { id: C.id('l'), userId: uid, channelId: i.channelId, at: Date.now(), publication: { status: 'pending' } };
+        r.result = C.clone(result); st.lootPublications[r.id] = r; return r;
+      }, '抽取并保存公示');
+      try { await activities.publish(i.guildId, 'loot', record.id); }
+      catch (e) {
+        logFailure('抽取公示未完成。', e);
+        return payload('结果已保存 · 公示待补发', record.result.item.snapshot.name + '\n' + e.message, [
+          row(button('activity:loot:repost:' + record.id, '核对后补发已存结果'), button('activity:loot:menu:0', '查看抽取记录'))]);
+      }
+      const saved = snapshot(i.guildId).lootPublications[record.id];
+      return payload('抽取结果已公示', record.result.item.snapshot.name + (record.result.pending ? ' · 待领取，未扣次数' : ' · 已入包') +
+        '\nhttps://discord.com/channels/' + i.guildId + '/' + saved.channelId + '/' + saved.messageId,
+        [row(button('activity:loot:menu:0', '查看公示记录'), button('bag:' + uid + ':' + uid + ':0', '查看个人背包'))]);
+    }
+    if (name === '使用') {
+      const result = await use(i, o.getString('物品'));
+      return payload('已使用 · ' + result.name, '恢复 ' + result.healed + ' HP · 当前 ' + result.hp +
+        '\n解除异常：' + (result.cleared.join('、') || '无') + '\n持续效果：' + U.effectsText(result.effects),
+        [row(button('bag:' + uid + ':' + uid + ':0', '返回背包'))], 0x2ecc71);
     }
     if (name === '背包') {
       if (target() !== uid) needGM(s, member);
@@ -238,19 +303,13 @@ function createRpg(deps) {
     }
     if (name === '装备') {
       const operation = o.getString('操作'), ref = o.getString('物品');
+      if (operation === '使用道具') {
+        const result = await use(i, ref);
+        return payload('已使用 · ' + result.name, '恢复 ' + result.healed + ' HP，当前HP ' + result.hp +
+          '\n持续效果：' + U.effectsText(result.effects), [row(button('bag:' + uid + ':' + uid + ':0', '返回背包'))]);
+      }
       const result = await tx(i, st => {
         if (['装配', '拆下'].includes(operation)) { M.attach(st, uid, ref, o.getString('配件'), operation === '拆下'); return '配件已调整。'; }
-        if (operation === '使用道具') {
-          const p = M.player(st, uid), b = M.battleFor(st, uid);
-          ok(M.available(st, uid, ref) > 0, '道具不存在或已被交易预留。');
-          let result;
-          if (b?.status === 'active') {
-            const a = b.actors.find(a => a.userId === uid);
-            ok(b.current?.actorId === a.id, '只能在自己的当前行动使用道具。');
-            result = B.useItem(st, b, b.current.id, ref); B.nextOpportunity(st, b);
-          } else result = M.consume(p, ref);
-          return result.name + '已使用，恢复' + result.healed + 'HP，当前HP ' + result.hp;
-        }
         if (operation.startsWith('使用')) {
           const slot = { '使用世界树之心-头部': 'head', '使用世界树之心-身体': 'body', '使用世界树之心-戒指': 'ring' }[operation];
           M.useSpecial(st, uid, ref, slot); return '槽位已扩展。';
@@ -290,8 +349,9 @@ function createRpg(deps) {
       return payload('加密存档已重新读取', '当前版本 ' + snapshot(i.guildId).revision + '。请核对背包、交易及战斗记录后继续。');
     }
     if (sub === '模板库') return catalogView(s, o.getString('类型') || '物品', 0);
+    if (sub === '抽取公示') return activities.slash(i, member);
     if (sub === '草稿') {
-      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !['drop', 'delete'].includes(f.kind));
+      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete'].includes(f.kind));
       if (ref) return formView(s, ref, uid);
       return pickView('选择持久草稿', forms.map(f => ({ value: f.id, label: f.data?.name || f.data?.title || f.kind, description: f.id })), 'drafts', 0);
     }
@@ -344,6 +404,7 @@ function createRpg(deps) {
     const s = snapshot(i.guildId), o = i.options, sub = o.getSubcommand();
     if (sub === '面板') {
       const b = channelBattle(s, i.channelId);
+      if (U.gm(s, member) && !o.getString('角色')) return gmUI.view(s, b);
       const a = o.getString('角色') ? canActor(s, b, o.getString('角色'), member, i.user.id) :
         b.actors.find(a => a.userId === i.user.id) || (U.gm(s, member) ? b.actors.find(a => a.id === b.current?.actorId) : null);
       return a ? U.personalView(s, b, a, i.user.id) : U.battleView(s, b);
@@ -395,14 +456,17 @@ function createRpg(deps) {
       await ch.send({ content: '战斗招募：' + b.name + '\nhttps://discord.com/channels/' + i.guildId + '/' + b.channelId + '/' + b.messageId,
         allowedMentions: { parse: [] } });
     }
-    return U.battleView(snapshot(i.guildId), battle(snapshot(i.guildId), ref));
+    return gmUI.view(snapshot(i.guildId), battle(snapshot(i.guildId), ref));
   }
+  const activities = createActivities({ snapshot, tx, store, textChannel, client, needGM, logFailure });
+  const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
-    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel });
+    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI });
   async function handle(i) {
     const ours = (i.isChatInputCommand?.() || i.isAutocomplete?.()) ? commandNames.has(i.commandName) : i.customId?.startsWith('rpg:');
     if (!ours) return false;
     if (i.isAutocomplete?.()) { await autocomplete(i).catch(() => i.respond([]).catch(() => {})); return true; }
+    let release, originalShowModal;
     try {
       ok(i.guildId && enabled(i.guildId), '跑团功能仅在指定跑团服务器启用。');
       if (!ready.has(i.guildId) && i.isChatInputCommand?.() && i.commandName === 'gm' && i.options.getSubcommand() === '恢复存档') {
@@ -411,21 +475,33 @@ function createRpg(deps) {
         await i.editReply(payload('跑团存档已恢复', '请 /跑团配置面板 核对GM、玩家和公告配置。')); return true;
       }
       const s = snapshot(i.guildId);
+      activities.remember(i.guild);
+      release = navigation.resolve(i);
+      originalShowModal = i.showModal;
+      i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && await openModal(i, s)) return true;
+      if (i.customId && (await activities.openModal(i, s) || await gmUI.openModal(i, s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
-      await i.deferReply(publicResult ? {} : { flags: E });
+      const privateSource = !!i.message?.flags?.has(E);
+      if (privateSource && i.deferUpdate) await i.deferUpdate();
+      else await i.deferReply(publicResult ? {} : { flags: E });
       const member = await i.guild.members.fetch({ user: i.user.id, force: true });
-      const result = i.isChatInputCommand?.() ? await slash(i, member) : await component(i, member);
-      await i.editReply(result || payload('已完成', '操作已保存。'));
+      const result = i.isChatInputCommand?.() ? await slash(i, member) :
+        i.customId.startsWith('rpg:activity:') ? await activities.component(i, member) :
+        i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) : await component(i, member);
+      const response = result || payload('已完成', '操作已保存。');
+      await i.editReply(publicResult ? response : navigation.wrap(i, response));
     } catch (error) {
+      navigation.invalidate(i);
       logFailure('跑团操作失败。', error);
       const content = error.message || '操作失败，请刷新面板。';
       if (i.deferred || i.replied) await i.editReply({ content, embeds: [], components: [], allowedMentions: { parse: [] } }).catch(() => {});
       else await i.reply({ content, flags: E, allowedMentions: { parse: [] } }).catch(() => {});
+    } finally {
+      release?.(); if (originalShowModal) i.showModal = originalShowModal;
     }
     return true;
   }
-  return { start, handle, stop: () => clearInterval(timer), store };
+  return { start, handle, stop: () => clearInterval(timer), store, activities, tickGuild };
 }
 module.exports = { createRpg, commands, dangerBits };

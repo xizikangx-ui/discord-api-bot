@@ -11,9 +11,26 @@ const select = (customId, placeholder, options, min = 1, max = 1) => new D.Strin
   .setCustomId('rpg:' + customId).setPlaceholder(placeholder.slice(0, 150)).setMinValues(min).setMaxValues(max)
   .addOptions(options.map(o => ({ label: String(o.label).slice(0, 100), value: String(o.value),
     ...(o.description ? { description: String(o.description).slice(0, 100) } : {}), ...(o.default ? { default: true } : {}) })));
-const embed = (title, description, color = 0x5865f2) => new D.EmbedBuilder().setTitle(title.slice(0, 256))
-  .setDescription((description || '暂无记录。').slice(0, 4096)).setColor(color);
+const icon = title => /战场|战斗|行动|防守/.test(title) ? '⚔️' : /背包|物品|装备|抽取/.test(title) ? '🎒' :
+  /角色/.test(title) ? '🪪' : /鉴定|掷骰/.test(title) ? '🎲' : /开团/.test(title) ? '📅' :
+  /交易|资产|报价/.test(title) ? '🤝' : /草稿|录入|预览|模板/.test(title) ? '📝' : /已保存|完成|成功|已发布/.test(title) ? '✅' : '📋';
+const embed = (title, description, color = 0x5865f2) => new D.EmbedBuilder().setTitle((icon(title) + ' ' + title).slice(0, 256))
+  .setDescription((description || '暂无记录。').slice(0, 4096)).setColor(color).setFooter({ text: '夕 · 跑团系统' });
 const payload = (title, body, components = [], color) => ({ embeds: [embed(title, body, color)], components, allowedMentions: { parse: [] } });
+const field = (name, value, inline = false) => ({ name: String(name).slice(0, 256), value: String(value ?? '—').slice(0, 1024) || '—', inline });
+function bar(current, maximum) {
+  const full = maximum > 0 ? Math.max(0, Math.min(10, Math.floor(current / maximum * 10))) : 0;
+  return '▰'.repeat(full) + '▱'.repeat(10 - full);
+}
+function effectsText(effects) {
+  return effects?.length ? effects.map(e => C.targetLabel(e.target) + ' ' + (e.value >= 0 ? '+' : '') + e.value +
+    (e.op === 'percent' ? '%' : '')).join('、') : '无';
+}
+function temporaryText(p, page = 0) {
+  return (p.temporaryEffects || []).filter(e => e.duration.kind !== 'minutes' || e.expiresAt > Date.now()).slice(page * 3, page * 3 + 3)
+    .map(e => '**' + e.name + '** · ' + (e.duration.kind === 'minutes' ? '<t:' + Math.floor(e.expiresAt / 1000) + ':R>到期' : '剩余' + e.remaining + '次自身行动') +
+      '\n' + effectsText(e.modifiers).slice(0, 280)).join('\n\n') || '无持续增减益';
+}
 function modal(id, title, fields) {
   return new D.ModalBuilder().setCustomId('rpg:' + id).setTitle(title.slice(0, 45)).addComponents(...fields.map(f => row(
     new D.TextInputBuilder().setCustomId(f.key).setLabel(f.label.slice(0, 45))
@@ -26,18 +43,21 @@ function gm(state, member) { return state.config.gmRoleIds.some(r => memberRoles
 function playerRole(state, member) { return state.config.playerRoleIds.some(r => memberRoles(member).includes(r)); }
 function characterView(p, privateView = false) {
   const s = M.stats(p);
-  const body = p.name + ' · Lv.' + p.level + ' ' + C.title(p.level) + '\nHP ' + p.hp + '/' + s.maxHP +
+  const body = '**' + p.name + '** · Lv.' + p.level + ' · ' + C.title(p.level) + '\n**HP ' + Math.min(p.hp, s.maxHP) + '/' + s.maxHP + '** ' + bar(p.hp, s.maxHP) +
     '\n' + Object.entries(C.ATTRIBUTES).map(([k, label]) => label + ' ' + p.attributes[k] +
       (s.attributes[k] !== p.attributes[k] ? ' → ' + s.attributes[k] : '')).join('　') +
     '\n适应性 ' + p.adaptation + '　自由点 ' + p.points + '　经验 ' + (p.xpCenti / 100).toFixed(2) +
     '/' + p.level * 1000 + '\n举起 ' + s.attributes.strength * 10 + 'kg　移动预算 ' + s.move +
     '米\n防御 ' + Object.entries(s.defenses).map(([k, n]) => C.DAMAGE_TYPES[k] + ' ' + n).join('／') +
     '\n学识判定加成 +' + s.attributes.knowledge + '　外貌评级 ' + s.attributes.appearance +
-    '\n异常：' + (p.conditions.map(c => c.template.name + '·' + c.severity).join('、').slice(0, 500) || '无') +
+    '\n\n**状态**\n异常：' + (p.conditions.map(c => c.template.name + '·' + c.severity).join('、').slice(0, 500) || '无') +
     (p.conditions.length ? '（共' + p.conditions.length + '项）' : '');
-  return payload('角色卡', body + (privateView ? '\n负重 ' + C.kg(s.carried) + '/' + C.kg(s.limit) +
+  const result = payload('角色卡', body + (privateView ? '\n负重 ' + C.kg(s.carried) + '/' + C.kg(s.limit) +
     (s.overloaded ? ' · 无法移动' : s.burdened ? ' · 负重减速' : '') + '\n余额 ' + p.balance + '　抽卡次数 ' + p.tickets.card +
-    '\n箱子次数：' + Object.entries(p.tickets.boxes).map(([k, v]) => k + ' ' + v).join('、') : ''));
+    '\n箱子次数：' + Object.entries(p.tickets.boxes).map(([k, v]) => k + ' ' + v).join('、') : ''), [], 0x3498db);
+  result.embeds[0].addFields(field('持续效果', temporaryText(p)));
+  result.embeds[0].setFooter({ text: '角色 ' + p.id + ' · ' + (privateView ? '本人及GM可见' : '公开属性') });
+  return result;
 }
 function draftView(d) {
   return payload('确认角色 · 整套重掷剩余' + (3 - d.rerolls), d.name + '\n' +
@@ -50,16 +70,51 @@ function inventoryView(state, userId, viewerId, page = 0) {
   const p = M.player(state, userId), entries = Object.values(p.inventory);
   const count = Math.max(1, Math.ceil(entries.length / 12)); page = Math.max(0, Math.min(page, count - 1));
   const reserve = M.reserved(state, userId);
-  const body = characterView(p, true).embeds[0].data.description + '\n\n' + entries.slice(page * 12, page * 12 + 12).map(i =>
+  const s = M.stats(p), pageItems = entries.slice(page * 12, page * 12 + 12);
+  const body = '**' + p.name + '** · ' + entries.length + '种物品\n\n' + pageItems.map(i =>
     '**' + i.snapshot.name + '** ×' + i.quantity + ' · ' + i.snapshot.kind + ' · ' + C.kg(i.snapshot.weight) +
     '\n编号 ' + i.id + ' · 参考价值 ' + i.snapshot.value + (reserve.items[i.id] ? ' · 预留' + reserve.items[i.id] : '') +
     (M.equippedIds(p).includes(i.id) ? ' · 已装备' : M.isAttached(p, i.id) ? ' · 已装配' : '') +
     (i.loaded ? ' · 载弹' + i.loaded.current + '/' + i.loaded.capacity : '')).join('\n') +
     '\n\n可用余额 ' + (p.balance - reserve.coins) + '　' + (page + 1) + '/' + count + '页';
-  return payload('背包 · 仅本人和GM可见', body, [row(
+  const result = payload('背包 · 仅本人和GM可见', body, [
+    ...(pageItems.length ? [row(select('bagitem:' + userId + ':' + viewerId + ':' + page, '选择物品查看描述与使用效果',
+      pageItems.map(i => ({ label: i.snapshot.name + ' ×' + i.quantity, value: i.id }))))] : []), row(
     button('bag:' + userId + ':' + viewerId + ':' + (page - 1), '上一页', undefined, page === 0),
     button('bag:' + userId + ':' + viewerId + ':' + (page + 1), '下一页', undefined, page === count - 1),
-    button('bag:' + userId + ':' + viewerId + ':' + page, '刷新'))]);
+    button('bag:' + userId + ':' + viewerId + ':' + page, '刷新'))], 0x1abc9c);
+  result.embeds[0].addFields(field('负重', C.kg(s.carried) + ' / ' + C.kg(s.limit) + (s.overloaded ? ' · 超重' : s.burdened ? ' · 减速' : ''), true),
+    field('可用游戏币', p.balance - reserve.coins, true), field('抽取次数', '卡牌 ' + p.tickets.card + '\n' +
+      (Object.entries(p.tickets.boxes).map(([k, v]) => k + ' ' + v).join('／') || '暂无箱子次数'), true));
+  return result;
+}
+function itemView(state, userId, viewerId, ref, page = 0) {
+  const p = M.player(state, userId), item = p.inventory[ref]; C.requireThat(item, '物品已不存在。');
+  const t = item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity) || C.RARITIES.at(-1);
+  const sections = [t.description || '暂无描述', effectsText(t.effects),
+    t.uniqueText || '', t.appearance || ''].filter(Boolean);
+  if (t.kind === '武器' || t.kind === '技能') sections.push('固定命中 ' + t.hit + ' · 射程 ' + t.range + '格\n伤害：' +
+    Object.entries(t.damage || {}).filter(([, v]) => v).map(([k, v]) => C.DAMAGE_TYPES[k] + ' ' + v).join('／') +
+    '\n' + (t.kind === '武器' ? '类型 ' + t.weaponType + (t.melee ? ' · 近战' : ' · 远程') : '行动 ' + t.action + ' · 吟唱 ' + t.casting) +
+    (item.loaded ? '\n载弹 ' + item.loaded.current + '/' + item.loaded.capacity : ''));
+  if (t.kind === '防具') sections.push('覆盖 ' + t.armorType + '\n' + Object.entries(t.defenses || {}).map(([k, v]) => C.DAMAGE_TYPES[k] + '防御 ' + v).join('／'));
+  if (t.quality || t.origin || t.title) sections.push('品质 ' + (t.quality || '—') + ' · 产地 ' + (t.origin || '—') + '\n称号 ' + (t.title || '无'));
+  if (item.attachments?.length) sections.push('配件：\n' + item.attachments.map(id => p.inventory[id]?.snapshot.name || id).join('\n'));
+  const pages = sections.flatMap(s => Array.from({ length: Math.max(1, Math.ceil(s.length / 1800)) }, (_, n) => s.slice(n * 1800, (n + 1) * 1800)));
+  page = Math.max(0, Math.min(page, pages.length - 1));
+  const result = payload('物品 · ' + t.name, pages[page], [
+    row(button('itempage:' + userId + ':' + viewerId + ':' + ref + ':' + (page - 1), '上一页', undefined, page === 0),
+      button('itempage:' + userId + ':' + viewerId + ':' + ref + ':' + (page + 1), '下一页', undefined, page === pages.length - 1),
+      button('bag:' + userId + ':' + viewerId + ':0', '返回背包'),
+      ...(userId === viewerId && C.CONSUMABLES.includes(t.kind) ? [button('baguse:' + userId + ':' + ref, '使用一件', D.ButtonStyle.Success, M.available(state, userId, ref) < 1)] : []))
+  ], r.color);
+  result.embeds[0].addFields(field('分类 / 稀有度', t.kind + ' / ' + r.name, true),
+    field('数量 / 重量', item.quantity + ' / ' + C.kg(M.itemWeight(item)), true), field('参考价值', t.value, true));
+  if (C.CONSUMABLES.includes(t.kind)) result.embeds[0].addFields(field('使用效果', '恢复HP ' + (t.heal || '0') +
+    '\n解除：' + ((t.clearConditions || []).map(id => state.conditionTemplates[id]?.name || id).join('、') || '无') +
+    (t.duration && t.effects.length ? '\n持续 ' + t.duration.count + (t.duration.kind === 'minutes' ? '分钟' : '次自身行动') : '')));
+  result.embeds[0].setFooter({ text: item.id + ' · 模板v' + item.version + ' · ' + (page + 1) + '/' + pages.length });
+  return result;
 }
 function battleView(state, b) {
   const actorAt = {};
@@ -82,7 +137,7 @@ function battleView(state, b) {
         ' AP ' + p.ap + ' (' + a.x + ',' + a.y + ') ' + (a.retreated ? '离场' : '') +
         '\n' + a.id + (p.conditions.length ? ' · ' + p.conditions.map(c => c.template.name + '·' + c.severity).join('、').slice(0, 60) : '');
     }).join('\n') + '\n\n最近记录\n' + b.recent.slice(-4).map(e => e.message).join('\n');
-  const rows = b.status === 'recruiting' ? [row(button('join:' + b.id, '参与战斗', D.ButtonStyle.Success),
+  const rows = b.status === 'ended' ? [] : b.status === 'recruiting' ? [row(button('join:' + b.id, '参与战斗', D.ButtonStyle.Success),
     button('withdraw:' + b.id, '撤回报名'), button('start:' + b.id, 'GM正式开战', D.ButtonStyle.Primary),
     button('battle:' + b.id, '查看战场'))] : [row(button('personal:' + b.id, '开始行动／个人面板', D.ButtonStyle.Primary),
       button('battle:' + b.id, '刷新战场'), button('control:' + b.id, 'GM操作'))];
@@ -90,27 +145,29 @@ function battleView(state, b) {
   const color = b.status === 'ended' ? 0x95a5a6 : 0x5865f2;
   const result = payload('战场 · ' + b.name, header, rows, color);
   result.embeds.push(embed('参战者与记录', details, color));
+  result.embeds[0].setFooter({ text: '战斗 ' + b.id + ' · ' + status });
   return result;
 }
 function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const p = B.actorCharacter(state, a), s = M.stats(p), turn = b.current?.actorId === a.id ? b.current : null;
+  if (b.status === 'ended') return payload('战斗已结束 · ' + b.name, '操作面板已关闭。\n' + a.name + ' · HP ' + Math.min(p.hp, s.maxHP) + '/' + s.maxHP, [], 0x95a5a6);
   const prefix = b.id + ':' + a.id + ':' + viewer + ':' + (turn?.id || 'look');
   let body = characterView(p, true).embeds[0].data.description + '\n\n位置 (' + a.x + ',' + a.y + ')　动作点 ' + p.ap +
     '\n' + (turn ? '快速 ' + turn.quick + '／正式 ' + turn.formal + '／剩余移动 ' + turn.move + '米' : '当前不是此角色的行动机会。') +
     '\n吟唱：' + (a.casting ? a.casting.name + ' ' + a.casting.count + '/' + a.casting.required + (a.casting.confirmed ? ' · 已确认' : '') : '无') +
     '\n装备：' + (M.equippedIds(p).map(ref => p.inventory[ref]?.snapshot.name).join('、').slice(0, 320) || '无') +
     '\n饰品槽位 头' + p.slots.head + ' 身' + p.slots.body + ' 戒' + p.slots.ring + '／卡牌槽位 ' + p.slots.card;
-  const statePages = Math.max(1, Math.ceil(p.conditions.length / 5));
+  const statePages = Math.max(1, Math.ceil(p.conditions.length / 3), Math.ceil((p.temporaryEffects || []).length / 3));
   statusPage = Math.max(0, Math.min(Number(statusPage) || 0, statePages - 1));
   if (tab === 'status') body += '\n\n异常详情 ' + (statusPage + 1) + '/' + statePages + '\n' +
-    (p.conditions.slice(statusPage * 5, statusPage * 5 + 5).map(c => {
+    (p.conditions.slice(statusPage * 3, statusPage * 3 + 3).map(c => {
       const stage = c.template.levels[c.severity];
       return '**' + c.template.name + '·' + c.severity + '** ' + c.id +
         '\n持续 ' + (c.remaining === null ? stage.duration.kind === 'battle' ? '一场战斗' : '直到解除' : c.remaining + '次行动') +
         ' · 恶化 ' + c.elapsed + '/' + (stage.worsenAfter || '关闭') +
         '\n' + (stage.description || c.template.description || '无说明').slice(0, 160) +
         '\n数值修正：' + (c.modifiers.map(e => C.targetLabel(e.target) + ' ' + e.value).join('、').slice(0, 150) || '无持续属性修正');
-    }).join('\n\n') || '无异常。');
+    }).join('\n\n') || '无异常。') + '\n\n**食物与药品持续效果**\n' + temporaryText(p, statusPage);
   const rows = [row(select('tab:' + prefix, '操作分页', [
     ['overview', '概览'], ['move', '移动'], ['quick', '快速行动'], ['formal', '正式行动'], ['status', '装备与状态']
   ].map(([value, label]) => ({ value, label, default: value === tab }))))];
@@ -146,4 +203,4 @@ function offerView(state, offer, viewer) {
     button('offer:' + offer.id, '刷新'))]);
 }
 module.exports = { D, E, row, button, select, embed, payload, modal, gm, playerRole, memberRoles,
-  characterView, draftView, inventoryView, battleView, personalView, offerView };
+  characterView, draftView, inventoryView, itemView, battleView, personalView, offerView, field, bar, effectsText, temporaryText };

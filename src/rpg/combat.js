@@ -86,6 +86,7 @@ function applyCondition(state, p, ref, rng = randomInt, source = null) {
   return { name: template.name, severity, save };
 }
 function beginConditions(p, battle, actor, rng) {
+  for (const e of M.expireEffects(p)) record(battle, actor.name + '的' + e.name + '持续效果已到期。');
   for (const condition of p.conditions) {
     if (condition.template.effectType !== 'numeric') continue;
     for (const e of condition.template.levels[condition.severity].effects.filter(e => e.target === 'hp')) {
@@ -97,6 +98,7 @@ function beginConditions(p, battle, actor, rng) {
   M.syncHP(p);
 }
 function endConditions(p, battle, actor, rng) {
+  for (const e of M.finishEffects(p, battle.current?.actorId === actor.id ? battle.current.id : null)) record(battle, actor.name + '的' + e.name + '持续效果已到期。');
   const expired = [];
   for (const condition of p.conditions) {
     condition.elapsed++;
@@ -306,8 +308,10 @@ function start(state, b, surpriseTeam, rng = randomInt) {
 function current(state, b, turnId) {
   ok(b.status === 'active' && b.current && b.current.id === turnId, '当前行动已变化或战斗暂停，请重新打开面板。');
   const a = actorById(b, b.current.actorId); const p = actorCharacter(state, a);
+  const expired = M.expireEffects(p);
   ok(p.hp > 0 && !a.retreated, '角色已经失能或离场。');
-  b.current.move = C.round2(Math.max(0, Math.min(b.current.move, M.stats(p).move - (b.current.moveSpent || 0))));
+  const remaining = C.round2(Math.max(0, M.stats(p).move - (b.current.moveSpent || 0)));
+  b.current.move = expired.length ? remaining : Math.min(b.current.move, remaining);
   return { actor: a, p, turn: b.current };
 }
 function finish(state, b, turnId, rng = randomInt) {
@@ -496,9 +500,10 @@ function useItem(state, b, turnId, itemId, rng = randomInt) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');
   const item = p.inventory[itemId];
-  ok(item?.snapshot.kind === '消耗品', '该道具没有已录入的使用效果。');
+  ok(C.CONSUMABLES.includes(item?.snapshot.kind), '该道具没有已录入的使用效果。');
   if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '道具已预留。');
-  const result = M.consume(p, itemId, rng);
+  const result = M.consume(p, itemId, rng, turnId);
+  turn.move = Math.max(0, C.round2(M.stats(p).move - (turn.moveSpent || 0)));
   turn.quick--; record(b, actor.name + '使用' + result.name + '，恢复' + result.healed + 'HP。', result);
   return result;
 }

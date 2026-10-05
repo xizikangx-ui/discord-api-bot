@@ -20,7 +20,8 @@ const WEAPON_TYPES = ['弓', '弩', '刀', '枪', '剑', '戟', '斧', '匕首',
   '霰弹枪', '榴弹枪', '机枪', '反器械枪', '法杖', '其他'];
 const FIREARMS = WEAPON_TYPES.slice(8, 15);
 const ORIGINS = ['未知', '文明产物', '自然造物', '神战遗留', '名匠工造', '黎明重工', '天启公司', '地方产品'];
-const ITEM_KINDS = ['杂物', '武器', '防具', '饰品', '卡牌', '弹药', '弹夹', '配件', '技能', '特殊物品', '消耗品'];
+const CONSUMABLES = ['消耗品', '食物', '药品'];
+const ITEM_KINDS = ['杂物', '武器', '防具', '饰品', '卡牌', '弹药', '弹夹', '配件', '技能', '特殊物品', ...CONSUMABLES];
 const ARMOR_COVERAGE = { '头盔': ['head'], '胸甲': ['chest'], '臂甲': ['arms'], '内甲': ['inner'],
   '腿甲': ['legs'], '靴甲': ['feet'], '上身甲': ['head', 'chest', 'arms'],
   '下身甲': ['legs', 'feet'], '全甲': ['head', 'chest', 'arms', 'legs', 'feet'] };
@@ -105,12 +106,26 @@ function seedCatalog() {
     ['工具刷', '维护工具箱', '精密检测仪', '专用测量仪', '历史技术手稿', '稀世技术档案'],
   ];
   const catalog = {};
+  const descriptions = [
+    ['便携纸巾，适合擦拭污渍与清洁小物件。', '柔软厚实的羊毛围巾，边缘织有细密纹样。', '具备地图显示与位置记录功能的户外定位仪。', '装在金属表壳中的机械怀表，齿轮运行精细。', '带有独立编号的限量腕表，表盘与机芯保存完好。', '镶嵌罕见宝石的收藏胸针，工艺与出处具有收藏价值。'],
+    ['有磨损痕迹的旧手套，仍可遮挡轻微风寒。', '内衬保温材料的手套，适合低温环境使用。', '小型运动相机，可记录旅行和户外活动。', '供专业摄影使用的镜头，镜片镀膜完整。', '经过精细制作的典藏徽章，附有收藏说明。', '以珍贵材料制成的收藏袖扣，雕刻细致。'],
+    ['一本翻阅过的旧杂志，收录当时的新闻与图文。', '采用硬壳装订的图册，图片清晰且附有说明。', '保存完好的珍藏版书籍，具有研究与收藏价值。', '作者签名的原始手稿，保留修订痕迹。', '限量印制的藏书，装帧考究并附发行编号。', '保存着独特历史资料的孤本手稿，内容难以替代。'],
+    ['用于擦拭工具表面的清洁布，易于折叠携带。', '用于日常清理与维护的保养工具套装。', '能够测量目标距离的便携测距仪。', '结构精密的高精度光学仪，适合观测与测量。', '限量生产的观测仪，镜组与外壳保存完好。', '具有明确历史来源的收藏仪器，兼具研究价值。'],
+    ['独立包装的医用纱布，可作为包扎耗材。', '包含基础包扎材料的急救耗材套装。', '可显示基础生命体征的医用监测仪。', '装在便携箱中的检测设备，适合现场检查。', '专业检测仪器，附带完整探头和操作说明。', '密封保存的珍贵研究样本盒，标签记录着来源。'],
+    ['耐用的随身水杯，杯盖密封可靠。', '便携滤水器，配有可更换的过滤组件。', '支持卫星定位的导航器，适合野外路线规划。', '具备手动控制功能的专业相机。', '编号限量的收藏相机，镜头与机身配套完整。', '以宝石制作的旅行纪念品，包装注明产地。'],
+    ['密封包装的方便食品，便于携带和快速准备。', '装在精致盒中的茶叶，香气清晰且包装完整。', '少见品种的茶叶礼盒，附产地与采摘说明。', '适宜收藏的茶饼，包装记载生产年份。', '保存条件良好的典藏茶饼，具有明确收藏来源。', '稀少批次的收藏茶饼，附完整流转与保存记录。'],
+    ['分隔收纳的洗漱包，可整理旅途清洁用品。', '缝线整齐的真皮钱包，具有多个收纳夹层。', '面向户外活动的通信器，配有充电与连接附件。', '高端摄影镜头，适合精细成像需求。', '附收藏编号的限量腕表，机芯经妥善维护。', '镶有珍贵宝石的收藏项链，附来源证明。'],
+    ['为纪念某项活动铸造的纪念币。', '银制纪念章，正面浮雕保存清晰。', '发行数量较少的纪念币，具有收藏价值。', '带有签名及纪念说明的收藏币。', '成套保存的纪念金币，装在专用保护盒中。', '来源可考的稀世古币，铭文与铸造细节清楚。'],
+    ['常用文具组合，可用于书写和简单记录。', '小巧的银制摆件，表面有细致纹饰。', '具有装饰用途的工艺摆件，制作完整。', '附版次编号的限量版画，纸张保存平整。', '艺术家亲自创作的原作，保留签名与创作信息。', '采用珍贵材质制作的收藏珠宝，配有专用盒。'],
+    ['标示组织或活动的普通徽章。', '记录特定功绩或事件的纪念勋章。', '便携观测镜，外壳坚固且镜片清洁。', '保存完好的收藏纪念章，附发行资料。', '记录历史事件的资料原件，含原始批注。', '具有重要历史出处的稀世纪念品，附考证资料。'],
+    ['清理工具缝隙与表面灰尘的小型工具刷。', '包含常用维护工具的收纳箱。', '适合精细检查的检测仪，附配套探头。', '用于特定测量任务的专用仪器。', '记录历史技术方案的手稿，保留计算与图示。', '保存独特技术资料的稀世档案，内容完整。'],
+  ];
   BOXES.forEach((box, b) => {
     [...RARITIES].reverse().forEach((r, n) => {
       const key = 'seed_' + b + '_' + r.id;
       catalog[key] = { id: key, version: 1, published: true, kind: '杂物',
         name: props[b][n], rarity: r.id, weight: [20, 50, 100, 150, 100, 50][n],
-        value: r.min, boxes: [box], effects: [], traitIds: [], description: '现代场景中的' + props[b][n] + '，价值为游戏内估值。' };
+        value: r.min, boxes: [box], effects: [], traitIds: [], description: descriptions[b][n] };
     });
   });
   for (const [special, name] of [['heart', '世界树之心'], ['tear', '世界树之泪']]) {
@@ -121,13 +136,13 @@ function seedCatalog() {
   return catalog;
 }
 function newState(guildId) {
-  return { kind: 'tabletop-rpg', schema: 1, guildId, revision: 0,
+  return { kind: 'tabletop-rpg', schema: 1, upgrade: 2, guildId, revision: 0,
     config: { gmRoleIds: [], playerRoleIds: [], announcementChannelId: null },
-    players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(),
+    players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(), checks: {}, sessions: {}, lootPublications: {},
     traits: { neutral: { id: 'neutral', version: 1, published: true, name: '无附加效果', description: '只展示，不修改数值。', effects: [] } }, conditionTemplates: {},
     npcTemplates: {}, battles: {}, offers: {}, rolePanels: {}, receipts: {}, events: [] };
 }
 module.exports = { DEFAULT_GUILD_ID, ATTRIBUTES, DAMAGE_TYPES, RARITIES, BOXES, QUALITIES, WEAPON_TYPES,
-  FIREARMS, ORIGINS, ITEM_KINDS, ARMOR_COVERAGE, ACCESSORY_LIMITS, ACCESSORY_NAMES, SEVERITIES,
+  FIREARMS, ORIGINS, ITEM_KINDS, CONSUMABLES, ARMOR_COVERAGE, ACCESSORY_LIMITS, ACCESSORY_NAMES, SEVERITIES,
   MAX_MONEY, OFFER_TTL, EFFECT_TARGETS, CONDITION_TARGETS, id, clone, requireThat, number, text,
   dice, rarity, title, targetLabel, kg, round2, seedCatalog, newState };

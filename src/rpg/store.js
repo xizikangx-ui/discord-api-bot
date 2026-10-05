@@ -1,6 +1,7 @@
 'use strict';
 const { gzipSync, gunzipSync } = require('node:zlib');
 const C = require('./constants');
+const { migrate } = require('./activities');
 
 // A failed Discord write is not retried with fresh dice. The canonical attachment
 // must be read first; unresolved outcomes freeze this guild until a GM recovers it.
@@ -63,6 +64,12 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
     const state = message ? await read(message, guild) : C.newState(guild);
     if (message) messages.set(guild, message);
     else await persist(guild, state);
+    const migration = migrate(state);
+    if (migration) {
+      state.revision++;
+      state.events.push({ id: 'rpg-upgrade-2', at: Date.now(), actorId: client.user.id, label: '跑团物品与活动升级', result: migration, revision: state.revision });
+      await persist(guild, state);
+    }
     states.set(guild, state); frozen.delete(guild);
     return C.clone(state);
   }

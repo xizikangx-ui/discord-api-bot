@@ -1,6 +1,6 @@
 # 隐私政策 / Privacy Policy
 
-**生效日期：2026-10-05**
+**生效日期：2026-10-06**
 **运营者联系邮箱：`xizikangx@gmail.com`**
 
 本政策适用于使用本仓库代码自行部署的 Discord Bot。每个部署实例由部署者独立运营；部署者应在公开本政策前填写有效联系方式，并根据实际托管方式和服务器配置更新本政策。
@@ -10,6 +10,12 @@
 仅在运营者指定的跑团服务器启用。Bot处理角色创建者ID、角色名称、属性与掷骰、等级、经验、生命、背包实例和冻结的模板版本、弹药和配件、游戏币、抽取次数和待领取掉落、装备槽位、交易报价及确认、NPC、战斗地图和阵营、行动预算、异常计时、攻防响应，以及GM和玩家的操作编号与时间。身份组领取配置、领取人ID、变更意图及结果也保存。配置和录入中的草稿绑定创建者和服务器，退出或重启后仍可继续。
 
 角色属性和等级、战场HP/动作点/位置和异常摘要向该频道可见成员公开；背包、余额、抽取次数仅本人和配置的GM可以通过私密交互查看，交易详情仅参与方和GM可见。战场消息和申请/领取面板仍受Discord频道权限控制。跑团指令不扫描或保存普通聊天内容，不为参加、行动、投骰或自动推进收取现实费用。
+
+食物、药品及其模板描述、恢复生命的骰点、解除异常、持续数值效果与行动次数/绝对到期时间随跑团状态保存。抽卡、开箱会在调用频道公开抽取者ID、物品名称、稀有度、描述、重量、游戏内估值、编号和待领取状态；不会一并公开余额、剩余次数或完整背包。公示消息编号、发送意图及发送结果保存在加密状态中，用于补发同一结果，避免重新抽取。
+
+GM鉴定保存任务说明、判定规则、属性、门槛、次数上限、发布者/参与者ID、骰点、加成、成败、尝试时间及公示消息编号；任务和结果向对应频道成员公开。开团保存团名、说明、GM和报名成员ID、报名/退出记录、频道及卡片编号、绝对开团时间、提醒名单批次及发送状态。公共开团卡显示GM、时间、说明和人数，成员可查看报名名单；到时在原频道公开提及名单中的仍在服成员。发送前仅按报名ID核对是否在服，不扫描完整成员列表。取消停止后续提醒，历史名单、提醒及审计没有固定自动删除期限。
+
+递进私有面板绑定操作者和步骤。用于编辑临时私有回复的交互句柄仅短时存于运行内存，不写入加密存档或日志；重启后需重新打开个人面板，持久草稿和战斗状态继续恢复。结束战斗移除操作按钮，公共结果、历史角色快照和操作审计仍保留。
 
 每服务器跑团状态在内存中解密处理，持久保存前压缩并以AES-256-GCM加密为附件，上传到已配置的私密Discord存储频道，使用现有秘密密钥。公共仓库、构建包及云端日志不包含角色资产存档或密钥。事务编号、骰点和审计用于防止重复发放、重复扣款或重复扣血。保存结果无法确认时暂停写入，并由GM核对存档恢复。
 
@@ -70,6 +76,8 @@
 Bot 不以年龄为条件建立用户画像。服务器管理员和部署者应遵守适用法律、Discord 开发者条款及服务器规则。功能或数据处理方式发生变化时，部署者应更新此政策并告知受影响用户。
 
 ## English summary
+
+The RPG upgrade stores food/medicine templates, healing dice, condition cures, temporary modifiers and action-count or absolute expiry times in the existing encrypted guild state. Draws publicly disclose the drawing user, item, rarity, description, weight, in-game value, ID and pending-claim status in the command channel; inventory, balances and remaining tickets stay private to the owner and configured GMs. GM checks publicly disclose the task, rule, thresholds, participant, dice and outcome. Scheduled RPG sessions store GM and participant IDs, title, description, start time, source message and per-batch reminder delivery states; at start the bot verifies listed members are still in the guild and mentions them in that channel. These records, saved drafts and audit history have no fixed automatic expiry. Short-lived private-interaction handles remain only in process memory; reopening is required after restart. Ending combat removes usable controls while preserving public results and audit records.
 
 Guilds may configure additional punishment-operator role IDs, encrypted with their settings and used only to authorize local punishment, permanent-ban, revocation and scheduling operations. Membership in another server does not authorize these operations. Warning and timeout durations support whole minutes starting at one minute while retaining the existing day-based stored format. Revocation requires a reason; the bot stores the revoking user's ID, time and reason, includes the reason in configured notice/audit channels and Discord audit reasons, and encrypts it with existing case records without automatic expiry.
 

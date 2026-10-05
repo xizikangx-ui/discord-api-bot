@@ -17,7 +17,7 @@ function defaults(kind, itemKind = '杂物') {
     hit: 10, range: 1, primary: 'physical', damage: { physical: '1d6', magical: '', mental: '' }, conditions: [],
     armorType: '胸甲', defenses: { physical: 0, magical: 0, mental: 0 }, accessoryType: 'body',
     uniqueText: '', skillIds: [], preinstalled: [], compatible: [], attachmentSlot: '瞄具',
-    special: 'heart', heal: '1d6', clearConditions: [], action: 'formal', casting: 0 };
+    special: 'heart', heal: '0', clearConditions: [], duration: { kind: 'actions', count: 3 }, action: 'formal', casting: 0 };
   if (kind === 'trait') return { name: '', description: '', effects: [] };
   if (kind === 'condition') return { name: '', description: '', type: 'physical', effectType: 'numeric',
     levels: Object.fromEntries(C.SEVERITIES.map(s => [s, { enabled: s === '一般', difficulty: 10,
@@ -52,7 +52,7 @@ function fields(form) {
     field('weightKg', '重量kg（两位小数）', 'number'), field('value', '参考价值', 'number'),
     { ...enumField('boxes', '可从哪些箱型抽出', C.BOXES), type: 'multi', limit: 12 }];
   if (['武器', '防具', '饰品', '卡牌'].includes(d.kind)) list.push(refField('traitIds', '词条（1至10）', 'traits'));
-  list.push(field('effects', '额外结构化数值效果', 'effects'));
+  list.push(field('effects', C.CONSUMABLES.includes(d.kind) ? '使用后的持续增减益' : '额外结构化数值效果', 'effects'));
   if (['武器', '防具', '饰品'].includes(d.kind)) list.push(enumField('quality', '装备品质', C.QUALITIES),
     field('title', '可选称号'), field('supernatural', '超凡装备', 'bool'), field('appearance', '外貌', 'long'), enumField('origin', '产地', C.ORIGINS),
     refField('preinstalled', '初装配件', 'catalog', 10, t => t.kind === '配件'));
@@ -76,7 +76,9 @@ function fields(form) {
   if (d.kind === '配件') list.push(field('attachmentSlot', '装配位置名称'),
     { ...enumField('compatible', '兼容类型', [...C.WEAPON_TYPES, ...Object.keys(C.ARMOR_COVERAGE)]), type: 'multi', limit: 25 });
   if (d.kind === '特殊物品') list.push(enumField('special', '世界树物品', [{ value: 'heart', label: '世界树之心' }, { value: 'tear', label: '世界树之泪' }]));
-  if (d.kind === '消耗品') list.push(field('heal', '恢复生命骰式'), refField('clearConditions', '可解除异常', 'conditionTemplates', 10));
+  if (C.CONSUMABLES.includes(d.kind)) list.push(field('heal', '恢复生命固定值或骰式'), refField('clearConditions', '可解除异常', 'conditionTemplates', 10),
+    enumField('duration.kind', '持续效果时间单位', [{ value: 'actions', label: '自身行动次数' }, { value: 'minutes', label: '实际分钟' }]),
+    field('duration.count', '持续时长（正整数）', 'number'));
   return list;
 }
 function create(state, owner, kind, itemKind, existingId) {
@@ -85,6 +87,7 @@ function create(state, owner, kind, itemKind, existingId) {
   if (existingId) ok(old, '模板不存在。');
   const data = old ? C.clone(old) : defaults(kind, itemKind);
   if (kind === 'item' && old) {
+    data.duration ||= { kind: 'actions', count: 3 };
     data.weightKg = old.weight / 100; data.effects = C.clone(old.ownEffects ||
       old.effects.slice((old.traitIds || []).flatMap(ref => state.traits[ref]?.effects || []).length));
   }
@@ -94,7 +97,7 @@ function create(state, owner, kind, itemKind, existingId) {
   state.forms[form.id] = form; return form;
 }
 function owned(state, formId, owner) { const f = state.forms[formId]; ok(f && f.owner === owner, '草稿不存在或不属于你。'); return f; }
-function display(value, field, state) {
+function display(value, field, state, limit = 120) {
   if (field.type === 'bool') return value ? '开启' : '关闭';
   if (['effects', 'conditionEffects'].includes(field.type)) return (value || []).map(e => C.targetLabel(e.target) + ' ' +
     (e.amount ?? ((e.op === 'percent' ? '%' : '+') + e.value))).join('；') || '无';
@@ -103,21 +106,23 @@ function display(value, field, state) {
   if (field.type === 'roles') return (value || []).map(id => '<@&' + id + '>').join('、') || '无';
   if (Array.isArray(value)) return value.join('、') || '无';
   const option = field.values?.find(v => v.value === value);
-  return String(option?.label ?? value ?? '未填写').slice(0, 120) || '未填写';
+  return String(option?.label ?? value ?? '未填写').slice(0, limit) || '未填写';
 }
 function view(state, form, preview = false) {
   const defs = fields(form), pages = Math.ceil(defs.length / 20), page = Math.max(0, Math.min(form.page, pages - 1));
   const selected = defs[form.field] || defs[0];
   const body = '草稿 ' + form.id + ' · ' + form.kind + (form.data.kind ? '／' + form.data.kind : '') +
     '\n退出后用 /gm 草稿 继续。' + (form.existingId ? '\n修改模板 ' + form.existingId + '，已发放实例保持原版本。' : '') +
-    '\n\n' + defs.map((d, n) => (n === form.field ? '▶ ' : '') + d.label + '：' + display(get(form.data, d.key), d, state)).join('\n');
+    '\n\n' + defs.slice(page * 20, page * 20 + 20).map((d, n) => (page * 20 + n === form.field ? '▶ ' : '') +
+      '**' + d.label + '**：' + display(get(form.data, d.key), d, state).slice(0, 120)).join('\n') +
+    (preview ? '\n\n请逐页核对后发布。' : '');
   return U.payload(preview ? '发布预览' : 'GM分步录入 · 第' + (page + 1) + '/' + pages + '页', body, [
     U.row(U.select('formfield:' + form.id, '选择要填写的字段', defs.slice(page * 20, page * 20 + 20).map((d, n) =>
       ({ label: d.label, value: String(page * 20 + n), default: page * 20 + n === form.field })))),
     U.row(U.button('formpage:' + form.id + ':' + (page - 1), '上一页', undefined, page === 0),
       U.button('formpage:' + form.id + ':' + (page + 1), '下一页', undefined, page === pages - 1),
       U.button('formedit:' + form.id, '编辑：' + selected.label, U.D.ButtonStyle.Primary),
-      U.button('formpreview:' + form.id, '预览')),
+      U.button('formpreview:' + form.id, '预览'), U.button('formdetail:' + form.id, '查看当前字段全文')),
     U.row(U.button('formpublish:' + form.id, form.kind === 'rolepanel' ? '发布领取面板' : '发布模板', U.D.ButtonStyle.Success),
       U.button('formexit:' + form.id, '保存并退出'), U.button('formdelete:' + form.id, '删除草稿', U.D.ButtonStyle.Danger))
   ]);

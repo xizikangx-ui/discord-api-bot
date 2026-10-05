@@ -65,20 +65,15 @@ function createHandlers(context) {
         button('defend:' + b.id + ':' + hit.id + ':' + uid + ':' + choice, label, choice === 'none' ? D.ButtonStyle.Danger : D.ButtonStyle.Primary)))
     ]);
   }
-  function controlView(b) {
-    return payload('GM战斗控制', b.name + '\n状态 ' + b.status + '\n位置、地形、生命、异常和NPC用 /战斗 对应子指令配置。', [
-      row(button('gmcontrol:' + b.id + ':pause', '暂停', undefined, b.status !== 'active'),
-        button('gmcontrol:' + b.id + ':resume', '恢复', D.ButtonStyle.Success, b.status !== 'paused'),
-        button('gmcontrol:' + b.id + ':finish', '代结束行动', undefined, !b.current || !!b.pending),
-        button('gmcontrol:' + b.id + ':end', '结束战斗', D.ButtonStyle.Danger, b.status === 'ended')),
-      ...(b.status === 'recruiting' ? [row(button('gmstart:' + b.id + ':normal', '正式开战', D.ButtonStyle.Success),
-        button('gmstart:' + b.id + ':ally', '确认友方偷袭开战'), button('gmstart:' + b.id + ':enemy', '确认敌方偷袭开战'))] : [])
-    ]);
-  }
   async function formComponent(i, member, action, args) {
     const s = snapshot(i.guildId), formId = args[0], f = F.owned(s, formId, i.user.id);
     if (f.kind === 'rolepanel') needConfig(member); else needGM(s, member);
     if (action === 'formpreview') return F.view(s, f, true);
+    if (action === 'formdetail') {
+      const def = F.fields(f)[f.field];
+      return payload('字段全文 · ' + def.label, F.display(F.get(f.data, def.key), def, s, 4000),
+        [row(button('formback:' + f.id, '返回草稿'), button('formedit:' + f.id, '编辑：' + def.label, D.ButtonStyle.Primary))]);
+    }
     if (action === 'formback') return F.view(s, f);
     if (action === 'formexit') return payload('草稿已保存', '草稿编号 ' + f.id + '；用 /gm 草稿 恢复。配置用草稿也可从领取面板列表恢复。');
     if (action === 'formpublish') {
@@ -136,6 +131,7 @@ function createHandlers(context) {
         else { ok(['add', 'percent'].includes(args[3]), '运算已失效。'); effects.push({ target, op: args[3], value: num(value, '修正', -1000000, 1000000, false) }); }
       } else throw new Error('草稿操作未识别。');
       draft.updatedAt = Date.now();
+      draft.version = (draft.version || 0) + 1;
       return { formId };
     });
     if (action === 'formdelete') return payload('已删除草稿', formId);
@@ -187,7 +183,7 @@ function createHandlers(context) {
       }
       needGM(s, member);
       if (args[0] === 'select') return formView(s, i.values[0], uid);
-      return pickView('自己的持久草稿', Object.values(s.forms).filter(f => f.owner === uid && f.data)
+      return pickView('自己的持久草稿', Object.values(s.forms).filter(f => f.owner === uid && f.data && !f.done)
         .map(f => ({ label: f.data.name || f.data.title || f.kind, value: f.id })), 'drafts', page);
     }
     if (action === 'claim' || action === 'claimmulti') return payload('身份组领取', await claim(i, args[0], action === 'claim' ? [args[1]] : i.values, action === 'claim'));
@@ -208,6 +204,16 @@ function createHandlers(context) {
     if (action === 'bag') {
       owner(i, args[1]); if (args[0] !== uid) needGM(s, member);
       return U.inventoryView(s, args[0], uid, Number(args[2]));
+    }
+    if (action === 'bagitem' || action === 'itempage') {
+      owner(i, args[1]); if (args[0] !== uid) needGM(s, member);
+      return U.itemView(s, args[0], uid, action === 'bagitem' ? i.values[0] : args[2], action === 'itempage' ? Number(args[3]) : 0);
+    }
+    if (action === 'baguse') {
+      owner(i, args[0]); const result = await context.use(i, args[1]);
+      return payload('已使用 · ' + result.name, '恢复 ' + result.healed + ' HP · 当前 ' + result.hp +
+        '\n解除：' + (result.cleared.join('、') || '无') + '\n持续效果：' + U.effectsText(result.effects),
+        [row(button('bag:' + uid + ':' + uid + ':0', '返回背包'))], 0x2ecc71);
     }
     if (action === 'dropconfirm' || action === 'deleteconfirm') {
       const message = await tx(i, st => {
@@ -250,8 +256,8 @@ function createHandlers(context) {
     if (['battle', 'join', 'withdraw', 'start', 'personal', 'control', 'gmcontrol', 'gmstart', 'defense', 'defend'].includes(action)) {
       const b = battle(s, args[0]);
       if (action === 'battle') return U.battleView(s, b);
-      if (action === 'control') { needGM(s, member); return controlView(b); }
-      if (action === 'start') { needGM(s, member); return controlView(b); }
+      if (action === 'control') { needGM(s, member); return context.gmUI.view(s, b); }
+      if (action === 'start') { needGM(s, member); return context.gmUI.view(s, b); }
       if (action === 'personal') {
         const a = b.actors.find(a => a.userId === uid) || (U.gm(s, member) ? b.actors.find(a => a.id === b.current?.actorId) : null);
         ok(a, '未参加战斗，可查看公共战场。');
@@ -287,24 +293,25 @@ function createHandlers(context) {
         return { battleId: next.id };
       });
       await publishBattle(i.guildId, b.id);
-      return U.battleView(snapshot(i.guildId), battle(snapshot(i.guildId), b.id));
+      return ['gmcontrol', 'gmstart'].includes(action) ? context.gmUI.view(snapshot(i.guildId), battle(snapshot(i.guildId), b.id)) :
+        U.battleView(snapshot(i.guildId), battle(snapshot(i.guildId), b.id));
     }
     const { b, a, p, turnId, prefix } = prefixContext(i, s, args, member,
-      !['tab', 'view', 'statuspage', 'equippick', 'attachpick', 'attachpart', 'attachdo'].includes(action));
+      !['tab', 'view', 'statuspage', 'equippick', 'attachpick', 'attachpart', 'attachchoose', 'attachdo'].includes(action));
     if (action === 'tab' || action === 'view') return U.personalView(s, b, a, uid, action === 'tab' ? i.values[0] : args[4], args[5]);
     if (action === 'statuspage') return U.personalView(s, b, a, uid, 'status', args[4]);
-    if (['equippick', 'attachpick', 'attachpart', 'attachdo'].includes(action)) {
+    if (['equippick', 'attachpick', 'attachpart', 'attachchoose', 'attachdo'].includes(action)) {
       ok(['paused', 'recruiting'].includes(b.status), '请GM暂停战斗再调整装备。');
       function attachmentView(ref) {
         const equipment = p.inventory[ref]; ok(equipment, '装备已失效。');
         const parts = Object.values(p.inventory).filter(item => item.snapshot.kind === '配件');
         ok(parts.length, '没有配件。');
-        return payload('选择装配或拆下的配件', '已装配在此装备的配件选择后会拆下。', [
-          row(select('attachdo:' + prefix + ':' + equipment.id, '配件', parts.slice(0, 25).map(item =>
-            ({ label: item.snapshot.name + (equipment.attachments.includes(item.id) ? ' · 拆下' : ' · 装配'), value: item.id }))))
-        ]);
+        const v = pickView('选择装配或拆下的配件', parts.map(item => ({
+          label: item.snapshot.name + (equipment.attachments.includes(item.id) ? ' · 拆下' : ' · 装配'), value: item.id
+        })), 'attachchoose:' + prefix + ':' + equipment.id, Number(args[5]) || 0);
+        v.components.push(row(button('view:' + prefix + ':status', '返回装备与状态'))); return v;
       }
-      if (action === 'attachpart') return attachmentView(args[4]);
+      if (action === 'attachpart' || (action === 'attachchoose' && args[5] !== 'select')) return attachmentView(args[4]);
       if ((action === 'equippick' || action === 'attachpick') && args[4] !== 'select') {
         const items = Object.values(p.inventory).filter(item => (action === 'attachpick' ? ['武器', '防具'] : ['武器', '防具', '饰品', '卡牌']).includes(item.snapshot.kind));
         return pickView('选择要调整的装备', items.map(item => ({ label: item.snapshot.name + (M.equippedIds(p).includes(item.id) ? ' · 已装备' : ''), value: item.id })),
@@ -341,13 +348,26 @@ function createHandlers(context) {
         const targets = b.actors.filter(t => t.id !== a.id && !t.retreated && B.actorCharacter(s, t).hp > 0);
         ok(targets.length, '没有有效攻击目标。');
         return payload('选择目标 · ' + ability.attack.name, '固定命中 ' + ability.attack.hit + ' · 射程 ' + ability.attack.range + '格', [
-          row(select('target:' + prefix + ':' + type + ':' + ability.key, '攻击目标', targets.map(t => ({ label: t.name, value: t.id }))))]);
+          row(select('target:' + prefix + ':' + type + ':' + ability.key, '攻击目标', targets.map(t => ({ label: t.name, value: t.id })))),
+          row(button('attackpick:' + prefix + ':' + type + ':0', '返回武器选择'), button('view:' + prefix + ':overview', '取消选择'))]);
       }
       return pickView('选择武器／技能', abilities.map(x => ({ label: x.attack.name, value: x.key })), 'attackpick:' + prefix + ':' + type, Number(args[5]));
     }
+    if (action === 'reloadmagpick') {
+      const weapon = p.inventory[p.equipped.weapon], ammo = p.inventory[args[4]];
+      ok(weapon?.loaded && ammo?.snapshot.kind === '弹药', '武器或弹药不可用。');
+      const entries = Object.values(p.inventory).filter(m => m.snapshot.kind === '弹夹' &&
+        m.snapshot.magazineType === weapon.snapshot.magazineType && m.snapshot.ammoType === weapon.snapshot.ammoType &&
+        m.snapshot.capacity >= weapon.loaded.capacity && (!M.isAttached(p, m.id) || weapon.magazineId === m.id) &&
+        (!a.userId || M.available(s, a.userId, m.id) > 0)).map(m => ({ label: m.snapshot.name, value: m.id }));
+      if (args[5] !== 'select') {
+        const v = pickView('选择兼容弹夹 · 装填第二步', entries, 'reloadmagpick:' + prefix + ':' + args[4], Number(args[5]) || 0);
+        return v;
+      }
+    }
     if (['reloadpick', 'weaponpick', 'itempick'].includes(action)) {
       const kind = { reloadpick: '弹药', weaponpick: '武器', itempick: '消耗品' }[action];
-      let items = Object.values(p.inventory).filter(item => item.snapshot.kind === kind &&
+      let items = Object.values(p.inventory).filter(item => (action === 'itempick' ? C.CONSUMABLES.includes(item.snapshot.kind) : item.snapshot.kind === kind) &&
         (!a.userId || M.available(s, a.userId, item.id) > 0));
       if (action === 'reloadpick') items = items.filter(item => item.snapshot.ammoType === p.inventory[p.equipped.weapon]?.snapshot.ammoType);
       if (args[4] === 'select') {
@@ -356,9 +376,9 @@ function createHandlers(context) {
           const magazines = Object.values(p.inventory).filter(m => m.snapshot.kind === '弹夹' && m.snapshot.magazineType === weapon.snapshot.magazineType &&
             m.snapshot.ammoType === weapon.snapshot.ammoType && m.snapshot.capacity >= weapon.loaded.capacity &&
             (!M.isAttached(p, m.id) || weapon.magazineId === m.id));
-          return payload('选择兼容弹夹', '装填消耗一次快速行动。', magazines.length ? [
-            row(select('reloadmag:' + prefix + ':' + ammoId, '弹夹', magazines.slice(0, 25).map(m => ({ label: m.snapshot.name, value: m.id }))))
-          ] : []);
+          const v = pickView('选择兼容弹夹 · 装填第二步', magazines.map(m => ({ label: m.snapshot.name, value: m.id })),
+            'reloadmagpick:' + prefix + ':' + ammoId, 0);
+          return v;
         }
       } else return pickView('选择' + kind, [
         ...(action === 'weaponpick' ? [{ label: '徒手（卸下武器）', value: 'none' }] : []),
@@ -369,7 +389,7 @@ function createHandlers(context) {
       const live = prefixContext(i, st, args, member, true), next = live.b;
       if (action === 'movevalue') B.move(st, next, turnId, i.fields.getTextInputValue('x'), i.fields.getTextInputValue('y'));
       else if (action === 'target') return B.attack(st, next, turnId, args[5], i.values[0], args[4]);
-      else if (action === 'reloadmag') B.reload(st, next, turnId, args[4], i.values[0]);
+      else if (action === 'reloadmag' || action === 'reloadmagpick') B.reload(st, next, turnId, args[4], i.values[0]);
       else if (action === 'weaponpick') B.switchWeapon(st, next, turnId, i.values[0] === 'none' ? null : i.values[0]);
       else if (action === 'itempick') B.useItem(st, next, turnId, i.values[0]);
       else if (action === 'cast') B.confirmCasting(st, next, turnId);
@@ -386,9 +406,12 @@ function createHandlers(context) {
       if (result.casting) return U.personalView(next, liveBattle, liveActor, uid, 'quick');
       const target = B.actorById(liveBattle, result.targetId), ch = await context.textChannel(i.guildId, liveBattle.channelId);
       const roles = target.userId ? [] : next.config.gmRoleIds;
-      await ch.send({ content: (target.userId ? '<@' + target.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) + ' 请为 **' + target.name + '** 选择防守方式。',
+      const message = await ch.send({ content: (target.userId ? '<@' + target.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) + ' 请为 **' + target.name + '** 选择防守方式。',
         components: [row(button('defense:' + b.id + ':' + result.id, '打开防守面板', D.ButtonStyle.Danger))],
         allowedMentions: { parse: [], users: target.userId ? [target.userId] : [], roles } });
+      await store.transact(i.guildId, 'combat-prompt:' + message.id, uid, st => {
+        st.battles[b.id].auxiliaryMessages ||= []; st.battles[b.id].auxiliaryMessages.push(message.id);
+      }, '记录战斗防守面板');
     }
     return U.personalView(next, liveBattle, liveActor, uid);
   }

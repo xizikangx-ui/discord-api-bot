@@ -10,7 +10,7 @@ function player(state, userId) {
 }
 function newCharacter(name, attributes, adaptation = 1) {
   return { id: id('c'), name, attributes, adaptation, level: 1, xpCenti: 0, points: 2,
-    hp: attributes.constitution * 3, balance: 0, inventory: {}, conditions: [], ap: 0,
+    hp: attributes.constitution * 3, balance: 0, inventory: {}, conditions: [], temporaryEffects: [], ap: 0,
     equipped: { weapon: null, armor: [], accessories: [], cards: [] },
     slots: { head: 1, body: 3, ring: 1, card: 5 }, tickets: { card: 0, boxes: {} }, pendingLoot: {},
     createdAt: Date.now() };
@@ -51,6 +51,9 @@ function sourceEffects(p) {
     if (item.magazineId) result.push(...(p.inventory[item.magazineId]?.snapshot.effects || []));
   }
   for (const condition of p.conditions) result.push(...(condition.modifiers || []));
+  for (const effect of p.temporaryEffects || []) {
+    if (effect.duration.kind !== 'minutes' || effect.expiresAt > Date.now()) result.push(...effect.modifiers);
+  }
   return result;
 }
 function modify(effects, target, base) {
@@ -93,6 +96,20 @@ function stats(p, extraEffects = []) {
     resist: Object.fromEntries(Object.keys(C.DAMAGE_TYPES).map(k => [k, signedModifier(effects, 'resist:' + k)])) };
 }
 function syncHP(p) { p.hp = Math.max(0, Math.min(p.hp, stats(p).maxHP)); }
+function expireEffects(p, now = Date.now()) {
+  const expired = (p.temporaryEffects || []).filter(e => e.duration.kind === 'minutes' && e.expiresAt <= now);
+  if (expired.length) { p.temporaryEffects = p.temporaryEffects.filter(e => !expired.includes(e)); syncHP(p); }
+  return expired;
+}
+function finishEffects(p, turnId) {
+  const expired = [];
+  for (const e of p.temporaryEffects || []) if (e.duration.kind === 'actions') {
+    if (e.skipTurnId && e.skipTurnId === turnId) { delete e.skipTurnId; continue; }
+    if (--e.remaining <= 0) expired.push(e);
+  }
+  p.temporaryEffects = (p.temporaryEffects || []).filter(e => !expired.includes(e)); syncHP(p);
+  return expired;
+}
 function allocate(state, userId, attribute, amount) {
   const p = player(state, userId);
   ok(battleFor(state, userId)?.status !== 'active', '加点前请GM暂停战斗。');
@@ -207,10 +224,15 @@ function validateTemplate(state, raw) {
     ok(['heart', 'tear'].includes(t.special), '特殊物品选择世界树之心或世界树之泪。');
     ok(!t.boxes.length, '世界树物品只能由GM发放，不能加入开箱掉落池。');
   }
-  if (t.kind === '消耗品') {
+  if (C.CONSUMABLES.includes(t.kind)) {
     t.heal = C.text(t.heal || '0', '恢复生命骰式', 50);
-    C.dice(t.heal, 'normal', min => min);
+    ok(C.dice(t.heal, 'normal', min => min).total >= 0, '恢复生命不能为负数。');
     t.clearConditions ||= [];
+    ok(t.clearConditions.length <= 10 && t.clearConditions.every(ref => state.conditionTemplates[ref]?.published), '解除异常需选择已发布模板，最多10项。');
+    if (t.effects.length) {
+      ok(['actions', 'minutes'].includes(t.duration?.kind), '持续效果需选择行动次数或实际分钟。');
+      t.duration.count = num(t.duration.count, '持续时长', 1, 10000);
+    }
   }
   t.preinstalled ||= [];
   for (const ref of t.preinstalled) ok(state.catalog[ref]?.kind === '配件' && state.catalog[ref].published, '初装配件未发布。');
@@ -400,15 +422,27 @@ function useSpecial(state, userId, itemId, slot) {
   item.quantity--; if (!item.quantity) delete p.inventory[itemId];
   return p.slots;
 }
-function consume(p, itemId, rng = randomInt) {
+function consume(p, itemId, rng = randomInt, turnId = null, now = Date.now()) {
   const item = p.inventory[itemId];
-  ok(item?.snapshot.kind === '消耗品' && item.quantity > 0, '请选择具有使用效果的消耗品。');
+  ok(C.CONSUMABLES.includes(item?.snapshot.kind) && item.quantity > 0, '请选择食物、药品或消耗品。');
+  expireEffects(p, now);
   const roll = C.dice(item.snapshot.heal || '0', 'normal', rng), before = p.hp;
+  const cleared = p.conditions.filter(c => (item.snapshot.clearConditions || []).includes(c.templateId)).map(c => c.template.name);
   p.conditions = p.conditions.filter(c => !(item.snapshot.clearConditions || []).includes(c.templateId));
+  const t = item.snapshot;
+  if (t.effects?.length && t.duration) {
+    ok(['actions', 'minutes'].includes(t.duration.kind), '持续时间无效。');
+    const next = { id: id('v'), templateId: item.templateId, version: item.version, name: t.name,
+      modifiers: clone(t.effects), duration: clone(t.duration), appliedAt: now,
+      ...(t.duration.kind === 'minutes' ? { expiresAt: now + t.duration.count * 60000 } :
+        { remaining: t.duration.count, ...(turnId ? { skipTurnId: turnId } : {}) }) };
+    p.temporaryEffects = [...(p.temporaryEffects || []).filter(e => e.templateId !== item.templateId), next];
+  }
   p.hp = Math.min(stats(p).maxHP, p.hp + Math.max(0, roll.total));
   item.quantity--; if (!item.quantity) delete p.inventory[itemId];
   syncHP(p);
-  return { name: item.snapshot.name, roll, healed: p.hp - before, hp: p.hp };
+  return { name: t.name, roll, healed: Math.max(0, p.hp - before), hpChange: p.hp - before, hp: p.hp, cleared,
+    effects: clone(t.duration ? t.effects || [] : []), duration: clone(t.duration || null) };
 }
 function createOffer(state, creatorId, targetId, type = 'trade', itemId, quantity = 1, price = 0) {
   player(state, targetId);
@@ -519,4 +553,4 @@ function deleteCharacter(state, userId) {
 module.exports = { player, newCharacter, rollCharacter, confirmCharacter, equippedIds, isAttached, sourceEffects,
   modify, signedModifier, weight, stats, syncHP, allocate, grantXP, normalizeEffects, validateTemplate, publishTemplate, makeItem,
   activeOffer, reserved, available, transferable, receive, issue, openLoot, drop, battleFor, equip, attach, useSpecial,
-  createOffer, updateOffer, confirmOffer, cancelOffer, expireOffers, deleteCharacter, bundleItems, itemWeight, equipCharacter, attachCharacter, consume };
+  createOffer, updateOffer, confirmOffer, cancelOffer, expireOffers, deleteCharacter, bundleItems, itemWeight, equipCharacter, attachCharacter, consume, expireEffects, finishEffects };
