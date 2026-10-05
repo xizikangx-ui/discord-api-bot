@@ -36,6 +36,8 @@ const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
 const { createPurgePanel, purgeCommand } = require('./purge-panel');
 const { createScheduledPunishments, scheduledPunishmentCommands } = require('./scheduled-punishments');
 const { createPolls, pollCommand, pollPanelCommand } = require('./polls');
+const { createRpg, commands: rpgCommands } = require('./rpg');
+const { DEFAULT_GUILD_ID: rpgDefaultGuild } = require('./rpg/constants');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
@@ -91,6 +93,9 @@ function parseGuildIds(value) {
 }
 function commandGuildIds() {
   return parseGuildIds(process.env.DISCORD_GUILD_IDS || process.env.DISCORD_GUILD_ID || '');
+}
+function rpgGuildIds() {
+  return parseGuildIds(process.env.DISCORD_RPG_GUILD_IDS || rpgDefaultGuild);
 }
 function punishmentGuildIds() {
   const configured = parseGuildIds(process.env.DISCORD_PUNISHMENT_GUILD_IDS || '');
@@ -353,7 +358,10 @@ async function registerCommands() {
   const body = commands.map((command) => command.toJSON());
   if (guildIds.length) {
     for (const guildId of guildIds) {
-      await rest.put(Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, guildId), { body });
+      const guildBody = rpgGuildIds().includes(guildId) ? [...body, ...rpgCommands().map(c => c.toJSON())] : body;
+      if (new Set(guildBody.map(c => (c.type || 1) + ':' + c.name)).size !== guildBody.length) throw new Error('重复的应用指令名称。');
+      await rest.put(Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, guildId), { body: guildBody });
+      console.log('服务器 ' + guildId + ' 已注册 ' + guildBody.length + ' 个指令' + (rpgGuildIds().includes(guildId) ? '（含跑团）' : '') + '。');
     }
     console.log(`Registered ${commands.length} commands for ${guildIds.length} server(s).`);
   } else {
@@ -3540,6 +3548,18 @@ const polls = createPolls({ client, settingsFor, guildIds: commandGuildIds, save
   scopeFor: guildId => punishmentGuildIds().includes(guildId) ? punishmentGuildIds() : [guildId],
   validatePunishment: validatePunishmentRequest, executePunishment: executePunishmentRequest,
 });
+const rpg = createRpg({ client, guildIds: rpgGuildIds, channel: () => storageChannel, settingsFor,
+  saveIndex: saveGuildData, encrypt: encryptJson, decrypt: decryptJson, logFailure,
+  protectedRoles: guildId => {
+    const setting = settingsFor(guildId);
+    return [setting.managementRoleId, ...(setting.managementCompanionRoleIds || []),
+      ...Object.keys(setting.middleManagementGroups || {}), ...(setting.punishmentOperatorRoleIds || []),
+      ...(setting.permissionOperatorRoleIds || []), ...(setting.moderationOperatorRoleIds || []),
+      setting.moderationReviewerRoleId, ...(setting.moderationReviewerRoleIds || []),
+      ...(setting.purgePolicy?.operatorRoleIds || []), ...(setting.nicknamePolicy?.operatorRoleIds || []),
+      ...Object.values(setting.middleManagementGroups || {}).flatMap(g => g.companionRoleIds || [])].filter(Boolean);
+  },
+});
 let readyWatchdog;
 client.on('shardError', (error) => logFailure('Discord 网关连接错误。', error));
 client.on('shardConnecting', () => console.log('正在连接 Discord 实时网关……'));
@@ -3721,6 +3741,7 @@ client.once('clientReady', async () => {
   await purgePanel.start().catch((error) => logFailure('冲水任务恢复状态保存失败；未自动执行删除。', error));
   await scheduledPunishments.start().catch((error) => logFailure('预约处罚恢复失败，未启动自动执行。', error));
   await polls.start().catch((error) => logFailure('投票恢复失败，未启用投票操作。', error));
+  await rpg.start().catch((error) => logFailure('跑团恢复失败，未启用跑团操作。', error));
   await reconcileLongTimeouts();
   for (const guild of client.guilds.cache.values()) {
     const setting = settingsFor(guild.id);
@@ -4152,6 +4173,7 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
   console.log(`收到 Discord 交互：${interaction.isChatInputCommand() ? `/${interaction.commandName}` : interaction.isContextMenuCommand() ? `右键/${interaction.commandName}` : interaction.isButton() ? '按钮' : interaction.isModalSubmit() ? '表单' : interaction.isStringSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu() ? '菜单' : '交互'}（交互 ID ${interaction.id}，PID ${process.pid}）`);
+  if (await rpg.handle(interaction)) return;
   if (await middleApplications.handle(interaction)) return;
   if (await nicknamePanel.handle(interaction)) return;
   if (await purgePanel.handle(interaction)) return;
