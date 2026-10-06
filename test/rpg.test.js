@@ -1645,3 +1645,13 @@ test('corpse public cards survive restart and require GM confirmation before res
     const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);assert.equal(restored.snapshot(C.DEFAULT_GUILD_ID).corpses[refs.c].messageId,next.messageId);
   }finally{rpg.stop();}
 });
+test('transactional life adjustment rotates a dead current player and expiry cannot mutate NPC death snapshots', async () => {
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
+  const ref=await store.transact(C.DEFAULT_GUILD_ID,'rotation-seed','GM',st=>{Object.assign(st.players,state().players);const b=B.createBattle(st,'c','GM','轮换');B.join(st,b,'1');B.join(st,b,'2');B.start(st,b,null,minRng);return b.id;});
+  const first=store.snapshot(C.DEFAULT_GUILD_ID).battles[ref].current.actorId;
+  await store.transact(C.DEFAULT_GUILD_ID,'fatal-adjust','GM',st=>{const b=st.battles[ref];B.actorCharacter(st,B.actorById(b,first)).hp=0;});
+  const s=store.snapshot(C.DEFAULT_GUILD_ID);assert.ok(s.battles[ref].current);assert.notEqual(s.battles[ref].current.actorId,first);
+  const n=B.addNPC(s,B.createBattle(s,'other','GM','快照'),npcTemplate(s).id,'enemy'),b=Object.values(s.battles).find(b=>b.channelId==='other');
+  n.character.temporaryEffects=[{id:'expired',duration:{kind:'minutes',count:1},expiresAt:1,modifiers:[]}];n.character.hp=0;DT.settle(s,b,n);const saved=JSON.stringify(n.finalCharacter);
+  A.expireAll(s,Date.now());assert.equal(JSON.stringify(n.finalCharacter),saved);assert.equal(n.character.temporaryEffects.length,1);
+});

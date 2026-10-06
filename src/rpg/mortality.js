@@ -67,6 +67,8 @@ function reconcile(state, before) {
     const actor = { id: C.id('a'), userId: uid, name: p.name, team: 'ally' };
     settle(state, { id: null, actors: [actor], queue: [], recent: [], history: [] }, actor);
   }
+  for (const b of Object.values(state.battles)) if (b.status === 'active' && !b.current && !b.pending)
+    require('./combat').nextOpportunity(state, b);
 }
 function claim(state, corpseId, uid, itemId) {
   const c = state.corpses[corpseId], p = M.player(state, uid), b = c && state.battles[c.battleId];

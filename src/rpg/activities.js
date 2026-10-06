@@ -124,7 +124,7 @@ function expireAll(state, now = Date.now()) {
   const changed = new Set();
   for (const p of Object.values(state.players)) if (M.expireEffects(p, now).length) changed.add(p.id);
   for (const b of Object.values(state.battles)) if (b.status !== 'ended') {
-    for (const a of b.actors) if (!a.userId && M.expireEffects(a.character, now).length) changed.add(a.character.id);
+    for (const a of b.actors) if (!a.userId && !a.deathId && M.expireEffects(a.character, now).length) changed.add(a.character.id);
     if (b.current) {
       const a = b.actors.find(a => a.id === b.current.actorId), p = a?.userId ? state.players[a.userId] : a?.character;
       if (p) {

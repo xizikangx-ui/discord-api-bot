@@ -90,7 +90,7 @@ function createRpg(deps) {
     const expiring = Object.values(s.offers).some(o => ['editing', 'ready'].includes(o.status) && o.expiresAt <= now);
     const due = Object.values(s.battles).filter(b => b.pending && b.pending.expiresAt <= now);
     const effectsDue = Object.values(s.players).concat(Object.values(s.battles).filter(b => b.status !== 'ended')
-      .flatMap(b => b.actors.filter(a => !a.userId).map(a => B.actorCharacter(s, a))))
+      .flatMap(b => b.actors.filter(a => !a.userId && !a.deathId).map(a => B.actorCharacter(s, a))))
       .some(p => p.temporaryEffects?.some(e => e.duration.kind === 'minutes' && e.expiresAt <= now));
     if (expiring || due.length || effectsDue) {
       const expiredCharacters = await store.transact(guild, 'timer:' + C.id('t'), client.user.id, st => {
