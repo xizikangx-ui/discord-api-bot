@@ -82,6 +82,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       if (before.receipts[operation]) return C.clone(before.receipts[operation].result);
       const next = C.clone(before);
       const result = await fn(next);
+      require('./mortality').reconcile(next, before);
       const savedResult = C.clone(result ?? null);
       next.revision++;
       next.receipts[operation] = { at: Date.now(), result: C.clone(savedResult) };

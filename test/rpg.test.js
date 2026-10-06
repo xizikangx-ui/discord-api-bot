@@ -6,6 +6,8 @@ const C = require('../src/rpg/constants'), M = require('../src/rpg/model'), B = 
 const F = require('../src/rpg/forms'), U = require('../src/rpg/ui');
 const A = require('../src/rpg/activities'), AU = require('../src/rpg/activities-ui');
 const FA = require('../src/rpg/factions'), BB = require('../src/rpg/buyback');
+const X = require('../src/rpg/exploration'), XU = require('../src/rpg/exploration-ui');
+const L = require('../src/rpg/loot'), DT = require('../src/rpg/mortality');
 const { commands } = require('../src/rpg/commands'), { createStore } = require('../src/rpg/store'), { createRpg } = require('../src/rpg');
 const minRng = min => min;
 function state() {
@@ -169,7 +171,7 @@ test('cards without templates are neutral, all 12 boxes have six colors and rang
   for (const box of C.BOXES) {
     for (const r of C.RARITIES) assert.ok(Object.values(s.catalog).some(t => t.boxes?.includes(box) && t.rarity === r.id));
     p.tickets.boxes[box] = 1; const reward = M.openLoot(s, '1', box, minRng).item;
-    assert.ok(reward.snapshot.value >= 1500000 && reward.snapshot.value <= 23000000);
+    const rarity = C.RARITIES.find(r => r.id === reward.snapshot.rarity); assert.ok(reward.snapshot.value >= rarity.min && reward.snapshot.value <= rarity.max);
   }
 });
 test('versioned gun instances, ammo/magazine/attachments counted once and reloading conserves weight', () => {
@@ -995,7 +997,7 @@ test('upgrade cards and commands meet full Discord limits with long real IDs and
   validateMessage(U.characterView(p)); validateMessage(U.inventoryView(s, '1', '1234567890123456789'));
   validateMessage(AU.checkView(A.createCheck(s, 'GM', 'channel', { name: '鉴定', description: '字'.repeat(2000), rule: 'd20', threshold: 10 })));
   validateMessage(AU.sessionView(A.createSession(s, 'GM', 'channel', { name: '开团', description: '字'.repeat(2000), startsAt: Date.now() + 100000 })));
-  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 22); assert.equal(new Set(all.map(c => c.name)).size, all.length);
+  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 24); assert.equal(new Set(all.map(c => c.name)).size, all.length);
   function validOptions(options) {
     let optional = false;
     for (const o of options || []) { if (o.type > 2) { if (!o.required) optional = true; else assert.equal(optional, false, o.name); }
@@ -1018,7 +1020,7 @@ test('restart preserves minute deadlines, action duration and published template
     return { deadline: p.temporaryEffects[0].expiresAt, oldRef: old.id };
   });
   const restore = createStore(h.deps); await restore.load(C.DEFAULT_GUILD_ID); const saved = restore.snapshot(C.DEFAULT_GUILD_ID);
-  assert.equal(saved.upgrade, 3); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
+  assert.equal(saved.upgrade, 4); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
   assert.equal(saved.players['1'].temporaryEffects[1].skipTurnId, 'use-turn');
   assert.equal(saved.players['1'].temporaryEffects[1].remaining, 2);
   assert.equal(saved.catalog[data.oldRef].description, C.seedCatalog()[data.oldRef].description);
@@ -1415,4 +1417,231 @@ test('deleted or uncertain batch segments require explicit resend and do not rea
     const before = h.sent.length; await rpg.activities.publish(C.DEFAULT_GUILD_ID, 'loot', 'uncertain', true);
     assert.equal(h.sent.length, before + 1); assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].tickets.boxes['饭盒'], 0);
   } finally { rpg.stop(); }
+});
+function mapFixture(s = state(), roomExtra = {}, mode = 'random') {
+  const category = F.create(s, 'GM', 'mapcategory'); category.data.name = '研究所'; const cat = F.publish(s, category);
+  const form = F.create(s, 'GM', 'room'); Object.assign(form.data, { name: '实验室', description: '密闭实验室，遗留研究设备。', categoryIds: [cat.id], boxes: ['大衣'], ...roomExtra });
+  const room = F.publish(s, form), m = X.create(s, 'GM', 'channel', '研究所探索', 2, 5, mode, cat.id);
+  if (mode === 'fixed') for (const c of Object.values(m.cells)) if (c.type === 'room') c.templateId = room.id;
+  X.generate(s, m, minRng); X.publish(s, m); return { s, m, room, cat };
+}
+function npcTemplate(s, extra = {}) {
+  const t = B.validateNPC(s, { ...F.defaults('npc'), name: '守卫', humanoid: true, baseXP: 1000, hpMax: 1, ...extra });
+  t.id = C.id('t'); t.version = 1; t.published = true; s.npcTemplates[t.id] = t; return t;
+}
+test('safe probabilities use exact two-decimal weights, all boundaries, presets and independent configuration', () => {
+  const s = state();
+  for (const box of Object.keys(L.DEFAULT_SAFE_RATES)) {
+    const rates = L.rates(s, box); assert.equal(rates.reduce((a,b)=>a+b),100); let at=0;
+    for(let n=0;n<6;n++) { const size=Math.round(rates[n]*100); assert.equal(L.rarity(s,box,()=>at).id,L.COLORS[n]); assert.equal(L.rarity(s,box,()=>at+size-1).id,L.COLORS[n]); at+=size; }
+  }
+  assert.throws(()=>L.setRates(s,'保险箱',[0,0,0,0,0,99]),/100/);
+  assert.throws(()=>L.setRates(s,'保险箱',[1.001,0,0,0,0,98.999]),/两位/);
+  L.setRates(s,'保险箱',[0,0,0,0,0,100]); assert.equal(L.generate(s,'保险箱',minRng).items[0].snapshot.rarity,'red');
+  assert.deepEqual(L.rates(s,'小型保险'),L.DEFAULT_SAFE_RATES.小型保险);
+});
+test('map categories and persistent room forms require published references and preserve content snapshots', () => {
+  const s=state(), bad=F.create(s,'GM','room');bad.data.name='无大类';assert.throws(()=>F.publish(s,bad),/大类/);
+  const {m,room}=mapFixture(s);assert.equal(Object.values(m.cells).filter(c=>c.room).length,4);
+  assert.equal(m.cells['2,0'].room.snapshot.description,room.description);room.description='新描述';assert.notEqual(m.cells['2,0'].room.snapshot.description,room.description);
+  for(const kind of ['mapcategory','room']) {const f=F.create(s,'GM',kind);validateMessage(F.view(s,f));for(let n=0;n<F.fields(f).length;n++){f.field=n;if(['refs','multi'].includes(F.fields(f)[n].type))validateMessage(F.choiceView(s,f));}}
+});
+test('map edit validates connectivity, entrance and stairs, fixed room selection and only prepublish rerolls', () => {
+  const {s,m,cat}=mapFixture();assert.throws(()=>X.generate(s,m),/发布/);
+  m.status='paused';X.editCell(s,m,1,2,'wall');assert.throws(()=>X.validateMap(m),/不可达/);
+  X.editCell(s,m,1,2,'stairs');assert.equal(X.validateMap(m),'0,0');
+  X.editCell(s,m,6,1,'room',cat.id);assert.equal(m.width,6);assert.ok(m.cells['5,0'].room);
+  const draft=X.create(s,'GM','other','固定',1,3,'fixed',cat.id);assert.throws(()=>X.generate(s,draft),/固定地图/);
+  X.editCell(s,draft,3,1,'entrance');assert.throws(()=>X.validateMap(draft),/一个入口/);
+});
+test('paused layouts may replace unexplored rooms but never cells with prior visits or claimed supplies', () => {
+  const {s,m,cat}=mapFixture();m.status='paused';X.editCell(s,m,3,1,'corridor');assert.equal(m.cells['2,0'].type,'corridor');
+  X.editCell(s,m,3,1,'room',cat.id);assert.ok(m.cells['2,0'].room);m.status='active';X.join(s,m,'1');X.move(s,m,'1','1,0');X.move(s,m,'1','2,0');X.move(s,m,'1','1,0');
+  m.status='paused';assert.throws(()=>X.editCell(s,m,3,1,'empty'),/交互/);
+});
+test('exploration enforces original character, one map, shared fog, movement links and battle isolation', () => {
+  const {s,m,cat}=mapFixture();X.join(s,m,'1');X.join(s,m,'1');assert.equal(Object.keys(m.participants).length,1);
+  assert.ok(!XU.grid(m).includes('实验室'));assert.equal(m.revealed['2,0'],undefined);
+  X.move(s,m,'1','1,0');X.move(s,m,'1','2,0');assert.ok(m.revealed['2,0']);assert.equal(m.participants['1'].cell,'2,0');
+  assert.throws(()=>X.move(s,m,'1','4,1'),/相邻/);m.status='paused';assert.throws(()=>X.editCell(s,m,3,1,'wall'),/交互/);m.status='active';
+  const other=X.create(s,'GM','second','别处',1,3,'random',cat.id);X.generate(s,other,minRng);X.publish(s,other);assert.throws(()=>X.join(s,other,'1'),/另一张/);
+  const b=B.createBattle(s,'fight','GM','战斗');B.join(s,b,'1');assert.throws(()=>X.move(s,m,'1','1,0'),/参战/);
+  B.endBattle(s,b);s.players['1'].id='replacement';assert.throws(()=>X.participant(s,m,'1'),/当前角色/);
+});
+test('key instances hold independent charges, forbid reserved keys and spend exactly once on a shared door', () => {
+  const s=state(), key=M.publishTemplate(s,{...F.defaults('item','钥匙'),name:'研究钥匙',keyCharges:2});
+  const {m}=mapFixture(s,{keyIds:[key.id]});const keys=M.issue(s,'1',key.id,2);assert.equal(keys.length,2);assert.equal(keys[0].quantity,1);
+  X.join(s,m,'1');X.join(s,m,'2');X.move(s,m,'1','1,0');assert.throws(()=>X.move(s,m,'1','2,0'),/钥匙/);
+  const offer=M.createOffer(s,'1','2','trade');M.updateOffer(s,offer.id,'1',[{id:keys[0].id,quantity:1}],0);assert.throws(()=>X.move(s,m,'1','2,0',keys[0].id),/钥匙/);
+  M.cancelOffer(s,offer.id,'1');X.move(s,m,'1','2,0',keys[0].id);assert.equal(keys[0].keyCharges,1);assert.equal(keys[1].keyCharges,2);
+  X.move(s,m,'1','1,0');X.move(s,m,'1','2,0',keys[0].id);assert.equal(keys[0].keyCharges,1);
+  X.move(s,m,'2','1,0');X.move(s,m,'2','2,0');assert.ok(m.cells['2,0'].room.unlocked);
+});
+test('map containers are free, shared, batch-bound and transfer original overweight result without reroll', () => {
+  const {s,m}=mapFixture();X.join(s,m,'1');X.join(s,m,'2');for(const u of ['1','2']){X.move(s,m,u,'1,0');X.move(s,m,u,'2,0');}
+  const p=s.players['1'];p.attributes.strength=0;p.attributes.constitution=0;
+  const c=m.cells['2,0'].room.containers[0], first=X.open(s,m,'1',c.id,minRng);assert.ok(first.result.pending);assert.equal(p.tickets.boxes.大衣,undefined);
+  const retry=X.open(s,m,'1',c.id,()=>{throw Error('reroll')});assert.deepEqual(retry.result.items,first.result.items);
+  assert.throws(()=>X.open(s,m,'2',c.id),/绑定/);m.status='paused';X.transfer(s,m,'2,0',c.id,'2');m.status='active';
+  const claim=X.open(s,m,'2',c.id,()=>{throw Error('reroll')});assert.equal(claim.result.pending,false);assert.equal(claim.result.batchId,first.result.batchId);
+  assert.equal(s.players['2'].tickets.boxes.大衣,undefined);assert.throws(()=>X.open(s,m,'1',c.id),/领取/);
+});
+test('room supplies are single copies, monster encounters require GM resolution and use frozen NPC loadouts', () => {
+  const s=state(), npc=npcTemplate(s), item=Object.keys(s.catalog)[0];const {m}=mapFixture(s,{npcIds:[npc.id],supplyIds:[item]});
+  X.join(s,m,'1');X.move(s,m,'1','1,0');assert.equal(X.move(s,m,'1','2,0'),true);
+  assert.throws(()=>X.currentRoom(s,m,'1'),/遭遇/);assert.throws(()=>X.move(s,m,'1','1,0'),/遭遇/);
+  npc.name='模板更新';const b=X.encounter(s,m,'2,0',['1']);assert.equal(b.actors[1].name,'守卫');
+  assert.throws(()=>X.resolve(s,m,'2,0'),/结束/);B.endBattle(s,b);X.resolve(s,m,'2,0');
+  const ref=m.cells['2,0'].room.supplies[0].id;X.take(s,m,'1',ref);assert.throws(()=>X.take(s,m,'1',ref),/领取/);
+});
+test('NPC lethal attack grants adaptation experience once and humanoid inventory becomes shared physical loot', () => {
+  const s=state();s.players['1'].adaptation=5;const w=weapon(s), t=npcTemplate(s,{itemIds:[w.id],baseXP:1000});
+  const b=B.createBattle(s,'c','GM','死亡');const player=B.join(s,b,'1'), n=B.addNPC(s,b,t.id,'enemy');B.position(b,n.id,25,25);B.start(s,b,null,minRng);
+  const held=M.issue(s,'1',w.id)[0];M.equip(s,'1',held.id);const h=B.attack(s,b,b.current.id,held.id,n.id,'formal',minRng);B.defend(s,b,h.id,'none',minRng);
+  assert.ok(n.deathId);const d=s.deaths[n.deathId];assert.equal(d.rewarded.characterId,s.players['1'].id);assert.equal(d.rewarded.result.credited,1200);assert.equal(s.players['1'].level,2);
+  assert.throws(()=>DT.reward(s,b,d,'1'),/重复/);const corpse=s.corpses[d.corpseId];assert.equal(corpse.items.length,1);assert.equal(corpse.items[0].snapshot.name,w.name);
+  assert.throws(()=>DT.claim(s,corpse.id,'1',corpse.items[0].id),/结束/);B.endBattle(s,b);const item=DT.claim(s,corpse.id,'1',corpse.items[0].id);assert.ok(s.players['1'].inventory[item.id]);assert.throws(()=>DT.claim(s,corpse.id,'1',item.id),/领取/);
+});
+test('NPC DOT death credits source, unknown or friendly death requires correct nonautomatic reward handling', () => {
+  const s=state(), t=npcTemplate(s,{humanoid:false,baseXP:5});const b=B.createBattle(s,'c','GM','异常');const a=B.join(s,b,'1'),n=B.addNPC(s,b,t.id,'enemy');
+  const condition=B.validateCondition({...F.defaults('condition'),name:'致命毒素',levels:{一般:{difficulty:100,duration:{kind:'actions',count:3},worsenAfter:0,effects:[{target:'hp',amount:'1'}]}}});
+  condition.id='poison';condition.version=1;condition.published=true;s.conditionTemplates.poison=condition;B.applyCondition(s,n.character,{id:'poison',severity:'一般'},minRng,a.id);
+  B.beginConditions(n.character,b,n,minRng,s);assert.equal(s.deaths[n.deathId].rewarded.userId,'1');assert.equal(Object.keys(s.corpses).length,0);
+  const unknown=B.addNPC(s,b,t.id,'enemy');unknown.character.hp=0;const d=DT.settle(s,b,unknown);assert.equal(d.rewarded,null);DT.reward(s,b,d,'2');assert.equal(d.rewarded.userId,'2');
+  const ally=B.addNPC(s,b,t.id,'ally');ally.character.hp=0;const friendly=DT.settle(s,b,ally,a.id);assert.equal(friendly.rewarded,null);assert.throws(()=>DT.reward(s,b,friendly,'1'),/不能/);
+});
+test('humanoid equipped attachments, magazine, ammo and keys drop once retaining instance state and overloaded claims stay', () => {
+  const s=state();
+  M.publishTemplate(s,{kind:'弹药',name:'9mm',ammoType:'9mm',rarity:'white',weightKg:.01});
+  M.publishTemplate(s,{kind:'弹夹',name:'标准夹',ammoType:'9mm',magazineType:'标准',capacity:3,rarity:'white',weightKg:.2});
+  const part=M.publishTemplate(s,{kind:'配件',name:'瞄具',compatible:['手枪'],attachmentSlot:'瞄具',rarity:'white',weightKg:.1});
+  const gun=weapon(s,{weaponType:'手枪',melee:false,ammoType:'9mm',magazineType:'标准',capacity:3,current:2,preinstalled:[part.id]});
+  const key=M.publishTemplate(s,{...F.defaults('item','钥匙'),name:'钥匙',keyCharges:3});const skill=M.publishTemplate(s,{...F.defaults('item','技能'),name:'技能'});
+  const t=npcTemplate(s,{itemIds:[gun.id,key.id,skill.id]});const b=B.createBattle(s,'c','GM','装备');const a=B.join(s,b,'1'),n=B.addNPC(s,b,t.id,'enemy');
+  const k=Object.values(n.character.inventory).find(i=>i.snapshot.kind==='钥匙');k.keyCharges=1;n.character.hp=0;const d=DT.settle(s,b,n,a.id),c=s.corpses[d.corpseId];
+  assert.equal(c.items.filter(i=>i.snapshot.kind==='技能').length,0);assert.equal(c.items.find(i=>i.templateId===key.id).keyCharges,1);
+  const root=c.items.find(i=>i.templateId===gun.id);assert.equal(root.loaded.current,2);assert.equal(root.bundle.length,2);assert.equal(c.items.filter(i=>i.snapshot.kind==='配件'||i.snapshot.kind==='弹夹').length,0);assert.equal(M.itemWeight(root),132);B.endBattle(s,b);
+  s.players['1'].attributes.strength=0;s.players['1'].attributes.constitution=0;assert.throws(()=>DT.claim(s,c.id,'1',c.items.find(i=>i.templateId===gun.id).id),/超重/);assert.equal(Object.keys(c.claims).length,0);
+});
+test('player death cancels offers, removes exploration and turn, freezes history, clears all assets and lets new card start', () => {
+  const {s,m}=mapFixture();X.join(s,m,'1');const p=s.players['1'];p.balance=100;p.tickets.card=10;M.issue(s,'1',Object.keys(s.catalog)[0]);
+  const offer=M.createOffer(s,'1','2','trade'),b=B.createBattle(s,'f','GM','死亡');const a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s).id,'enemy');B.start(s,b,null,minRng);
+  p.hp=0;const d=DT.settle(s,b,a,n.id);assert.ok(d.snapshot.inventory);assert.equal(s.players['1'],undefined);assert.equal(s.offers[offer.id].status,'cancelled');assert.equal(m.participants['1'],undefined);assert.ok(a.finalCharacter);assert.ok(!b.current || b.current.actorId!==a.id);
+  M.rollCharacter(s,'1','新卡',false,minRng);const fresh=M.confirmCharacter(s,'1');assert.notEqual(fresh.id,d.characterId);assert.equal(fresh.balance,0);assert.equal(fresh.tickets.card,0);assert.equal(Object.keys(fresh.inventory).length,0);assert.equal(M.battleFor(s,'1'),undefined);
+  assert.equal(B.actorCharacter(s,a).id,d.characterId);assert.equal(DT.settle(s,b,a),null);
+});
+test('HP transaction reconciliation clears new noncombat deaths but preserves historical zero characters', async () => {
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
+  await store.transact(C.DEFAULT_GUILD_ID,'seed','GM',st=>Object.assign(st.players,state().players));
+  await store.transact(C.DEFAULT_GUILD_ID,'zero','GM',st=>{st.players['1'].hp=0;});assert.equal(store.snapshot(C.DEFAULT_GUILD_ID).players['1'],undefined);
+  await store.transact(C.DEFAULT_GUILD_ID,'historical','GM',st=>{st.players['1']=state().players['1'];st.players['1'].hp=0;});
+  await store.transact(C.DEFAULT_GUILD_ID,'noop','GM',()=>null);assert.equal(store.snapshot(C.DEFAULT_GUILD_ID).players['1'].hp,0);
+  const copy=createStore(h.deps);await copy.load(C.DEFAULT_GUILD_ID);assert.equal(Object.keys(copy.snapshot(C.DEFAULT_GUILD_ID).deaths).length,1);
+});
+test('encrypted death failure rollback/reconciliation and duplicate receipts cannot award twice or wipe a recreated character', async () => {
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
+  const setup=await store.transact(C.DEFAULT_GUILD_ID,'setup','GM',st=>{Object.assign(st.players,state().players);const b=B.createBattle(st,'c','GM','死亡');const a=B.join(st,b,'1'),n=B.addNPC(st,b,npcTemplate(st).id,'enemy');return {b:b.id,n:n.id,a:a.id};});
+  h.fail('after');const op=st=>{const b=st.battles[setup.b],n=B.actorById(b,setup.n);n.character.hp=0;return DT.settle(st,b,n,setup.a).id;};
+  const id=await store.transact(C.DEFAULT_GUILD_ID,'kill','1',op);await store.transact(C.DEFAULT_GUILD_ID,'kill','1',()=>{throw Error('duplicate')});
+  const st=store.snapshot(C.DEFAULT_GUILD_ID);assert.equal(Object.keys(st.deaths).length,1);assert.equal(st.deaths[id].rewarded.userId,'1');
+  assert.ok([...h.fileBodies.values()].every(v=>!v.includes('守卫')));
+});
+test('runtime map configuration authenticates GM and supports category, map creation, editing, generation and registration', async () => {
+  const h=harness(),rpg=createRpg(h.deps);await rpg.start();try {
+    await rpg.store.transact(C.DEFAULT_GUILD_ID,'seed','GM',st=>{Object.assign(st.players,state().players);st.config.gmRoleIds=['gm'];st.config.playerRoleIds=['player'];mapFixture(st);});
+    const denied=h.interaction('1','地图配置');await rpg.handle(denied);assert.match(denied.result.content,/GM/);
+    const conf=h.interaction('GM','地图配置');await rpg.handle(conf);validateMessage(conf.result);
+    const home=h.interaction('GM','地图');await rpg.handle(home);validateMessage(home.result);
+    const s=rpg.store.snapshot(C.DEFAULT_GUILD_ID),m=Object.values(s.explorations)[0];
+    const join=h.interaction('1',null,{},'rpg:map:join:'+m.id);await rpg.handle(join);assert.ok(rpg.store.snapshot(C.DEFAULT_GUILD_ID).explorations[m.id].participants['1']);validateMessage(join.result);
+    const move=h.interaction('1',null,{},'rpg:map:move:'+m.id+':1,0');await rpg.handle(move);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).explorations[m.id].participants['1'].cell,'1,0');validateMessage(move.result);
+    const personal=h.interaction('1',null,{},'rpg:map:personal:'+m.id);await rpg.handle(personal);validateMessage(personal.result);
+    const config=h.interaction('GM',null,{},'rpg:map:rates');await rpg.handle(config);validateMessage(config.result);
+    const pick=h.interaction('GM',null,{},'rpg:map:ratepick',['保险箱']);await rpg.handle(pick);validateMessage(pick.result);
+    const update=h.interaction('GM',null,{},'rpg:map:rateeditsubmit:保险箱',undefined,{values:'0 0 0 0 0 100'});await rpg.handle(update);assert.deepEqual(L.rates(rpg.store.snapshot(C.DEFAULT_GUILD_ID),'保险箱'),[0,0,0,0,0,100]);
+  }finally{rpg.stop();}
+});
+test('GM setting player zero HP requires explicit confirmation and dead historical actor cannot be revived', async () => {
+  const h=harness(),rpg=createRpg(h.deps);await rpg.start();try{
+    const data=await rpg.store.transact(C.DEFAULT_GUILD_ID,'seed','GM',st=>{Object.assign(st.players,state().players);st.config.gmRoleIds=['gm'];const b=B.createBattle(st,'channel','GM','死亡');const a=B.join(st,b,'1');return {b:b.id,a:a.id,char:st.players['1'].id};});
+    const zero=h.interaction('GM','战斗',{sub:'生命',角色:data.a,数值:0});await rpg.handle(zero);assert.ok(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1']);assert.match(zero.result.embeds[0].data.title,/确认/);
+    const confirm=h.interaction('GM',null,{},'rpg:gmui:'+data.b+':deathconfirm:'+data.a+':'+data.char);await rpg.handle(confirm);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'],undefined);
+    const duplicate=h.interaction('GM',null,{},'rpg:gmui:'+data.b+':deathconfirm:'+data.a+':'+data.char);await rpg.handle(duplicate);assert.match(duplicate.result.content,/死亡/);
+  }finally{rpg.stop();}
+});
+test('large fog cards and redesigned public/private character data obey Discord limits and hide assets', () => {
+  const s=state(),{m}=mapFixture(s);m.width=20;m.floors=20;validateMessage(XU.board(m));
+  const p=s.players['1'];p.balance=12345678;p.tickets.card=87654321;const pub=U.characterView(p);validateMessage(pub);assert.ok(!JSON.stringify(pub).includes('12345678'));assert.ok(!JSON.stringify(pub).includes('87654321'));
+  const b=B.createBattle(s,'c','GM','属性');const a=B.join(s,b,'1');const v=U.personalView(s,b,a,'1');validateMessage(v);assert.ok(JSON.stringify(v).includes('身体属性'));assert.ok(JSON.stringify(v).includes('12345678'));
+});
+test('full private map wizard updates original panel, edits room cells and publishes fog without secret content', async () => {
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const {cat,room}=await rpg.store.transact(C.DEFAULT_GUILD_ID,'room','GM',st=>{const {cat,room,m}=mapFixture(st);m.channelId='existing';return{cat,room};});
+    let i=h.interaction('GM','地图');await rpg.handle(i);i=await click(h,rpg,'GM',i,'创建地图');i=await click(h,rpg,'GM',i,'选择一项',[cat.id]);i=await click(h,rpg,'GM',i,'地图方式',['fixed']);
+    const opened=await click(h,rpg,'GM',i,'填写名称与大小');assert.ok(opened.modal);i=await submit(h,rpg,'GM',opened,{name:'固定研究所',floors:'1',width:'3'});
+    const m=Object.values(rpg.store.snapshot(C.DEFAULT_GUILD_ID).explorations).find(m=>m.name==='固定研究所');assert.ok(m);
+    i=await click(h,rpg,'GM',i,'添加 / 修改 / 删除格子');i=await click(h,rpg,'GM',i,'格子类型',['room']);
+    const coords=await click(h,rpg,'GM',i,'填写列与楼层');i=await submit(h,rpg,'GM',coords,{x:'3',y:'1'});
+    i=await click(h,rpg,'GM',i,'指定房间');i=await click(h,rpg,'GM',i,'选择一项',[room.id]);i=await click(h,rpg,'GM',i,'确认保存');
+    i=await click(h,rpg,'GM',i,'生成 / 重新抽取');const before=rpg.store.snapshot(C.DEFAULT_GUILD_ID).explorations[m.id].cells['2,0'].room.id;
+    i=await click(h,rpg,'GM',i,'确认发布');const saved=rpg.store.snapshot(C.DEFAULT_GUILD_ID).explorations[m.id];assert.equal(saved.status,'active');assert.equal(saved.cells['2,0'].room.id,before);
+    assert.ok(saved.messageId);const pub=h.messages.get(saved.messageId).lastPayload;validateMessage(pub);assert.ok(!JSON.stringify(pub).includes('密闭实验室'));
+    const list=h.interaction('1','地图');await rpg.handle(list);const chosen=await click(h,rpg,'1',list,'选择一项',[m.id]);validateMessage(chosen.result);assert.match(chosen.result.embeds[0].data.title,/探索地图/);
+    const join=await click(h,rpg,'1',chosen,'参与探索');assert.ok(join.updatedSource);validateMessage(join.result);
+  }finally{rpg.stop();}
+});
+test('shared container concurrent transactions and encrypted restart retain same batch, charge no tickets and preserve claim binding', async () => {
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
+  const d=await store.transact(C.DEFAULT_GUILD_ID,'seed','GM',st=>{Object.assign(st.players,state().players);const{m}=mapFixture(st);for(const u of ['1','2']){X.join(st,m,u);X.move(st,m,u,'1,0');X.move(st,m,u,'2,0');}st.players['1'].attributes.constitution=0;st.players['1'].attributes.strength=0;return {m:m.id,c:m.cells['2,0'].room.containers[0].id};});
+  const results=await Promise.allSettled(['1','2'].map(uid=>store.transact(C.DEFAULT_GUILD_ID,'open-'+uid,uid,st=>X.open(st,st.explorations[d.m],uid,d.c,minRng))));assert.equal(results[0].status,'fulfilled');assert.equal(results[1].status,'rejected');
+  const batch=results[0].value.result;const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);
+  const retry=await restored.transact(C.DEFAULT_GUILD_ID,'retry','1',st=>X.open(st,st.explorations[d.m],'1',d.c,()=>{throw Error('reroll')}));assert.deepEqual(retry.result.items,batch.items);
+  await restored.transact(C.DEFAULT_GUILD_ID,'transfer','GM',st=>{const m=st.explorations[d.m];m.status='paused';X.transfer(st,m,'2,0',d.c,'2');m.status='active';});
+  const claimed=await restored.transact(C.DEFAULT_GUILD_ID,'claim','2',st=>X.open(st,st.explorations[d.m],'2',d.c,()=>{throw Error('reroll')}));assert.equal(claimed.result.batchId,batch.batchId);assert.equal(claimed.result.pending,false);
+  assert.equal(restored.snapshot(C.DEFAULT_GUILD_ID).players['2'].tickets.boxes.大衣,undefined);
+});
+test('death on action condition advances current actor safely and minute HP clamp follows unified settlement', async () => {
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
+  const refs=await store.transact(C.DEFAULT_GUILD_ID,'setup','GM',st=>{Object.assign(st.players,state().players);const b=B.createBattle(st,'c','GM','毒素');B.join(st,b,'1');B.join(st,b,'2');
+    const t=B.validateCondition({...F.defaults('condition'),name:'毒',levels:{一般:{difficulty:100,duration:{kind:'actions',count:3},worsenAfter:0,effects:[{target:'hp',amount:'100'}]}}});t.id='poison';t.version=1;t.published=true;st.conditionTemplates.poison=t;B.applyCondition(st,st.players['1'],{id:t.id,severity:'一般'},minRng,b.actors[1].id);return b.id;});
+  await store.transact(C.DEFAULT_GUILD_ID,'start','GM',st=>B.start(st,st.battles[refs],null,minRng));const s=store.snapshot(C.DEFAULT_GUILD_ID);assert.equal(s.players['1'],undefined);assert.notEqual(s.battles[refs].current?.actorId,s.battles[refs].actors[0].id);assert.ok(s.battles[refs].actors[0].deathId);
+  await store.transact(C.DEFAULT_GUILD_ID,'restore-base','GM',st=>{const p=st.players['2'];p.attributes.constitution=0;p.temporaryEffects=[{id:'buff',name:'生命增益',templateId:'a',modifiers:[{target:'hpMax',op:'add',value:30}],duration:{kind:'minutes',count:1},expiresAt:1}];});
+  await store.transact(C.DEFAULT_GUILD_ID,'expire','BOT',st=>A.expireAll(st,100));assert.equal(store.snapshot(C.DEFAULT_GUILD_ID).players['2'],undefined);
+});
+test('simultaneous corpse claims transfer each bundle at most once and recreated original participant is rejected', async () => {
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
+  const data=await store.transact(C.DEFAULT_GUILD_ID,'seed','GM',st=>{Object.assign(st.players,state().players);const b=B.createBattle(st,'c','GM','掉落');B.join(st,b,'1');B.join(st,b,'2');const t=npcTemplate(st,{itemIds:[Object.keys(st.catalog)[0]]});const n=B.addNPC(st,b,t.id,'enemy');n.character.hp=0;const d=DT.settle(st,b,n);B.endBattle(st,b);return {c:d.corpseId,item:st.corpses[d.corpseId].items[0].id};});
+  const results=await Promise.allSettled(['1','2'].map(uid=>store.transact(C.DEFAULT_GUILD_ID,'pick-'+uid,uid,st=>DT.claim(st,data.c,uid,data.item))));assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(Object.keys(store.snapshot(C.DEFAULT_GUILD_ID).corpses[data.c].claims).length,1);
+});
+test('upgrade 4 only initializes new fields and never awards historical kills or deletes zero-HP saved players', () => {
+  const s=state(),b=B.createBattle(s,'c','GM','历史');const a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s).id,'enemy');s.upgrade=3;s.players['1'].hp=0;n.character.hp=0;
+  delete s.explorations;delete s.mapCategories;delete s.roomTemplates;delete s.deaths;delete s.corpses;delete n.humanoid;delete n.baseXP;delete a.characterId;
+  const old=JSON.stringify(s.players),report=A.migrate(s);assert.ok(report.maps);assert.equal(s.upgrade,4);assert.equal(JSON.stringify(s.players),old);assert.equal(n.baseXP,0);assert.equal(n.humanoid,false);assert.equal(Object.keys(s.deaths).length,0);assert.equal(A.migrate(s),null);
+});
+test('fatal condition preserves original caster identity after actor removal and never rewards a replacement card', () => {
+  for (const replacement of [false, true]) {
+    const s=state(),b=B.createBattle(s,'c','GM','持续伤害'),a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s,{humanoid:false}).id,'enemy');
+    const t=B.validateCondition({...F.defaults('condition'),name:'持续毒素',levels:{一般:{difficulty:100,duration:{kind:'actions',count:3},worsenAfter:0,effects:[{target:'hp',amount:'100'}]}}});
+    t.id='fatal';t.version=1;t.published=true;s.conditionTemplates[t.id]=t;
+    B.applyCondition(s,n.character,{id:t.id,severity:'一般'},minRng,{actorId:a.id,userId:'1',characterId:s.players['1'].id});
+    b.actors=b.actors.filter(x=>x.id!==a.id);
+    if(replacement)s.players['1'].id='new-character';
+    B.beginConditions(n.character,b,n,minRng,s);const death=s.deaths[n.deathId];
+    assert.ok(death);assert.equal(death.rewarded?.userId,replacement?undefined:'1');
+    if(!replacement)assert.equal(death.rewarded.result.credited,1000);
+  }
+});
+test('corpse public cards survive restart and require GM confirmation before resending deleted messages', async () => {
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const refs=await rpg.store.transact(C.DEFAULT_GUILD_ID,'corpse-seed','GM',st=>{
+      const b=B.createBattle(st,'channel','GM','尸体公示');B.join(st,b,'1');const n=B.addNPC(st,b,npcTemplate(st,{itemIds:[Object.keys(st.catalog)[0]]}).id,'enemy');
+      n.character.hp=0;const d=DT.settle(st,b,n);B.endBattle(st,b);return{b:b.id,c:d.corpseId};
+    });
+    await rpg.exploration.publishCorpses(C.DEFAULT_GUILD_ID,refs.b);const first=rpg.store.snapshot(C.DEFAULT_GUILD_ID).corpses[refs.c].messageId;
+    validateMessage(h.messages.get(first).lastPayload);h.messages.delete(first);
+    await assert.rejects(()=>rpg.exploration.publishCorpses(C.DEFAULT_GUILD_ID,refs.b),/核对/);
+    await rpg.exploration.publishCorpses(C.DEFAULT_GUILD_ID,refs.b,true);
+    const next=rpg.store.snapshot(C.DEFAULT_GUILD_ID).corpses[refs.c];assert.notEqual(next.messageId,first);assert.equal(next.items.length,1);
+    const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);assert.equal(restored.snapshot(C.DEFAULT_GUILD_ID).corpses[refs.c].messageId,next.messageId);
+  }finally{rpg.stop();}
 });

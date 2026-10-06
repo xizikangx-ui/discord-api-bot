@@ -79,13 +79,14 @@ function applyCondition(state, p, ref, rng = randomInt, source = null) {
     old.remaining = stage.duration.kind === 'actions' ? stage.duration.count : null;
     return { name: old.template.name, severity: old.severity, save, refreshed: true };
   }
-  const next = { id: old?.id || id('z'), templateId: ref.id, template: clone(template), severity, source };
+  const next = { id: old?.id || id('z'), templateId: ref.id, template: clone(template), severity,
+    source: typeof source === 'object' ? source?.actorId || null : source, sourceIdentity: typeof source === 'object' ? clone(source) : null };
   p.conditions = p.conditions.filter(c => c.templateId !== ref.id);
   p.conditions.push(next);
   stageModifiers(next, p, rng);
   return { name: template.name, severity, save };
 }
-function beginConditions(p, battle, actor, rng) {
+function beginConditions(p, battle, actor, rng, state) {
   for (const e of M.expireEffects(p)) record(battle, actor.name + '的' + e.name + '持续效果已到期。');
   for (const condition of p.conditions) {
     if (condition.template.effectType !== 'numeric') continue;
@@ -93,6 +94,7 @@ function beginConditions(p, battle, actor, rng) {
       const roll = C.dice(e.amount, 'normal', rng);
       p.hp = Math.max(0, p.hp - Math.max(0, roll.total));
       record(battle, actor.name + '因' + condition.template.name + '损失' + Math.max(0, roll.total) + 'HP。', { roll });
+      if (p.hp <= 0 && state) { require('./mortality').settle(state, battle, actor, condition.sourceIdentity || condition.source); return; }
     }
   }
   M.syncHP(p);
@@ -138,7 +140,7 @@ function join(state, battle, userId) {
   ok(!M.battleFor(state, userId), '已经参加战斗，请先退出原招募或由GM移出。');
   const p = M.player(state, userId);
   ok(battle.actors.length < 20, '当前战斗最多20名参战者。');
-  const actor = { id: id('a'), userId, name: p.name, team: 'ally', x: 25, y: 25, retreated: false };
+  const actor = { id: id('a'), userId, characterId: p.id, name: p.name, team: 'ally', x: 25, y: 25, retreated: false };
   battle.actors.push(actor); record(battle, p.name + '参加战斗。');
   return actor;
 }
@@ -154,6 +156,7 @@ function validateNPC(state, raw) {
   t.description = C.text(t.description || '', 'NPC描述', 2000, true);
   t.attributes = Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, num(t.attributes?.[k] ?? 1, C.ATTRIBUTES[k], 0, 100000)]));
   t.hpMax = num(t.hpMax || t.attributes.constitution * 3 || 1, 'HP上限', 1, 10000000);
+  t.humanoid = !!t.humanoid; t.baseXP = num(t.baseXP ?? 0, '基础击杀经验', 0, 1000000000);
   t.itemIds ||= [];
   for (const ref of t.itemIds) ok(state.catalog[ref]?.published, 'NPC装备或技能未发布。');
   t.itemQuantities = {};
@@ -165,16 +168,16 @@ function validateNPC(state, raw) {
   t.loadout = t.itemIds.map(ref => ({ template: clone(state.catalog[ref]), quantity: t.itemQuantities[ref] || 1 }));
   return t;
 }
-function addNPC(state, battle, templateId, team) {
+function addNPC(state, battle, templateId, team, frozenTemplate = null) {
   ok(['recruiting', 'paused'].includes(battle.status), '添加NPC前请暂停战斗。');
-  const template = state.npcTemplates[templateId];
+  const template = frozenTemplate || state.npcTemplates[templateId];
   ok(template?.published, 'NPC模板不存在。');
   ok(battle.actors.length < 20, '当前战斗最多20名参战者。');
   ok(['ally', 'enemy'].includes(team), '阵营无效。');
   const p = M.newCharacter(template.name, clone(template.attributes));
   p.points = 0; p.hpMaxOverride = template.hpMax; p.hp = template.hpMax;
   for (const entry of template.loadout || template.itemIds.map(ref => ({ template: state.catalog[ref], quantity: 1 }))) {
-    const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能'].includes(entry.template.kind);
+    const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能', '钥匙'].includes(entry.template.kind);
     for (let n = 0; n < (stateful ? entry.quantity : 1); n++) {
     const item = M.makeItem(entry.template, stateful ? 1 : entry.quantity);
     for (const part of M.bundleItems(item)) { p.inventory[part.id] = part; delete part.bundle; }
@@ -192,7 +195,7 @@ function addNPC(state, battle, templateId, team) {
     if (item.snapshot.kind === '卡牌') { ok(p.equipped.cards.length < 5, 'NPC卡牌超过5张。'); p.equipped.cards.push(item.id); }
     }
   }
-  const actor = { id: id('a'), templateId, name: template.name, team, character: p, retreated: false,
+  const actor = { id: id('a'), templateId, humanoid: !!template.humanoid, baseXP: template.baseXP || 0, templateVersion: template.version, name: template.name, team, character: p, retreated: false,
     x: team === 'enemy' ? battle.width * 50 - 25 : 25, y: team === 'enemy' ? battle.height * 50 - 25 : 25 };
   battle.actors.push(actor); return actor;
 }
@@ -285,8 +288,8 @@ function nextOpportunity(state, b, rng = randomInt) {
     if (p.hp <= 0 || (!queued.free && p.ap < 100)) continue;
     if (!queued.free) p.ap -= 100;
     if (a.casting && a.casting.count < a.casting.required) a.casting.count++;
-    beginConditions(p, b, a, rng);
-    if (p.hp <= 0) { endConditions(p, b, a, rng); record(b, a.name + '失能，跳过主动行动。'); continue; }
+    beginConditions(p, b, a, rng, state);
+    if (p.hp <= 0) { endConditions(p, b, a, rng); record(b, a.name + (a.deathId ? '已死亡，跳过主动行动。' : '失能，跳过主动行动。')); continue; }
     b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, moveSpent: 0, startedAt: Date.now(), free: queued.free };
     record(b, '轮到' + a.name + '行动。');
     return;
@@ -441,11 +444,15 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
       breakdown[type] = Math.max(0, Math.floor(value - hit.defenses[type] * fraction)); total += breakdown[type];
     }
     p.hp = Math.max(0, p.hp - total);
-    for (const ref of hit.conditions) saves.push(applyCondition(state, p, ref, rng, hit.attackerId));
+    for (const ref of hit.conditions) {
+      const attacker = actorById(b, hit.attackerId), origin = actorCharacter(state, attacker);
+      saves.push(applyCondition(state, p, ref, rng, { actorId: attacker.id, userId: attacker.userId || null, characterId: origin.id }));
+    }
   }
   record(b, target.name + (dodge?.success ? '成功闪避。' : '受到' + total + '伤害，剩余' + p.hp + 'HP。'),
     { choice, dodge, breakdown, saves });
   b.pending = null;
+  if (p.hp <= 0) require('./mortality').settle(state, b, target, hit.attackerId);
   const result = { target: target.name, total, dodge, breakdown, saves, hp: p.hp, defaulted };
   if (b.status === 'active' && b.current) {
     const active = actorById(b, b.current.actorId);

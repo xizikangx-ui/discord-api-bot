@@ -154,6 +154,7 @@ function validateTemplate(state, raw) {
   ok(Math.abs(kg * 100 - Math.round(kg * 100)) < 0.000001, '重量最多两位小数。');
   t.weight = Math.round(kg * 100);
   delete t.weightKg;
+  if (t.kind === '钥匙') t.keyCharges = num(t.keyCharges ?? 1, '钥匙次数', 0, 100000);
   t.value = num(t.value || 0, '参考价值', 0, C.MAX_MONEY);
   t.boxes = [...new Set(t.boxes || [])];
   ok(t.boxes.every(b => C.BOXES.includes(b)), '箱型无效。');
@@ -267,6 +268,7 @@ function makeItem(template, quantity = 1) {
     attachments: [], ...(template.kind === '武器' && C.FIREARMS.includes(template.weaponType)
       ? { loaded: { current: template.current, capacity: template.capacity, weight: template.ammoWeight, ammoType: template.ammoType,
         rounds: Array.from({ length: template.current }, () => ({ weight: template.ammoWeight, effects: clone(template.initialAmmo?.effects || []) })) } } : {}) };
+  if (template.kind === '钥匙') item.keyCharges = template.keyCharges;
   const parts = (template.initialParts || []).map(t => makeItem(t));
   item.attachments = parts.map(p => p.id);
   if (template.initialMagazine) {
@@ -317,7 +319,7 @@ function issue(state, userId, templateId, quantity = 1) {
   ok(template?.published, '物品模板不存在或未发布。');
   quantity = num(quantity, '发放数量', 1, 100);
   const items = [];
-  const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能'].includes(template.kind);
+  const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能', '钥匙'].includes(template.kind);
   for (let n = 0; n < (stateful ? quantity : 1); n++) {
     const item = makeItem(template, stateful ? 1 : quantity);
     receive(p, item); items.push(item);
@@ -331,23 +333,7 @@ function openLoot(state, userId, box = 'card', rng = randomInt) {
   ok(count > 0, '没有对应次数，请找GM发放。');
   let batch = p.pendingLoot[box];
   if (batch && !batch.items) batch = { id: batch.id, items: [batch] };
-  if (!batch) {
-    batch = { id: id('z'), items: [] };
-    const size = box === 'card' ? 1 : rng(1, 7);
-    for (let n = 0; n < size; n++) {
-      const r = C.rarity(rng);
-      let pool = Object.values(state.catalog).filter(t => t.published && t.rarity === r.id &&
-        (box === 'card' ? t.kind === '卡牌' : (t.boxes || []).includes(box)));
-      if (!pool.length && box === 'card') pool = [{ id: 'blank_' + r.id, version: 1, kind: '卡牌',
-        name: r.name + '色空白卡牌', rarity: r.id, weight: 0, value: 0, effects: [], traitIds: [],
-        uniqueText: '等待GM定义能力。', description: '同色占位卡牌。' }];
-      ok(pool.length, '该箱型的' + r.name + '色掉落池未配置，本次未扣次数。');
-      const template = pool[rng(0, pool.length)];
-      const item = makeItem(template);
-      if (box !== 'card') item.snapshot.value = rng(r.min, r.max + 1);
-      batch.items.push(item);
-    }
-  }
+  if (!batch) batch = require('./loot').generate(state, box, rng);
   p.pendingLoot[box] = batch;
   const result = { batchId: batch.id, box, items: clone(batch.items), item: clone(batch.items[0]), pending: true };
   if (weight(p) + batch.items.reduce((sum, item) => sum + itemWeight(item), 0) > stats(p).limit) {
@@ -367,7 +353,7 @@ function drop(state, userId, itemId, quantity) {
   return item.snapshot.name;
 }
 function battleFor(state, userId) {
-  return Object.values(state.battles).find(b => b.status !== 'ended' && b.actors.some(a => a.userId === userId));
+  return Object.values(state.battles).find(b => b.status !== 'ended' && b.actors.some(a => a.userId === userId && !a.deathId && (!a.characterId || a.characterId === state.players[userId]?.id)));
 }
 function equip(state, userId, itemId, remove = false) {
   const p = player(state, userId); const item = p.inventory[itemId];

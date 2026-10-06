@@ -92,7 +92,7 @@ function createBattleGM(context) {
             row(button('gmui:' + ref + ':npc:0', '返回NPC列表'), button('gmui:' + ref + ':view', '取消选择'))
           ]);
           v.embeds[0].addFields(field('属性', Object.entries(t.attributes).map(([k, v]) => C.ATTRIBUTES[k] + ' ' + v).join(' · ')),
-            field('装备数量', t.itemIds?.length || 0, true), field('生命上限', t.hpMax, true)); v.embeds[0].setFooter({ text: t.id + ' · v' + t.version }); return v;
+            field('人形 / 击杀经验', (t.humanoid ? '人形（掉落实物）' : '非人形') + ' / ' + (t.baseXP || 0), true), field('装备数量', t.itemIds?.length || 0, true), field('生命上限', t.hpMax, true)); v.embeds[0].setFooter({ text: t.id + ' · v' + t.version }); return v;
         }
         const a = B.actorById(b, id);
         if (selected === 'actors') return actorView(s, b, a);
@@ -123,6 +123,12 @@ function createBattleGM(context) {
       const v = pickView('选择异常模板', entries, 'gmui:' + ref + ':conditionpick:' + arg, Number(extra) || 0);
       v.components.push(row(button('gmui:' + ref + ':conditions:select:' + arg, '返回'))); return v;
     }
+    if (action === 'hpsubmit' && Number(i.fields.getTextInputValue('hp')) === 0) {
+      const a = B.actorById(b, arg), p = B.actorCharacter(s, a); editable(b);
+      if (a.userId) return payload('确认玩家死亡并销卡', a.name + '的HP将归零，立即清空角色、背包、余额、次数及槽位扩展。', [
+        row(button('gmui:' + ref + ':deathconfirm:' + arg + ':' + p.id, '确认死亡并销卡', D.ButtonStyle.Danger), button('gmui:' + ref + ':view', '取消'))
+      ]);
+    }
     if (action === 'conditionpage') return conditions(s, b, B.actorById(b, arg), Number(extra));
     await tx(i, st => {
       needGM(st, member); const live = battle(st, ref); editable(live);
@@ -132,10 +138,13 @@ function createBattleGM(context) {
       } else if (action === 'terrainvaluesubmit') B.setTerrain(live, i.fields.getTextInputValue('x'), i.fields.getTextInputValue('y'), arg);
       else {
         const a = B.actorById(live, arg), p = B.actorCharacter(st, a);
+        ok(!a.deathId, '角色已死亡，不能调整或复活原角色。');
         if (action === 'positionsubmit') {
           const value = i.fields.getTextInputValue('team').trim(), team = ({ '友方': 'ally', '敌方': 'enemy', ally: 'ally', enemy: 'enemy' })[value];
           ok(team, '阵营请填写友方或敌方。');
           B.position(live, arg, i.fields.getTextInputValue('x'), i.fields.getTextInputValue('y'), team);
+        } else if (action === 'deathconfirm') {
+          ok(a.userId && p.id === extra, '角色已变化，重新确认。'); p.hp = 0; require('./mortality').settle(st, live, a);
         } else if (action === 'hpsubmit') {
           p.hp = num(i.fields.getTextInputValue('hp'), '生命', 0, M.stats(p).maxHP);
         } else if (action === 'conditionapply') B.record(live, 'GM给' + a.name + '施加异常并结算豁免。',

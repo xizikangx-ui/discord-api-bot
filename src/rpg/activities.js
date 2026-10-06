@@ -3,7 +3,7 @@ const { randomInt } = require('node:crypto');
 const C = require('./constants'), M = require('./model');
 const { requireThat: ok, clone, number: num } = C;
 
-function migrate(state) {
+function migrateLegacy(state) {
   if (state.upgrade >= 3) return null;
   const report = { descriptions: 0, players: 0, pendingBatches: 0 };
   state.checks ||= {}; state.sessions ||= {}; state.lootPublications ||= {};
@@ -30,6 +30,19 @@ function migrate(state) {
   for (const b of Object.values(state.battles)) for (const a of b.actors) if (!a.userId && !a.finalCharacter) character(a.character);
   state.upgrade = 3;
   return report;
+}
+function migrate(state) {
+  if (state.upgrade >= 4) return null;
+  const old = migrateLegacy(state);
+  state.mapCategories ||= {}; state.roomTemplates ||= {}; state.explorations ||= {}; state.deaths ||= {}; state.corpses ||= {};
+  state.config.safeRates ||= {};
+  for (const t of Object.values(state.npcTemplates)) { t.humanoid ??= false; t.baseXP ??= 0; }
+  for (const b of Object.values(state.battles)) for (const a of b.actors) {
+    if (!a.userId) { a.humanoid ??= false; a.baseXP ??= 0; }
+    else a.characterId ||= (a.finalCharacter || state.players[a.userId])?.id;
+  }
+  state.upgrade = 4;
+  return { ...(old || {}), previous: old, maps: true, deaths: true, historicalRewards: 0 };
 }
 function parseBeijing(value, now = Date.now()) {
   const m = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/);

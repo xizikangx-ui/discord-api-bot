@@ -142,6 +142,10 @@ function createHandlers(context) {
   }
   async function component(i, member) {
     const [action, ...args] = parts(i), uid = i.user.id, s = snapshot(i.guildId);
+    if (action === 'cardpage') {
+      const p = M.player(s, args[0]); ok(p.id === args[1], '角色卡已经变化，请重新查看。');
+      return U.characterView(p, false, Number(args[2]));
+    }
     if (action.startsWith('form')) return formComponent(i, member, action, args);
     if (action === 'configview') { needConfig(member); return configView(s); }
     if (action === 'config') {
@@ -259,7 +263,7 @@ function createHandlers(context) {
       if (action === 'control') { needGM(s, member); return context.gmUI.view(s, b); }
       if (action === 'start') { needGM(s, member); return context.gmUI.view(s, b); }
       if (action === 'personal') {
-        const a = b.actors.find(a => a.userId === uid) || (U.gm(s, member) ? b.actors.find(a => a.id === b.current?.actorId) : null);
+        const a = b.actors.find(a => a.userId === uid && !a.deathId) || (U.gm(s, member) ? b.actors.find(a => a.id === b.current?.actorId) : null);
         ok(a, '未参加战斗，可查看公共战场。');
         return U.personalView(s, b, a, uid);
       }

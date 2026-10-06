@@ -17,12 +17,14 @@ function defaults(kind, itemKind = '杂物') {
     hit: 10, range: 1, primary: 'physical', damage: { physical: '1d6', magical: '', mental: '' }, conditions: [],
     armorType: '胸甲', defenses: { physical: 0, magical: 0, mental: 0 }, accessoryType: 'body',
     uniqueText: '', skillIds: [], preinstalled: [], compatible: [], attachmentSlot: '瞄具',
-    special: 'heart', heal: '0', clearConditions: [], duration: { kind: 'actions', count: 3 }, action: 'formal', casting: 0 };
+    special: 'heart', keyCharges: 1, heal: '0', clearConditions: [], duration: { kind: 'actions', count: 3 }, action: 'formal', casting: 0 };
   if (kind === 'trait') return { name: '', description: '', effects: [] };
   if (kind === 'condition') return { name: '', description: '', type: 'physical', effectType: 'numeric',
     levels: Object.fromEntries(C.SEVERITIES.map(s => [s, { enabled: s === '一般', difficulty: 10,
       duration: { kind: 'actions', count: 3 }, worsenAfter: 0, description: '', effects: [] }])) };
-  if (kind === 'npc') return { name: '', description: '', attributes: Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, 3])),
+  if (kind === 'mapcategory') return { name: '', description: '' };
+  if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: '', supplyIds: [], supplyQuantities: '', npcIds: [], npcQuantities: '', keyIds: [] };
+  if (kind === 'npc') return { humanoid: false, baseXP: 0, name: '', description: '', attributes: Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, 3])),
     hpMax: 9, itemIds: [], quantities: '' };
   return { title: '领取玩家身份组', description: '选择身份组后领取。', roleIds: [], exclusive: false, allowCancel: true, labels: '' };
 }
@@ -42,7 +44,13 @@ function fields(form) {
     }
     return list;
   }
-  if (kind === 'npc') return [...common, ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
+  if (kind === 'mapcategory') return common;
+  if (kind === 'room') return [...common, refField('categoryIds', '地图大类（先录入）', 'mapCategories', 1),
+    {...enumField('boxes', '房间容器类型', C.BOXES), type: 'multi', limit: 12}, field('containerCounts', '容器数量（每行 箱型 数量，默认1）', 'long'),
+    refField('supplyIds', '固定物资', 'catalog', 25, t => t.kind !== '技能'), field('supplyQuantities', '物资数量（每行 编号 数量）', 'long'),
+    refField('npcIds', '房间NPC', 'npcTemplates', 19), field('npcQuantities', 'NPC数量（每行 编号 数量）', 'long'),
+    refField('keyIds', '入门钥匙（留空免费）', 'catalog', 1, t => t.kind === '钥匙')];
+  if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
     field('hpMax', '生命上限', 'number'), refField('itemIds', '装备及技能', 'catalog', 25),
     field('quantities', '初始数量（每行 模板编号 数量）', 'long')];
   if (kind === 'rolepanel') return [field('title', '面板标题'), field('description', '面板说明', 'long'),
@@ -51,6 +59,7 @@ function fields(form) {
   const list = [...common, enumField('rarity', '六色稀有度', C.RARITIES.map(r => ({ value: r.id, label: r.name }))),
     field('weightKg', '重量kg（两位小数）', 'number'), field('value', '参考价值', 'number'),
     { ...enumField('boxes', '可从哪些箱型抽出', C.BOXES), type: 'multi', limit: 12 }];
+  if (d.kind === '钥匙') list.push(field('keyCharges', '初始钥匙次数', 'number'));
   if (['武器', '防具', '饰品', '卡牌'].includes(d.kind)) list.push(refField('traitIds', '词条（1至10）', 'traits'));
   list.push(field('effects', C.CONSUMABLES.includes(d.kind) ? '使用后的持续增减益' : '额外结构化数值效果', 'effects'));
   if (['武器', '防具', '饰品'].includes(d.kind)) list.push(enumField('quality', '装备品质', C.QUALITIES),
@@ -82,7 +91,7 @@ function fields(form) {
   return list;
 }
 function create(state, owner, kind, itemKind, existingId) {
-  const source = { item: 'catalog', trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', rolepanel: 'rolePanels' }[kind];
+  const source = { item: 'catalog', trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels' }[kind];
   const old = existingId ? state[source][existingId] : null;
   if (existingId) ok(old, '模板不存在。');
   const data = old ? C.clone(old) : defaults(kind, itemKind);
@@ -176,7 +185,7 @@ function publish(state, form) {
   let result;
   if (form.kind === 'item') result = M.publishTemplate(state, data, form.existingId);
   else {
-    const source = { trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', rolepanel: 'rolePanels' }[form.kind];
+    const source = { trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels' }[form.kind];
     if (form.kind === 'trait') result = { name: C.text(data.name, '词条名称', 80), description: C.text(data.description, '说明', 2000, true), effects: M.normalizeEffects(data.effects) };
     if (form.kind === 'condition') {
       for (const severity of C.SEVERITIES) {
@@ -185,6 +194,8 @@ function publish(state, form) {
       result = B.validateCondition(data);
     }
     if (form.kind === 'npc') result = B.validateNPC(state, data);
+    if (form.kind === 'mapcategory') result = { name: C.text(data.name, '大类名称', 80), description: C.text(data.description || '', '描述', 2000, true) };
+    if (form.kind === 'room') result = require('./exploration').validateRoom(state, data);
     if (form.kind === 'rolepanel') {
       ok(data.roleIds.length && data.roleIds.length <= 20, '领取面板需要1至20个身份组。');
       const previous = state.rolePanels[form.existingId];

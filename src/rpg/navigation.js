@@ -25,7 +25,7 @@ function createNavigation(snapshot) {
     clean();
     let g = i.rpgNavigation && groups.get(i.rpgNavigation.group);
     if (!g) {
-      g = { id: C.id('p'), owner: i.user.id, guild: i.guildId, generation: 0, battles: new Set() };
+      g = { id: C.id('p'), owner: i.user.id, guild: i.guildId, characterId: snapshot(i.guildId).players[i.user.id]?.id, generation: 0, battles: new Set() };
       groups.set(g.id, g);
     }
     g.generation++; g.modal = null; g.busy = false;
@@ -44,6 +44,7 @@ function createNavigation(snapshot) {
     const r = routes.get(i.customId), g = r && groups.get(r.group);
     C.requireThat(g && g.owner === i.user.id && g.guild === i.guildId && r.generation === g.generation &&
       (!r.modal || g.modal === i.customId), '该步骤已失效，请重新打开个人面板或持久草稿。');
+    C.requireThat(!g.characterId || snapshot(g.guild).players[g.owner]?.id === g.characterId, '角色已死亡或已更换，请重新打开面板。');
     C.requireThat(!g.busy, '该面板正在处理，请稍后刷新。');
     if (r.form) {
       const f = snapshot(g.guild).forms[r.form.id];
@@ -70,6 +71,13 @@ function createNavigation(snapshot) {
     }
     clean();
   }
-  return { wrap, resolve, modal, clearBattle, invalidate };
+  async function clearUser(guild, uid, characterId) {
+    for (const [id, g] of groups) if (g.guild === guild && g.owner === uid && g.characterId === characterId) {
+      groups.delete(id);
+      await g.handle.editReply(U.payload('角色已死亡', '原角色及资产已清空；可重新 /建卡。旧面板已关闭。')).catch(() => {});
+    }
+    clean();
+  }
+  return { wrap, resolve, modal, clearBattle, clearUser, invalidate };
 }
 module.exports = { createNavigation };

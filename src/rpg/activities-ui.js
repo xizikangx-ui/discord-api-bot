@@ -41,7 +41,7 @@ function lootView(record) {
     const view = payload(record.result.pending ? '开箱结果 · 整批待领取' : '开箱结果 · 整批已入包',
       '<@' + record.userId + '> 开启 **' + record.result.box + '**，获得 **' + items.length + '件物品**\n\n' +
       items.map((item, n) => (n + 1) + '. **' + item.snapshot.name + '** · ' + item.id).join('\n') + '\n\n' +
-      (record.result.pending ? '⚠️ 总重量超限：整批未入包、未扣次数；再次开启仍是这一批物品。' : '✅ 整批已入包，只消耗一次开箱次数。'));
+      (record.result.pending ? '⚠️ 总重量超限：整批未入包、未扣次数；再次开启仍是这一批物品。' : record.result.free ? '✅ 整批已入包，探索领取不消耗次数。' : '✅ 整批已入包，只消耗一次开箱次数。'));
     view.embeds[0].addFields(field('总重量', C.kg(items.reduce((sum, item) => sum + require('./model').itemWeight(item), 0)), true),
       field('物品总价值', items.reduce((sum, item) => sum + item.snapshot.value * item.quantity, 0), true));
     view.embeds[0].setFooter({ text: '批次 ' + record.result.batchId + ' · 抽取记录 ' + record.id }); return view;
@@ -49,7 +49,7 @@ function lootView(record) {
   const t = record.result.item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity);
   const view = payload(record.result.pending ? '抽取结果 · 待领取' : '抽取结果 · 已入包',
     '<@' + record.userId + '> 抽到 **' + t.name + '**\n\n' + (t.description || '暂无描述') +
-    '\n\n' + (record.result.pending ? '⚠️ 超重：未入包、未扣次数，再次开启仍是此物品。' : '✅ 已保存到背包，本次消耗一次抽取次数。'), [], r?.color);
+    '\n\n' + (record.result.pending ? '⚠️ 超重：未入包、未扣次数，再次开启仍是此物品。' : record.result.free ? '✅ 已保存到背包，探索领取不消耗次数。' : '✅ 已保存到背包，本次消耗一次抽取次数。'), [], r?.color);
   view.embeds[0].addFields(field('稀有度 / 分类', (r?.name || '未知') + ' / ' + t.kind, true),
     field('重量', C.kg(require('./model').itemWeight(record.result.item)), true), field('价值', t.value, true));
   view.embeds[0].setFooter({ text: record.result.item.id + (record.result.batchId ? ' · 批次 ' + record.result.batchId : '') + ' · 抽取记录 ' + record.id }); return view;
@@ -123,7 +123,7 @@ function createActivities(context) {
   }
   async function publishLoot(guild, ref, force) {
     let r = snapshot(guild).lootPublications[ref];
-    const ch = await textChannel(guild, r.channelId), pages = lootMessages(r), publishedPending = r.result.pending;
+    const ch = await textChannel(guild, r.channelId), pages = lootMessages(r), publishedPending = r.result.pending, publishedUserId = r.userId;
     if (!r.publicationParts) await store.transact(guild, 'loot-parts:' + ref, client.user.id, st => {
       const live = st.lootPublications[ref]; live.publicationParts = pages.map((_, n) => ({ id: C.id('n'), status: n === 0 && live.messageId ? 'sent' : 'pending',
         ...(n === 0 && live.messageId ? { messageId: live.messageId, pending: live.result.pending } : {}) }));
@@ -133,10 +133,10 @@ function createActivities(context) {
       if (part.messageId) {
         const m = await ch.messages.fetch(part.messageId).catch(e => { if (e.code === 10008) return null; throw e; });
         if (m) {
-          if (part.pending !== publishedPending) {
+          if (part.pending !== publishedPending || part.userId !== publishedUserId) {
             await m.edit(pages[n]);
-            await store.transact(guild, 'loot-refresh:' + ref + ':' + n + ':' + publishedPending, client.user.id, st => {
-              st.lootPublications[ref].publicationParts[n].pending = publishedPending;
+            await store.transact(guild, 'loot-refresh:' + ref + ':' + n + ':' + publishedPending + ':' + publishedUserId, client.user.id, st => {
+              st.lootPublications[ref].publicationParts[n].pending = publishedPending; st.lootPublications[ref].publicationParts[n].userId = publishedUserId;
             }, '更新整批领取公示');
           }
           continue;
@@ -151,7 +151,7 @@ function createActivities(context) {
         const message = await ch.send({ ...pages[n], nonce: part.id, enforceNonce: true });
         await store.transact(guild, 'loot-sent:' + part.id + ':' + message.id, client.user.id, st => {
           const live = st.lootPublications[ref]; live.publicationParts[n] = { ...part, status: 'sent', messageId: message.id,
-            pending: publishedPending, sentAt: Date.now() }; if (n === 0) live.messageId = message.id;
+            pending: publishedPending, userId: publishedUserId, sentAt: Date.now() }; if (n === 0) live.messageId = message.id;
         }, '开箱公示分段送达');
       } catch (e) {
         if (!store.frozen(guild)) await store.transact(guild, 'loot-failed:' + C.id('t'), client.user.id, st => {

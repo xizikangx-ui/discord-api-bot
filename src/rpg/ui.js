@@ -41,23 +41,25 @@ function modal(id, title, fields) {
 const memberRoles = member => member.roles?.cache ? [...member.roles.cache.keys()] : member.roles || [];
 function gm(state, member) { return state.config.gmRoleIds.some(r => memberRoles(member).includes(r)); }
 function playerRole(state, member) { return state.config.playerRoleIds.some(r => memberRoles(member).includes(r)); }
-function characterView(p, privateView = false) {
-  const s = M.stats(p);
-  const body = '**' + p.name + '** · Lv.' + p.level + ' · ' + C.title(p.level) + '\n**HP ' + Math.min(p.hp, s.maxHP) + '/' + s.maxHP + '** ' + bar(p.hp, s.maxHP) +
-    '\n' + Object.entries(C.ATTRIBUTES).map(([k, label]) => label + ' ' + p.attributes[k] +
-      (s.attributes[k] !== p.attributes[k] ? ' → ' + s.attributes[k] : '')).join('　') +
-    '\n势力 ' + require('./factions').label(p.faction) + '\n适应性 ' + p.adaptation + '　自由点 ' + p.points + '　经验 ' + (p.xpCenti / 100).toFixed(2) +
-    '/' + p.level * 1000 + '\n举起 ' + s.attributes.strength * 10 + 'kg　移动预算 ' + s.move +
-    '米\n防御 ' + Object.entries(s.defenses).map(([k, n]) => C.DAMAGE_TYPES[k] + ' ' + n).join('／') +
-    '\n学识判定加成 +' + s.attributes.knowledge + '　外貌评级 ' + s.attributes.appearance +
-    '\n\n**状态**\n异常：' + (p.conditions.map(c => c.template.name + '·' + c.severity).join('、').slice(0, 500) || '无') +
-    (p.conditions.length ? '（共' + p.conditions.length + '项）' : '');
-  const result = payload('角色卡', body + (privateView ? '\n负重 ' + C.kg(s.carried) + '/' + C.kg(s.limit) +
-    (s.overloaded ? ' · 无法移动' : s.burdened ? ' · 负重减速' : '') + '\n余额 ' + p.balance + '　抽卡次数 ' + p.tickets.card +
-    '\n箱子次数：' + Object.entries(p.tickets.boxes).map(([k, v]) => k + ' ' + v).join('、') : ''), [], 0x3498db);
-  result.embeds[0].addFields(field('持续效果', temporaryText(p)));
-  result.embeds[0].setFooter({ text: '角色 ' + p.id + ' · ' + (privateView ? '本人及GM可见' : '公开属性') });
-  return result;
+function characterView(p, privateView = false, page = 0) {
+  const s = M.stats(p), faction = require('./factions'), color = faction.FACTIONS[p.faction?.id]?.color || 0x3498db;
+  const v = payload('角色卡 · ' + p.name, '**Lv.' + p.level + ' · ' + C.title(p.level) + '**\n' + faction.label(p.faction) +
+    '\n\n**HP ' + p.hp + '/' + s.maxHP + '**\n' + bar(p.hp, s.maxHP) + '\n**经验 ' + (p.xpCenti / 100).toFixed(2) +
+    (p.level === 100 ? ' · 满级' : '/' + p.level * 1000) + '**\n' + bar(p.xpCenti / 100, p.level * 1000), [], color);
+  const attr = Object.entries(C.ATTRIBUTES).map(([k, label]) => label + ' **' + p.attributes[k] + '**' + (s.attributes[k] !== p.attributes[k] ? ' → **' + s.attributes[k] + '**' : ''));
+  v.embeds[0].addFields(field('身体属性', attr.filter((_, n) => [0,1,3,5].includes(n)).join('\n'), true),
+    field('心智属性', attr.filter((_, n) => [2,4,6].includes(n)).join('\n') + '\n适应性 **' + p.adaptation + '** · 自由点 **' + p.points + '**', true),
+    field('三类防御', Object.entries(s.defenses).map(([k,n]) => C.DAMAGE_TYPES[k] + ' **' + n + '**').join(' / ')),
+    field('行动与负重', '移动 **' + s.move + '米** · 举起 ' + s.attributes.strength * 10 + 'kg\n' +
+      C.kg(s.carried) + ' / ' + C.kg(s.limit) + (s.overloaded ? ' · ⛔ 无法移动' : s.burdened ? ' · ⚠️ 减速' : ' · ✅ 正常')),
+    field('异常 · 第' + (page + 1) + '页', p.conditions.slice(page * 8, page * 8 + 8).map(c => c.template.name.slice(0,80) + ' · ' + c.severity).join('\n') || '无'),
+    field('持续效果 · 第' + (page + 1) + '页', temporaryText(p, page)));
+  if (privateView) v.embeds[0].addFields(field('私人资产', '余额 **' + p.balance + '** · 抽卡次数 **' + p.tickets.card + '**\n' +
+    Object.entries(p.tickets.boxes).map(([k,n]) => k + ' ' + n).join(' / ') || '暂无'));
+  const pages = Math.max(1, Math.ceil(p.conditions.length / 8), Math.ceil((p.temporaryEffects || []).length / 3));
+  if (!privateView && pages > 1) v.components = [row(button('cardpage:' + p.userId + ':' + p.id + ':' + Math.max(0,page-1), '上一页状态', undefined, page <= 0),
+    button('cardpage:' + p.userId + ':' + p.id + ':' + Math.min(pages-1,page+1), '下一页状态', undefined, page >= pages-1))];
+  v.embeds[0].setFooter({ text: '角色 ' + p.id + ' · ' + (privateView ? '本人及GM可见' : '公开属性') }); return v;
 }
 function draftView(d) {
   return payload('确认角色 · 整套重掷剩余' + (3 - d.rerolls), d.name + '\n' +
@@ -75,6 +77,7 @@ function inventoryView(state, userId, viewerId, page = 0) {
     '**' + i.snapshot.name + '** ×' + i.quantity + ' · ' + i.snapshot.kind + ' · ' + C.kg(i.snapshot.weight) +
     '\n编号 ' + i.id + ' · 参考价值 ' + i.snapshot.value + (reserve.items[i.id] ? ' · 预留' + reserve.items[i.id] : '') +
     (M.equippedIds(p).includes(i.id) ? ' · 已装备' : M.isAttached(p, i.id) ? ' · 已装配' : '') +
+    (i.snapshot.kind === '钥匙' ? ' · 钥匙剩余' + i.keyCharges : '') +
     (i.loaded ? ' · 载弹' + i.loaded.current + '/' + i.loaded.capacity : '')).join('\n') +
     '\n\n可用余额 ' + (p.balance - reserve.coins) + '　' + (page + 1) + '/' + count + '页';
   const result = payload('背包 · 仅本人和GM可见', body, [
@@ -91,7 +94,7 @@ function inventoryView(state, userId, viewerId, page = 0) {
 function itemView(state, userId, viewerId, ref, page = 0) {
   const p = M.player(state, userId), item = p.inventory[ref]; C.requireThat(item, '物品已不存在。');
   const t = item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity) || C.RARITIES.at(-1);
-  const sections = [t.description || '暂无描述', effectsText(t.effects),
+  const sections = [t.kind === '钥匙' ? '剩余开门次数：' + item.keyCharges : '', t.description || '暂无描述', effectsText(t.effects),
     t.uniqueText || '', t.appearance || ''].filter(Boolean);
   if (t.kind === '武器' || t.kind === '技能') sections.push('固定命中 ' + t.hit + ' · 射程 ' + t.range + '格\n伤害：' +
     Object.entries(t.damage || {}).filter(([, v]) => v).map(([k, v]) => C.DAMAGE_TYPES[k] + ' ' + v).join('／') +
@@ -134,7 +137,7 @@ function battleView(state, b) {
   const details = b.actors.map((a, n) => {
       const p = B.actorCharacter(state, a), s = M.stats(p);
       return (n + 1) + '. ' + a.name.slice(0, 24) + ' [' + (a.team === 'ally' ? '友方' : '敌方') + '] HP ' + p.hp + '/' + s.maxHP +
-        ' AP ' + p.ap + ' (' + a.x + ',' + a.y + ') ' + (a.retreated ? '离场' : '') +
+        ' AP ' + p.ap + ' (' + a.x + ',' + a.y + ') ' + (a.deathId ? '💀 已死亡' : a.retreated ? '离场' : '') +
         '\n' + a.id + (p.conditions.length ? ' · ' + p.conditions.map(c => c.template.name + '·' + c.severity).join('、').slice(0, 60) : '');
     }).join('\n') + '\n\n最近记录\n' + b.recent.slice(-4).map(e => e.message).join('\n');
   const rows = b.status === 'ended' ? [] : b.status === 'recruiting' ? [row(button('join:' + b.id, '参与战斗', D.ButtonStyle.Success),
@@ -150,6 +153,7 @@ function battleView(state, b) {
 }
 function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const p = B.actorCharacter(state, a), s = M.stats(p), turn = b.current?.actorId === a.id ? b.current : null;
+  if (a.deathId) return payload('角色已死亡 · ' + a.name, '该角色不能继续操作。死亡记录已保存。', []);
   if (b.status === 'ended') return payload('战斗已结束 · ' + b.name, '操作面板已关闭。\n' + a.name + ' · HP ' + Math.min(p.hp, s.maxHP) + '/' + s.maxHP, [], 0x95a5a6);
   const prefix = b.id + ':' + a.id + ':' + viewer + ':' + (turn?.id || 'look');
   let body = characterView(p, true).embeds[0].data.description + '\n\n位置 (' + a.x + ',' + a.y + ')　动作点 ' + p.ap +
@@ -186,7 +190,9 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
     button('pass:' + prefix + ':formal', '放弃正式行动', undefined, !enabled || !turn.formal),
     button('finish:' + prefix, '结束本次行动', D.ButtonStyle.Success, !enabled)));
   rows.push(row(button('view:' + prefix + ':' + tab + ':' + statusPage, '刷新'), button('battle:' + b.id, '查看战场')));
-  return payload('个人行动面板 · ' + a.name, body, rows);
+  const v = payload('个人行动面板 · ' + a.name, body, rows);
+  v.embeds[0].addFields(...characterView(p, true, statusPage).embeds[0].data.fields);
+  return v;
 }
 function offerView(state, offer, viewer) {
   const body = '交易编号 ' + offer.id + ' · ' + ({ editing: '等待报价', ready: '等待确认', completed: '已完成', cancelled: '已取消', expired: '已过期' }[offer.status]) +

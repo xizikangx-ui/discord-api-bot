@@ -10,6 +10,7 @@ const { createBattleGM } = require('./battle-gm');
 const { createNavigation } = require('./navigation');
 const { createBuyback, availability } = require('./buyback');
 const { createFactions } = require('./factions');
+const { createExploration } = require('./exploration-ui');
 const { requireThat: ok, number: num } = C;
 const { D, E, row, button, select, payload, modal } = U;
 const commandNames = new Set(commands().map(c => c.name));
@@ -66,6 +67,8 @@ function createRpg(deps) {
         await store.transact(guild, 'board:' + message.id, client.user.id, st => { st.battles[b.id].messageId = message.id; }, '发布战场');
       }
       s = snapshot(guild); b = battle(s, battleId);
+      await exploration.publishCorpses(guild, battleId).catch(e => logFailure('NPC掉落公示失败。', e));
+      for (const a of b.actors.filter(a => a.userId && a.deathId)) await navigation.clearUser(guild, a.userId, a.finalCharacter.id);
       // Persist notification intent first. Ambiguous send never repeats a ping.
       if (b.current && b.status === 'active' && b.notifiedTurn !== b.current.id) {
         const turnId = b.current.id, a = B.actorById(b, b.current.actorId);
@@ -110,6 +113,7 @@ function createRpg(deps) {
         await store.load(guild); ready.add(guild);
         console.log('跑团加密存档读取正常：' + guild);
         await activities.recover(guild).catch(e => logFailure('跑团活动恢复失败。', e));
+        await exploration.recover(guild);
         await tickGuild(guild);
         for (const b of Object.values(snapshot(guild).battles).filter(b => b.status !== 'ended' || b.endedAt >= Date.now() - 86400000)) {
           await publishBattle(guild, b.id).catch(e => logFailure('跑团战场恢复失败。', e));
@@ -127,7 +131,7 @@ function createRpg(deps) {
       row(new D.RoleSelectMenuBuilder().setCustomId('rpg:config:gm').setPlaceholder('选择GM身份组').setMinValues(0).setMaxValues(10)),
       row(new D.RoleSelectMenuBuilder().setCustomId('rpg:config:player').setPlaceholder('选择玩家身份组').setMinValues(0).setMaxValues(10)),
       row(new D.ChannelSelectMenuBuilder().setCustomId('rpg:config:channel').setPlaceholder('公告频道').setChannelTypes(D.ChannelType.GuildText, D.ChannelType.GuildAnnouncement).setMinValues(0).setMaxValues(1)),
-      row(button('newroles', '创建领取身份组面板', D.ButtonStyle.Primary), button('rolelist:0', '已有领取面板'), button('configview', '刷新配置'))
+      row(button('newroles', '创建领取身份组面板', D.ButtonStyle.Primary), button('rolelist:0', '已有领取面板'), button('configview', '刷新配置'), button('map:config', '地图 / 掉落配置'))
     ]);
   }
   async function safeRoles(guild, ids, s) {
@@ -252,6 +256,8 @@ function createRpg(deps) {
   async function slash(i, member) {
     const s = snapshot(i.guildId), uid = i.user.id, name = i.commandName;
     const o = i.options, target = () => o.getUser('成员')?.id || uid;
+    if (name === '地图配置') { needGM(s, member); return exploration.config(s); }
+    if (name === '地图') return exploration.home(s, member);
     if (name === '势力') return factions.home(s, uid);
     if (name === '开团' || name === '鉴定') return activities.slash(i, member);
     if (name === '跑团配置面板') { needConfig(member); return configView(s); }
@@ -416,10 +422,15 @@ function createRpg(deps) {
       const b = channelBattle(s, i.channelId);
       if (U.gm(s, member) && !o.getString('角色')) return gmUI.view(s, b);
       const a = o.getString('角色') ? canActor(s, b, o.getString('角色'), member, i.user.id) :
-        b.actors.find(a => a.userId === i.user.id) || (U.gm(s, member) ? b.actors.find(a => a.id === b.current?.actorId) : null);
+        b.actors.find(a => a.userId === i.user.id && !a.deathId) || (U.gm(s, member) ? b.actors.find(a => a.id === b.current?.actorId) : null);
       return a ? U.personalView(s, b, a, i.user.id) : U.battleView(s, b);
     }
     needGM(s, member);
+    if (sub === '生命' && o.getInteger('数值') === 0) {
+      const b = channelBattle(s, i.channelId), a = B.actorById(b, o.getString('角色')), p = B.actorCharacter(s, a);
+      if (a.userId) return payload('确认玩家死亡并销卡', a.name + '的HP将归零，清空角色和全部资产。', [
+        row(button('gmui:' + b.id + ':deathconfirm:' + a.id + ':' + p.id, '确认死亡并销卡', D.ButtonStyle.Danger), button('gmui:' + b.id + ':view', '取消'))]);
+    }
     const ref = await tx(i, st => {
       needGM(st, member);
       if (sub === '招募') {
@@ -442,6 +453,7 @@ function createRpg(deps) {
       else {
         const a = B.actorById(b, o.getString('角色')), p = B.actorCharacter(st, a);
         ok(['recruiting', 'paused'].includes(b.status) && !b.pending, '调整生命、异常或阵容前请暂停，并完成待响应攻击。');
+        ok(!a.deathId, '角色已死亡，不能操作原角色。');
         if (sub === '生命') {
           const before = p.hp;
           p.hp = num(o.getInteger('数值'), '生命', 0, M.stats(p).maxHP);
@@ -472,6 +484,7 @@ function createRpg(deps) {
   const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
   const buyback = createBuyback({ snapshot, tx, needGM, announceOffer });
   const factions = createFactions({ snapshot, tx });
+  const exploration = createExploration({ snapshot, tx, store, textChannel, client, needGM, activities, publishBattle, gmUI, logFailure });
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
     configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI });
   async function handle(i) {
@@ -492,13 +505,14 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await openModal(i, s))) return true;
+      if (i.customId && (await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       const privateSource = !!i.message?.flags?.has(E);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
       else await i.deferReply(publicResult ? {} : { flags: E });
       const member = await i.guild.members.fetch({ user: i.user.id, force: true });
       const result = i.isChatInputCommand?.() ? await slash(i, member) :
+        i.customId.startsWith('rpg:map:') ? await exploration.component(i, member) :
         i.customId.startsWith('rpg:activity:') ? await activities.component(i, member) :
         i.customId.startsWith('rpg:buyback:') ? await buyback.component(i, member) :
         i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
@@ -516,6 +530,6 @@ function createRpg(deps) {
     }
     return true;
   }
-  return { start, handle, stop: () => clearInterval(timer), store, activities, tickGuild };
+  return { start, handle, stop: () => clearInterval(timer), store, activities, exploration, tickGuild };
 }
 module.exports = { createRpg, commands, dangerBits };
