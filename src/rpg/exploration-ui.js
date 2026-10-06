@@ -51,7 +51,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   }
   const back = () => button('map:config', '返回地图配置');
   function config(s) {
-    return payload('GM地图与掉落配置', '先录入地图大类，再录入房间。房间可含容器、固定物资、NPC与钥匙。\n保险箱概率与钥匙次数可独立调整。', [
+    return payload('GM地图与掉落配置', '先录入地图大类，再录入房间。房间可含固定内容与随机容器、散落物资、NPC。\n随机数量分别按0—6、0—6、0—10的独立概率配置，使用下拉选择。\n保险箱概率与钥匙次数可独立调整。', [
       row(button('map:newcategory', '录入大类', D.ButtonStyle.Primary), button('map:newroom', '录入房间', D.ButtonStyle.Primary), button('map:library:category:0', '已有大类'), button('map:library:room:0', '已有房间')),
       row(button('map:rates', '保险箱爆率'), button('map:keys', '玩家钥匙次数'), button('map:deaths:0', '指定击杀经验'), button('map:home', '地图列表')),
       row(button('map:corpselist:0', 'NPC掉落公示 / 补发'))
@@ -276,7 +276,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       const players = Object.entries(m.participants).filter(([, p]) => p.cell === arg).map(([uid]) => ({ label: s.players[uid]?.name || uid, value: uid }));
       return payload('确认遭遇阵容', '选择同房间玩家，随后生成战斗招募；通过战斗GM面板正式开战。', [
         ...(players.length ? [row(new D.UserSelectMenuBuilder().setCustomId('rpg:map:encounter:' + ref + ':' + arg)
-          .setPlaceholder('选择当前房间的参战玩家').setMinValues(1).setMaxValues(Math.min(20, players.length)))] : []), row(button('map:room:' + ref + ':' + arg, '返回房间'))
+          .setPlaceholder('选择当前房间的参战玩家').setMinValues(1).setMaxValues(Math.min(19, players.length)))] : []), row(button('map:room:' + ref + ':' + arg, '返回房间'))
       ]);
     }
     if (action === 'encounter') { const b = await tx(i, st => X.encounter(st, map(st, ref), arg, i.values), 'GM确认房间战斗'); await publish(i.guildId, ref); await publishBattle(i.guildId, b.id); return gmUI.view(snapshot(i.guildId), snapshot(i.guildId).battles[b.id]); }
@@ -309,11 +309,13 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   function roomGM(s, m, cell) {
     const r = m.cells[cell]?.room; ok(r, '房间不存在，请先生成。');
     return payload('GM房间 · ' + r.snapshot.name, '位置 ' + location(cell) + ' · 遭遇 ' + r.encounter + '\n' + r.snapshot.description +
-      '\n\nNPC：' + (r.snapshot.npcs.map(n => n.template.name + ' ×' + n.quantity).join('、') || '无') +
+      '\n\n本房间已生成NPC：' + ((r.npcs || r.snapshot.npcs).map(n => n.template.name + ' ×' + n.quantity).join('、') || '无') +
+      (r.remainingNpcs?.length && r.battleId ? '\n待后续战斗NPC：'+r.remainingNpcs.map(n=>n.template.name+' ×'+n.quantity).join('、')+'（每场含玩家最多20名，结束本轮后继续）' : '') +
       '\n钥匙：' + (r.snapshot.keyIds.map(k => s.catalog[k]?.name || k).join('、') || '无需钥匙') +
-      '\n容器：' + r.containers.map(c => c.box + ' · ' + c.status).join('、') + '\n物资：' + r.supplies.map(i => i.snapshot.name + ' ×' + i.quantity).join('、'), [
+      '\n容器：' + r.containers.map(c => c.box + ' · ' + c.status).join('、') + '\n物资：' + r.supplies.map(i => i.snapshot.name + ' ×' + i.quantity).join('、') +
+      '\n随机生成记录：'+((r.randomResults || []).map(e=>(e.kind==='container' ? e.ref : [...(r.snapshot.randomSupplies || []),...(r.snapshot.randomNpcs || [])].find(t=>t.ref===e.ref)?.template?.name || e.ref)+' ×'+e.quantity).join('、') || '旧实例或未配置'), [
       row(button('map:roster:' + m.id + ':' + cell, '确认玩家 / 开战', D.ButtonStyle.Primary, r.encounter !== 'pending'),
-        button('map:resolve:' + m.id + ':' + cell, 'GM解除遭遇', undefined, r.encounter === 'resolved'), button('map:transferpick:' + m.id + ':' + cell + ':0', '转交待领取容器')),
+        button('map:resolve:' + m.id + ':' + cell, r.remainingNpcs?.length && r.battleId ? '结束本轮 / 继续遭遇' : 'GM解除遭遇', undefined, r.encounter === 'resolved'), button('map:transferpick:' + m.id + ':' + cell + ':0', '转交待领取容器')),
       row(button('map:manage:' + m.id, '返回地图'))
     ]);
   }

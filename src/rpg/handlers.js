@@ -2,6 +2,7 @@
 const C = require('./constants'), M = require('./model'), B = require('./combat'), F = require('./forms'), U = require('./ui');
 const { requireThat: ok, number: num } = C;
 const { D, row, button, select, payload, modal } = U;
+const R = require('./room-settings');
 function createHandlers(context) {
   const { snapshot, tx, needGM, needConfig, owner, battle, canActor, configView, safeRoles, publishRoles,
     claim, formView, offerAccess, catalogView, pickView, publishBattle, store } = context;
@@ -15,6 +16,7 @@ function createHandlers(context) {
   }
   async function openModal(i, s) {
     if (i.isModalSubmit?.()) return false;
+    if (await R.openModal(i,s,needGM)) return true;
     const [action, ...args] = parts(i);
     if (action === 'formedit') {
       const f = F.owned(s, args[0], i.user.id);
@@ -88,6 +90,7 @@ function createHandlers(context) {
     }
     if (action === 'formedit') {
       const def = F.fields(f)[f.field];
+      if (['randomRoom','fixedRoom'].includes(def.type)) return R.view(s,f);
       if (['choice', 'refs', 'multi', 'conditions'].includes(def.type)) return F.choiceView(s, f);
       if (['effects', 'conditionEffects'].includes(def.type)) return F.effectsView(s, f);
       if (def.type === 'roles') return payload('选择领取身份组', '排除GM、管理操作角色、危险权限和托管角色。', [
@@ -142,6 +145,7 @@ function createHandlers(context) {
   }
   async function component(i, member) {
     const [action, ...args] = parts(i), uid = i.user.id, s = snapshot(i.guildId);
+    if (action.startsWith('formroom')) return R.handle(i,member,context);
     if (action === 'cardpage') {
       const p = M.player(s, args[0]); ok(p.id === args[1], '角色卡已经变化，请重新查看。');
       return U.characterView(p, false, Number(args[2]));

@@ -1,5 +1,6 @@
 'use strict';
 const C = require('./constants'), M = require('./model'), B = require('./combat'), U = require('./ui');
+const R = require('./room-settings');
 const { requireThat: ok } = C;
 const get = (data, path) => path.split('.').reduce((v, k) => v?.[k], data);
 function set(data, path, value) {
@@ -23,7 +24,7 @@ function defaults(kind, itemKind = '杂物') {
     levels: Object.fromEntries(C.SEVERITIES.map(s => [s, { enabled: s === '一般', difficulty: 10,
       duration: { kind: 'actions', count: 3 }, worsenAfter: 0, description: '', effects: [] }])) };
   if (kind === 'mapcategory') return { name: '', description: '' };
-  if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: '', supplyIds: [], supplyQuantities: '', npcIds: [], npcQuantities: '', keyIds: [] };
+  if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: {}, supplyIds: [], supplyQuantities: {}, npcIds: [], npcQuantities: {}, keyIds: [], randomContainers: [], randomSupplies: [], randomNpcs: [] };
   if (kind === 'npc') return { humanoid: false, baseXP: 0, name: '', description: '', attributes: Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, 3])),
     hpMax: 9, itemIds: [], quantities: '' };
   return { title: '领取玩家身份组', description: '选择身份组后领取。', roleIds: [], exclusive: false, allowCancel: true, labels: '' };
@@ -46,10 +47,13 @@ function fields(form) {
   }
   if (kind === 'mapcategory') return common;
   if (kind === 'room') return [...common, refField('categoryIds', '地图大类（先录入）', 'mapCategories', 1),
-    {...enumField('boxes', '房间容器类型', C.BOXES), type: 'multi', limit: 12}, field('containerCounts', '容器数量（每行 箱型 数量，默认1）', 'long'),
-    refField('supplyIds', '固定物资', 'catalog', 25, t => t.kind !== '技能'), field('supplyQuantities', '物资数量（每行 编号 数量）', 'long'),
-    refField('npcIds', '房间NPC', 'npcTemplates', 19), field('npcQuantities', 'NPC数量（每行 编号 数量）', 'long'),
-    refField('keyIds', '入门钥匙（留空免费）', 'catalog', 1, t => t.kind === '钥匙')];
+    {...enumField('boxes', '固定容器类型', C.BOXES), type: 'multi', limit: 12}, {key:'containerCounts',label:'固定容器数量（下拉选择）',type:'fixedRoom',source:'boxes',refs:'boxes',max:10},
+    refField('supplyIds', '固定物资', 'catalog', 25, t => t.kind !== '技能'), {key:'supplyQuantities',label:'固定物资数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'supplyIds',max:100},
+    refField('npcIds', '固定NPC', 'npcTemplates', 19), {key:'npcQuantities',label:'固定NPC数量（下拉选择）',type:'fixedRoom',source:'npcTemplates',refs:'npcIds',max:19},
+    refField('keyIds', '入门钥匙（留空免费）', 'catalog', 1, t => t.kind === '钥匙'),
+    {key:'randomContainers',label:'随机容器 · 0—6个概率',type:'randomRoom',source:'boxes',max:6,limit:12},
+    {key:'randomSupplies',label:'随机散落物资 · 0—6件概率',type:'randomRoom',source:'catalog',max:6,limit:25,predicate:t=>t.kind!=='技能'},
+    {key:'randomNpcs',label:'随机NPC · 0—10个概率',type:'randomRoom',source:'npcTemplates',max:10,limit:25}];
   if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
     field('hpMax', '生命上限', 'number'), refField('itemIds', '装备及技能', 'catalog', 25),
     field('quantities', '初始数量（每行 模板编号 数量）', 'long')];
@@ -107,6 +111,8 @@ function create(state, owner, kind, itemKind, existingId) {
 }
 function owned(state, formId, owner) { const f = state.forms[formId]; ok(f && f.owner === owner, '草稿不存在或不属于你。'); return f; }
 function display(value, field, state, limit = 120) {
+  if (field.type === 'randomRoom') return ((value || []).map(e => (field.source==='boxes' ? e.ref : state[field.source][e.ref]?.name || e.ref)+': '+R.summary([e])).join('\n') || '未配置').slice(0,limit);
+  if (field.type === 'fixedRoom' && value && typeof value==='object') return Object.entries(value).map(([ref,n])=>(field.source==='boxes' ? ref : state[field.source][ref]?.name || ref)+' ×'+n).join('、') || '默认1';
   if (field.type === 'bool') return value ? '开启' : '关闭';
   if (['effects', 'conditionEffects'].includes(field.type)) return (value || []).map(e => C.targetLabel(e.target) + ' ' +
     (e.amount ?? ((e.op === 'percent' ? '%' : '+') + e.value))).join('；') || '无';

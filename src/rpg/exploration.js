@@ -1,17 +1,13 @@
 'use strict';
 const { randomInt } = require('node:crypto');
 const C = require('./constants'), M = require('./model'), B = require('./combat'), L = require('./loot');
+const R = require('./room-settings');
 const { requireThat: ok, number: num, clone, id } = C;
 const TYPES = { room: '房间', corridor: '走廊', stairs: '楼梯', wall: '墙', entrance: '入口' };
 const key = (x, y) => x + ',' + y;
 const xy = ref => ref.split(',').map(Number);
 function quantities(text, refs, max = 100) {
-  const result = Object.fromEntries(refs.map(r => [r, 1]));
-  for (const line of String(text || '').split('\n').filter(l => l.trim())) {
-    const [ref, count, extra] = line.trim().split(/\s+/);
-    ok(refs.includes(ref) && !extra, '数量每行填写已选编号和数量。'); result[ref] = num(count, '数量', 1, max);
-  }
-  return result;
+  return R.quantities(text,refs,max);
 }
 function validateRoom(state, raw) {
   const r = clone(raw);
@@ -28,6 +24,10 @@ function validateRoom(state, raw) {
   ok(Object.values(r.npcCounts).reduce((a, b) => a + b, 0) <= 19, '每房间NPC最多19名。');
   r.supplies = r.supplyIds.map(ref => ({ template: clone(state.catalog[ref]), quantity: r.supplyCounts[ref] }));
   r.npcs = r.npcIds.map(ref => ({ template: clone(state.npcTemplates[ref]), quantity: r.npcCounts[ref] }));
+  r.randomContainers = R.validateEntries(state,r.randomContainers,'container');
+  r.randomSupplies = R.validateEntries(state,r.randomSupplies,'supply');
+  r.randomNpcs = R.validateEntries(state,r.randomNpcs,'npc');
+  r.containerCounts=clone(r.boxCounts);r.supplyQuantities=clone(r.supplyCounts);r.npcQuantities=clone(r.npcCounts);
   return r;
 }
 function create(state, owner, channelId, name, floors, width, mode, categoryId) {
@@ -88,13 +88,17 @@ function selectRoom(state, m, c, rng = randomInt) {
 }
 function instantiate(state, template, rng) {
   const r = { id: id('r'), templateId: template.id, snapshot: clone(template), unlocked: !template.keyIds.length,
-    encounter: template.npcs.length ? 'pending' : 'resolved', containers: [], supplies: [], battleId: null };
-  for (const box of template.boxes) for (let n = 0; n < template.boxCounts[box]; n++)
-    r.containers.push({ id: id('c'), box, status: 'unopened', batch: null, owner: null });
-  for (const entry of template.supplies) {
+    encounter: 'resolved', containers: [], supplies: [], battleId: null, randomResults: [], npcs: clone(template.npcs) };
+  const random = (list,kind) => (list || []).map(e=>{const quantity=R.draw(e.probabilities,rng);r.randomResults.push({kind,ref:e.ref,quantity,probabilities:clone(e.probabilities)});return {...e,quantity};});
+  const containers = [...template.boxes.map(box=>({ref:box,quantity:template.boxCounts[box]})),...random(template.randomContainers,'container')];
+  for (const entry of containers) for (let n = 0; n < entry.quantity; n++)
+    r.containers.push({ id: id('c'), box:entry.ref, status: 'unopened', batch: null, owner: null });
+  for (const entry of [...template.supplies,...random(template.randomSupplies,'supply')].filter(e=>e.quantity>0)) {
     const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能', '钥匙'].includes(entry.template.kind);
     for (let n = 0; n < (stateful ? entry.quantity : 1); n++) r.supplies.push(M.makeItem(entry.template, stateful ? 1 : entry.quantity));
   }
+  r.npcs.push(...random(template.randomNpcs,'npc').filter(e=>e.quantity>0).map(e=>({template:clone(e.template),quantity:e.quantity})));
+  r.remainingNpcs=clone(r.npcs);r.encounter=r.npcs.length ? 'pending' : 'resolved';
   return r;
 }
 function generate(state, m, rng = randomInt) {
@@ -166,16 +170,21 @@ function encounter(state, m, ref, users) {
   ok(m.status === 'active', '恢复地图后才能开始遭遇。'); const c = m.cells[ref];
   ok(c?.room?.encounter === 'pending' && m.revealed[ref], '房间没有待处理遭遇。');
   ok(users.length && users.every(uid => m.participants[uid]?.cell === ref && state.players[uid]?.id === m.participants[uid].characterId), '请选择在该房间且有有效角色的玩家。');
-  const total = c.room.snapshot.npcs.reduce((n, x) => n + x.quantity, users.length); ok(total <= 20, '玩家和NPC合计不能超过20名。');
+  const remaining=c.room.remainingNpcs || clone(c.room.snapshot.npcs), slots=20-users.length;
+  ok(slots>0,'每场最多20名参战者，请为NPC预留位置。');
   const b = B.createBattle(state, m.channelId, m.owner, m.name + ' · ' + c.room.snapshot.name);
   for (const uid of users) B.join(state, b, uid);
-  for (const entry of c.room.snapshot.npcs) for (let n = 0; n < entry.quantity; n++) B.addNPC(state, b, entry.template.id, 'enemy', entry.template);
+  let capacity=slots;
+  for (const entry of remaining) {const count=Math.min(capacity,entry.quantity);for(let n=0;n<count;n++)B.addNPC(state,b,entry.template.id,'enemy',entry.template);entry.quantity-=count;capacity-=count;}
+  c.room.remainingNpcs=remaining.filter(e=>e.quantity>0);
   b.exploration = { mapId: m.id, cell: ref }; c.room.battleId = b.id; c.room.encounter = 'battle'; c.touched = true; m.version++;
   return b;
 }
 function resolve(state, m, ref) {
   const r = m.cells[ref]?.room; ok(r && r.encounter !== 'resolved', '遭遇已经解除。');
-  ok(!r.battleId || state.battles[r.battleId]?.status === 'ended', '先结束关联战斗。'); r.encounter = 'resolved'; m.cells[ref].touched = true; m.version++;
+  ok(!r.battleId || state.battles[r.battleId]?.status === 'ended', '先结束关联战斗。');
+  if(r.battleId && r.remainingNpcs?.length) {r.encounter='pending';r.battleId=null;} else r.encounter = 'resolved';
+  m.cells[ref].touched = true; m.version++;
 }
 module.exports = { TYPES, key, xy, quantities, validateRoom, create, editCell, neighbors, validateMap, generate, publish,
   join, participant, move, currentRoom, open, take, transfer, encounter, resolve, touched };

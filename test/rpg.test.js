@@ -8,6 +8,7 @@ const A = require('../src/rpg/activities'), AU = require('../src/rpg/activities-
 const FA = require('../src/rpg/factions'), BB = require('../src/rpg/buyback');
 const X = require('../src/rpg/exploration'), XU = require('../src/rpg/exploration-ui');
 const L = require('../src/rpg/loot'), DT = require('../src/rpg/mortality');
+const R = require('../src/rpg/room-settings');
 const { commands } = require('../src/rpg/commands'), { createStore } = require('../src/rpg/store'), { createRpg } = require('../src/rpg');
 const minRng = min => min;
 function state() {
@@ -1654,4 +1655,80 @@ test('transactional life adjustment rotates a dead current player and expiry can
   const n=B.addNPC(s,B.createBattle(s,'other','GM','快照'),npcTemplate(s).id,'enemy'),b=Object.values(s.battles).find(b=>b.channelId==='other');
   n.character.temporaryEffects=[{id:'expired',duration:{kind:'minutes',count:1},expiresAt:1,modifiers:[]}];n.character.hp=0;DT.settle(s,b,n);const saved=JSON.stringify(n.finalCharacter);
   A.expireAll(s,Date.now());assert.equal(JSON.stringify(n.finalCharacter),saved);assert.equal(n.character.temporaryEffects.length,1);
+});
+const certainCount=(max,n)=>Array.from({length:max+1},(_,k)=>k===n ? 100 : 0);
+test('room count distributions validate every 0-6 and 0-10 boundary and independent two-decimal probabilities',()=>{
+  for(const max of [6,10])for(let n=0;n<=max;n++){assert.equal(R.draw(certainCount(max,n),()=>0),n);assert.equal(R.draw(certainCount(max,n),()=>9999),n);}
+  const p=[12.34,17.66,10,10,10,20,20];let at=0;for(let n=0;n<p.length;n++){assert.equal(R.draw(p,()=>at),n);assert.equal(R.draw(p,()=>at+Math.round(p[n]*100)-1),n);at+=Math.round(p[n]*100);}
+  assert.throws(()=>R.probabilities([0,1,0,0,0,0,0],6),/100/);assert.throws(()=>R.probabilities([0,1.001,0,0,0,0,98.999],6),/两位/);
+});
+test('room generation independently combines fixed and random containers supplies and NPCs, including absent types',()=>{
+  const s=state(),npc=npcTemplate(s),key=M.publishTemplate(s,{...F.defaults('item','钥匙'),name:'独立钥匙',keyCharges:3});
+  const {m,room}=mapFixture(s,{supplyIds:[key.id],randomContainers:[{ref:'保险箱',probabilities:certainCount(6,6)},{ref:'小型保险',probabilities:certainCount(6,0)}],
+    randomSupplies:[{ref:key.id,probabilities:certainCount(6,6)}],randomNpcs:[{ref:npc.id,probabilities:certainCount(10,10)}]});
+  const r=m.cells['2,0'].room;assert.equal(r.containers.filter(c=>c.box==='保险箱').length,6);assert.equal(r.containers.filter(c=>c.box==='大衣').length,1);assert.equal(r.containers.filter(c=>c.box==='小型保险').length,0);
+  assert.equal(r.supplies.length,7);assert.equal(new Set(r.supplies.map(i=>i.id)).size,7);assert.ok(r.supplies.every(i=>i.keyCharges===3));assert.equal(r.npcs[0].quantity,10);assert.equal(r.encounter,'pending');
+  room.randomNpcs[0].probabilities=certainCount(10,0);assert.equal(r.npcs[0].quantity,10);assert.equal(r.randomResults.find(e=>e.kind==='npc').quantity,10);
+  const empty=mapFixture(state(),{randomContainers:[{ref:'保险箱',probabilities:certainCount(6,0)}]}).m.cells['2,0'].room;assert.equal(empty.encounter,'resolved');
+});
+test('random NPCs that exceed combat slots remain frozen for subsequent GM-started waves without duplicate spawns',()=>{
+  const s=state(),n1=npcTemplate(s),n2=npcTemplate(s,{name:'第二守卫'}),{m}=mapFixture(s,{randomNpcs:[{ref:n1.id,probabilities:certainCount(10,10)},{ref:n2.id,probabilities:certainCount(10,10)}]});
+  X.join(s,m,'1');X.move(s,m,'1','1,0');X.move(s,m,'1','2,0');const r=m.cells['2,0'].room;
+  const b=X.encounter(s,m,'2,0',['1']);assert.equal(b.actors.length,20);assert.equal(r.remainingNpcs.reduce((a,e)=>a+e.quantity,0),1);
+  B.endBattle(s,b);X.resolve(s,m,'2,0');assert.equal(r.encounter,'pending');assert.throws(()=>X.currentRoom(s,m,'1'),/遭遇/);
+  const second=X.encounter(s,m,'2,0',['1']);assert.equal(second.actors.length,2);B.endBattle(s,second);X.resolve(s,m,'2,0');assert.equal(r.encounter,'resolved');
+});
+test('room distribution publishing rejects missing references and invalid drafts, while legacy layouts remain unchanged',()=>{
+  const s=state(),{room}=mapFixture(s),before=JSON.stringify(room);const f=F.create(s,'GM','room',null,room.id);
+  f.data.randomNpcs=[{ref:'missing',probabilities:certainCount(10,1)}];assert.throws(()=>F.publish(s,f),/有效/);assert.equal(JSON.stringify(s.roomTemplates[room.id]),before);
+  f.data.randomNpcs=[];f.data.randomContainers=[{ref:'保险箱',probabilities:[0,0,0,0,0,0,0]}];assert.throws(()=>F.publish(s,f),/100/);
+  const legacy=mapFixture(state()).m.cells['2,0'].room;assert.equal(legacy.containers.length,1);assert.equal(legacy.supplies.length,0);assert.equal(legacy.randomResults.length,0);
+});
+test('fixed room counts use dropdowns, legacy malformed drafts reopen and every room settings panel fits Discord',()=>{
+  const s=state(),f=F.create(s,'GM','room');f.data.boxes=['大衣'];f.data.containerCounts='错误的旧编号\n大衣 2';
+  assert.equal(R.quantities(f.data.containerCounts,f.data.boxes,10).大衣,2);
+  for(const [index,d] of F.fields(f).entries())if(['randomRoom','fixedRoom'].includes(d.type)){
+    f.field=index;validateMessage(R.view(s,f));const options=d.type==='fixedRoom' ? f.data[d.refs] : d.source==='boxes' ? C.BOXES : Object.keys(s[d.source]);
+    if(options.length)validateMessage(R.detail(s,f,index,options[0]));
+  }
+  assert.ok(!F.fields(f).some(d=>d.type==='long'&&['containerCounts','supplyQuantities','npcQuantities'].includes(d.key)));
+});
+test('GM dropdown probability editor persists partial drafts, prevents stale saves and publishes only completed distributions',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const refs=await rpg.store.transact(C.DEFAULT_GUILD_ID,'probability-seed','GM',st=>{const {room}=mapFixture(st);const n=npcTemplate(st);return{room:room.id,npc:n.id};});
+    let i=h.interaction('GM',null,{},'rpg:map:library:room:pick',[refs.room]);await rpg.handle(i);
+    const f=Object.values(rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms).filter(f=>f.existingId===refs.room).at(-1),index=F.fields(f).findIndex(d=>d.key==='randomNpcs');
+    i=await click(h,rpg,'GM',i,'选择要填写的字段',[String(index)]);i=await click(h,rpg,'GM',i,'编辑：随机NPC · 0—10个概率');i=await click(h,rpg,'GM',i,'选择要配置的内容',[refs.npc]);
+    const opened=await click(h,rpg,'GM',i,'选择出现数量，填写该数量概率',['10']);i=await submit(h,rpg,'GM',opened,{probability:'100'});validateMessage(i.result);
+    const partial=rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms[f.id].data.randomNpcs[0];assert.equal(partial.probabilities[10],100);assert.equal(partial.probabilities[1],100);
+    const stale=await submit(h,rpg,'GM',opened,{probability:'0'});assert.match(stale.result.content,/失效|变化/);
+    // Reopen the durable draft after the stale attempt invalidated the old navigation group.
+    i=h.interaction('GM',null,{},'rpg:formedit:'+f.id);await rpg.handle(i);i=await click(h,rpg,'GM',i,'选择要配置的内容',[refs.npc]);
+    const removeOne=await click(h,rpg,'GM',i,'选择出现数量，填写该数量概率',['1']);i=await submit(h,rpg,'GM',removeOne,{probability:'0'});
+    i=await click(h,rpg,'GM',i,'返回草稿');i=await click(h,rpg,'GM',i,'发布模板');assert.match(i.result.embeds[0].data.title,/已发布/);
+    assert.deepEqual(rpg.store.snapshot(C.DEFAULT_GUILD_ID).roomTemplates[refs.room].randomNpcs[0].probabilities,certainCount(10,10));
+    const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);assert.deepEqual(restored.snapshot(C.DEFAULT_GUILD_ID).roomTemplates[refs.room].randomNpcs[0].probabilities,certainCount(10,10));
+  }finally{rpg.stop();}
+});
+test('saved random room content survives encrypted restart and fixed maps use the same template probabilities',async()=>{
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
+  const ref=await store.transact(C.DEFAULT_GUILD_ID,'random-room-generate','GM',st=>{
+    Object.assign(st.players,state().players);const n=npcTemplate(st);return mapFixture(st,{randomNpcs:[{ref:n.id,probabilities:certainCount(10,10)}],randomContainers:[{ref:'保险箱',probabilities:certainCount(6,6)}]},'fixed').m.id;
+  });const old=store.snapshot(C.DEFAULT_GUILD_ID).explorations[ref].cells['2,0'].room;
+  const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);assert.deepEqual(restored.snapshot(C.DEFAULT_GUILD_ID).explorations[ref].cells['2,0'].room,old);
+  await assert.rejects(()=>restored.transact(C.DEFAULT_GUILD_ID,'repeat-generate','GM',st=>X.generate(st,st.explorations[ref],()=>{throw Error('reroll')})),/发布/);
+});
+test('fixed supply dropdown reaches quantity 100 without entering IDs and enforces owner GM and original field',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const data=await rpg.store.transact(C.DEFAULT_GUILD_ID,'fixed-dropdown-seed','GM',st=>{
+      const f=F.create(st,'GM','room');f.data.supplyIds=[Object.keys(st.catalog)[0]];f.field=F.fields(f).findIndex(d=>d.key==='supplyQuantities');return{f:f.id,ref:f.data.supplyIds[0],index:f.field};
+    });let i=h.interaction('GM',null,{},'rpg:formedit:'+data.f);await rpg.handle(i);assert.ok(!i.modal);
+    i=await click(h,rpg,'GM',i,'选择要配置的内容',[data.ref]);for(let n=0;n<3;n++)i=await click(h,rpg,'GM',i,'下一页数量');
+    i=await click(h,rpg,'GM',i,'选择数量',['100']);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms[data.f].data.supplyQuantities[data.ref],100);
+    const spoof=h.interaction('1',null,{},'rpg:formroomfixed:'+data.f+':'+data.index+':'+data.ref,['1']);await rpg.handle(spoof);assert.match(spoof.result.content,/属于/);
+    h.members.GM.roles.cache.clear();const denied=h.interaction('GM',null,{},'rpg:formroomfixed:'+data.f+':'+data.index+':'+data.ref,['1']);await rpg.handle(denied);assert.match(denied.result.content,/GM/);
+    h.members.GM.roles.cache.set('gm',{id:'gm'});await rpg.store.transact(C.DEFAULT_GUILD_ID,'change-room-field','GM',st=>{st.forms[data.f].field=0;});
+    const stale=h.interaction('GM',null,{},'rpg:formroomfixed:'+data.f+':'+data.index+':'+data.ref,['1']);await rpg.handle(stale);assert.match(stale.result.content,/变化/);
+    assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms[data.f].data.supplyQuantities[data.ref],100);
+  }finally{rpg.stop();}
 });
