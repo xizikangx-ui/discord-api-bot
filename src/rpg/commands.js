@@ -95,7 +95,7 @@ function commands() {
   battle.addSubcommand(s => s.setName('异常').setDescription('下拉选择角色和异常模板'));
   battle.addSubcommand(s => s.setName('解除异常').setDescription('下拉选择角色与待解除异常'));
   battle.addSubcommand(s => s.setName('移出').setDescription('下拉选择要移出的参战者'));
-  list.push(battle);
+  list.push(battle,cmd('弹药管理','填装弹夹／箭匣、抽出或更换武器弹夹'));
   return list;
 }
 module.exports = { commands };

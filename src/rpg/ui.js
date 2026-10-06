@@ -153,7 +153,7 @@ function battleView(state, b) {
   const fence = String.fromCharCode(96).repeat(3);
   const header = status + ' · 动作点推进 ' + b.wave + ' · 每格50米\n' + (b.environment || '') +
     '\n当前：' + (current?.name || '等待GM') + (b.current ? ' · 快速' + b.current.quick + ' 正式' + b.current.formal + ' 移动' + b.current.move + '米' : '') +
-    (b.pauseReason ? '\n' + b.pauseReason : '') + '\n\n' + fence + 'text\n' + grid + fence;
+    (b.pauseReason ? '\n' + b.pauseReason : '') + '\n\n' + '🟦 友方　🟥 敌方　🟨 当前行动　🟫 困难地形　⬛ 阻挡';
   const details = b.actors.map((a, n) => {
       const p = B.actorCharacter(state, a), s = M.stats(p);
       return (n + 1) + '. ' + a.name.slice(0, 24) + ' [' + (a.team === 'ally' ? '友方' : '敌方') + '] HP ' + p.hp + '/' + s.maxHP +
@@ -169,9 +169,10 @@ function battleView(state, b) {
   const result = payload('战场 · ' + b.name, header, rows, color);
   result.embeds.push(embed('参战者与记录', details, color));
   result.embeds[0].setFooter({ text: '战斗 ' + b.id + ' · ' + status });
-  return result;
+  return require('./map-image').attach(result,require('./map-image').battle(state,b),'battle-'+b.id+'.png');
 }
 function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
+  require('./ammunition').normalize(B.actorCharacter(state,a));
   const p = B.actorCharacter(state, a), s = M.stats(p), turn = b.current?.actorId === a.id ? b.current : null;
   if (a.deathId) return payload('角色已死亡 · ' + a.name, '该角色不能继续操作。死亡记录已保存。', []);
   if (b.status === 'ended') return payload('战斗已结束 · ' + b.name, '操作面板已关闭。\n' + a.name + ' · HP ' + Math.min(p.hp, s.maxHP) + '/' + s.maxHP, [], 0x95a5a6);
@@ -202,11 +203,11 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const enabled = !!turn && b.status === 'active' && !b.pending;
   if (tab === 'move') rows.push(row(button('move:' + prefix, '输入移动位置', D.ButtonStyle.Primary, !enabled || s.overloaded)));
   if (tab === 'quick') rows.push(row(button('attackpick:' + prefix + ':quick:0', '快捷技能／超凡攻击', D.ButtonStyle.Primary, !enabled || !turn.quick),
-    button('reloadweaponpick:' + prefix + ':0', '装填（选择武器）', undefined, !enabled || !turn.quick), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick),
+    button('ammo:b:'+b.id+':'+a.id+':home', '更换弹夹 / 填弹', undefined, !enabled || !turn.quick), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick),
     button('itempick:' + prefix + ':0', '使用道具', undefined, !enabled || !turn.quick), button('cast:' + prefix, '确认吟唱', undefined, !enabled || !turn.quick)));
   if (tab === 'formal') rows.push(row(button('attackpick:' + prefix + ':formal:0', '攻击／释放技能', D.ButtonStyle.Primary, !enabled || !turn.formal),
     button('flee:' + prefix, '逃跑', undefined, !enabled || !turn.formal)));
-  if (tab === 'status') rows.push(row(button('equippick:' + prefix + ':0', '装备／卸下', D.ButtonStyle.Primary, !['paused', 'recruiting'].includes(b.status)),
+  if (tab === 'status') rows.push(row(button(a.userId?'equippick:' + prefix + ':0':'npcui:b:'+b.id+':'+a.id+':gear:overview:0', '装备／卸下', D.ButtonStyle.Primary, !['paused', 'recruiting'].includes(b.status)),
     button('attachpick:' + prefix + ':0', '装配／拆下配件', undefined, !['paused', 'recruiting'].includes(b.status)),
     button('statuspage:' + prefix + ':' + (statusPage - 1), '上一页异常', undefined, statusPage === 0),
     button('statuspage:' + prefix + ':' + (statusPage + 1), '下一页异常', undefined, statusPage >= statePages - 1)));

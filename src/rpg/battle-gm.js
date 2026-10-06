@@ -38,6 +38,7 @@ function createBattleGM(context) {
       '\n位置 (' + a.x + ', ' + a.y + ')米\n生命 ' + U.bar(p.hp, stats.maxHP) + ' ' + p.hp + '/' + stats.maxHP, [
       row(button('gmui:' + b.id + ':position:' + a.id, '位置 / 阵营', D.ButtonStyle.Primary),
         button('gmui:' + b.id + ':hp:' + a.id, '调整生命'), button('gmui:' + b.id + ':conditions:select:' + a.id, '调整异常')),
+      ...(!a.userId?[row(button('npcui:b:'+b.id+':'+a.id+':home','NPC自动操作 / 装备槽位',D.ButtonStyle.Primary))]:[]),
       row(button('gmui:' + b.id + ':view', '返回GM概览'))
     ]); v.embeds[0].setFooter({ text: '角色 ' + a.id + ' · ' + b.id }); return v;
   }

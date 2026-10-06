@@ -10,7 +10,10 @@ const X = require('../src/rpg/exploration'), XU = require('../src/rpg/exploratio
 const L = require('../src/rpg/loot'), DT = require('../src/rpg/mortality');
 const R = require('../src/rpg/room-settings');
 const { commands } = require('../src/rpg/commands'), { createStore } = require('../src/rpg/store'), { createRpg } = require('../src/rpg');
+const AM=require('../src/rpg/ammunition'),AI=require('../src/rpg/npc-auto'),Team=require('../src/rpg/team-movement');
 const minRng = min => min;
+function training(s,uid){if(!s.players[uid].equipped.weapon){const t=weapon(s,{weightKg:0,damage:{physical:'1'}});const item=M.issue(s,uid,t.id)[0];M.equip(s,uid,item.id);}return s.players[uid].equipped.weapon;}
+function reloadViaMagazine(s,b,turn,ammo,magazine){const a=B.actorById(b,b.current.actorId),weaponId=B.actorCharacter(s,a).equipped.weapon;const again=()=>{B.finish(s,b,b.current.id,minRng);while(b.current.actorId!==a.id)B.finish(s,b,b.current.id,minRng);};AM.battleOperation(s,b,turn,{type:'extract',weapon:weaponId});again();AM.battleOperation(s,b,b.current.id,{type:'fill',magazine,ammo});again();AM.battleOperation(s,b,b.current.id,{type:'swap',weapon:weaponId,magazine});}
 function state() {
   const s = C.newState(C.DEFAULT_GUILD_ID);
   for (const [uid, agility] of [['1', 6], ['2', 4], ['3', 2]]) {
@@ -24,7 +27,7 @@ function weapon(s, extra = {}) {
     traitIds: ['neutral'], weaponType: '剑', hit: 10, damage: { physical: '1d6' }, primary: 'physical', range: 1, ...extra });
 }
 function fight(s = state()) {
-  const b = B.createBattle(s, 'channel', 'GM', '测试战斗'); B.join(s, b, '1'); B.join(s, b, '2');
+  training(s,'1');training(s,'2');const b = B.createBattle(s, 'channel', 'GM', '测试战斗'); B.join(s, b, '1'); B.join(s, b, '2');
   B.start(s, b, null, minRng); return { s, b };
 }
 function collection(entries) { return new D.Collection(entries); }
@@ -188,7 +191,7 @@ test('versioned gun instances, ammo/magazine/attachments counted once and reload
   assert.equal(version2.version, 2); assert.equal(item.snapshot.weight, 100); assert.equal(item.loaded.current, 3);
   const ammunition = M.issue(s, '1', ammo.id, 20)[0];
   const { b } = fight(s);
-  const before = M.weight(p); B.reload(s, b, b.current.id, ammunition.id, item.magazineId);
+  const before = M.weight(p); reloadViaMagazine(s, b, b.current.id, ammunition.id, item.magazineId);
   assert.equal(item.loaded.current, 10); assert.equal(M.weight(p), before);
   assert.throws(() => B.reload(s, b, b.current.id, ammunition.id));
   assert.equal(magazine.capacity, 10);
@@ -368,9 +371,9 @@ test('write ambiguity reconciles committed result or freezes without reroll and 
 test('restart retains current turn, residual points, pending defense, conditions and dice', async () => {
   const h = harness(), store = createStore(h.deps); await store.load(C.DEFAULT_GUILD_ID);
   await store.transact(C.DEFAULT_GUILD_ID, 'fight', 'GM', st => {
-    Object.assign(st, state()); const b = B.createBattle(st, 'channel', 'GM', 'fight');
+    Object.assign(st, state());training(st,'1');training(st,'2');const b = B.createBattle(st, 'channel', 'GM', 'fight');
     B.join(st, b, '1'); B.join(st, b, '2'); B.start(st, b, null, minRng);
-    B.attack(st, b, b.current.id, 'unarmed', b.actors[1].id, 'formal', minRng); return b.id;
+    B.attack(st, b, b.current.id, B.actorCharacter(st, B.actorById(b,b.current.actorId)).equipped.weapon, b.actors[1].id, 'formal', minRng); return b.id;
   });
   const old = store.snapshot(C.DEFAULT_GUILD_ID);
   const restored = createStore(h.deps); await restored.load(C.DEFAULT_GUILD_ID);
@@ -435,7 +438,7 @@ test('mixed ammunition weights and bonuses are frozen per round, final shot rece
   const w = M.issue(s, '1', t.id)[0]; M.equip(s, '1', w.id);
   const heavy = M.publishTemplate(s, { ...baseAmmo, name: '重弹', weightKg: .03, effects: [{ target: 'attack:physical', value: 10 }] });
   const ammo = M.issue(s, '1', heavy.id, 2)[0], { b } = fight(s);
-  const weight = M.weight(s.players['1']); B.reload(s, b, b.current.id, ammo.id, w.magazineId);
+  const weight = M.weight(s.players['1']); reloadViaMagazine(s, b, b.current.id, ammo.id, w.magazineId);
   assert.equal(M.weight(s.players['1']), weight);
   const first = B.attack(s, b, b.current.id, w.id, b.actors[1].id, 'formal', minRng);
   assert.equal(first.damage.physical, 3); assert.equal(w.loaded.current, 2); assert.equal(M.weight(s.players['1']), weight - 1);
@@ -467,12 +470,12 @@ test('dead current actor is skipped on resume, terrain boundaries are checked af
   assert.throws(() => B.move(s, b, b.current.id, 49.999, 25));
 });
 test('defense deadline forces pure defense, equality fails dodge, condition penalties can lower resistance', () => {
-  const { s, b } = fight(); const hit = B.attack(s, b, b.current.id, 'unarmed', b.actors[1].id, 'formal', minRng);
+  const { s, b } = fight(); const hit = B.attack(s, b, b.current.id, B.actorCharacter(s, B.actorById(b,b.current.actorId)).equipped.weapon, b.actors[1].id, 'formal', minRng);
   hit.hit = 11; const result = B.defend(s, b, hit.id, 'dodge', () => 7);
   assert.equal(result.dodge.total, 11); assert.ok(!result.dodge.success);
   B.finish(s, b, b.current.id, minRng);
   const current = b.current, target = b.actors.find(a => a.id !== current.actorId);
-  const expired = B.attack(s, b, current.id, 'unarmed', target.id, 'formal', minRng); expired.expiresAt = Date.now() - 1;
+  const expired = B.attack(s, b, current.id, B.actorCharacter(s, B.actorById(b,b.current.actorId)).equipped.weapon, target.id, 'formal', minRng); expired.expiresAt = Date.now() - 1;
   const automatic = B.defend(s, b, expired.id, 'dodge', () => { throw new Error('must not dodge'); });
   assert.ok(automatic.defaulted); assert.equal(automatic.dodge, null);
   s.players['1'].conditions.push({ modifiers: [{ target: 'resist:mental', op: 'add', value: -3 }] });
@@ -482,15 +485,15 @@ test('a full battle button flow supports move modal, attack selection, private d
   const h = harness(), rpg = createRpg(h.deps); await rpg.start();
   try {
     const ref = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'setup', 'GM', st => {
-      st.config.gmRoleIds = ['gm']; st.config.playerRoleIds = ['player']; Object.assign(st.players, state().players);
+      st.config.gmRoleIds = ['gm']; st.config.playerRoleIds = ['player']; Object.assign(st.players, state().players);training(st,'1');training(st,'2');
       const b = B.createBattle(st, 'channel', 'GM', 'test'); B.join(st, b, '1'); B.join(st, b, '2'); B.start(st, b, null, minRng); return b.id;
     });
     let s = rpg.store.snapshot(C.DEFAULT_GUILD_ID), b = s.battles[ref], a = b.actors[0], prefix = [b.id, a.id, '1', b.current.id].join(':');
     const openMove = h.interaction('1', null, {}, 'rpg:move:' + prefix); await rpg.handle(openMove); assert.ok(openMove.modal); openMove.modal.toJSON();
     const move = h.interaction('1', null, {}, 'rpg:movevalue:' + prefix, [], { x: '26', y: '25' }); await rpg.handle(move); validateMessage(move.result);
     const choices = h.interaction('1', null, {}, 'rpg:attackpick:' + prefix + ':formal:0'); await rpg.handle(choices); validateMessage(choices.result);
-    const selectAttack = h.interaction('1', null, {}, 'rpg:attackpick:' + prefix + ':formal:select', ['unarmed']); await rpg.handle(selectAttack); validateMessage(selectAttack.result);
-    const target = h.interaction('1', null, {}, 'rpg:target:' + prefix + ':formal:unarmed', [b.actors[1].id]); await rpg.handle(target); validateMessage(target.result);
+    const selectAttack = h.interaction('1', null, {}, 'rpg:attackpick:' + prefix + ':formal:select', [rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].equipped.weapon]); await rpg.handle(selectAttack); validateMessage(selectAttack.result);
+    const target = h.interaction('1', null, {}, 'rpg:target:' + prefix + ':formal:'+s.players['1'].equipped.weapon, [b.actors[1].id]); await rpg.handle(target); validateMessage(target.result);
     s = rpg.store.snapshot(C.DEFAULT_GUILD_ID); b = s.battles[ref]; const pending = b.pending.id;
     const unauthorized = h.interaction('1', null, {}, 'rpg:defense:' + ref + ':' + pending); await rpg.handle(unauthorized); assert.match(unauthorized.result.content, /本人/);
     const defense = h.interaction('2', null, {}, 'rpg:defense:' + ref + ':' + pending); await rpg.handle(defense); validateMessage(defense.result);
@@ -505,16 +508,16 @@ test('restart scheduler settles exactly one expired attack without rerolling the
   let ref;
   try {
     ref = await first.store.transact(C.DEFAULT_GUILD_ID, 'setup', 'GM', st => {
-      Object.assign(st.players, state().players);
+      Object.assign(st.players, state().players);training(st,'1');training(st,'2');
       const b = B.createBattle(st, 'channel', 'GM', 'test'); B.join(st, b, '1'); B.join(st, b, '2'); B.start(st, b, null, minRng);
-      B.attack(st, b, b.current.id, 'unarmed', b.actors[1].id, 'formal', minRng); b.pending.expiresAt = Date.now() - 1; return b.id;
+      B.attack(st, b, b.current.id, B.actorCharacter(st, B.actorById(b,b.current.actorId)).equipped.weapon, b.actors[1].id, 'formal', minRng); b.pending.expiresAt = Date.now() - 1; return b.id;
     });
   } finally { first.stop(); }
   const second = createRpg(h.deps); await second.start();
-  try { const s = second.store.snapshot(C.DEFAULT_GUILD_ID); assert.equal(s.battles[ref].pending, null); assert.equal(s.players['2'].hp, 10); }
+  try { const s = second.store.snapshot(C.DEFAULT_GUILD_ID); assert.equal(s.battles[ref].pending, null); assert.equal(s.players['2'].hp, 9); }
   finally { second.stop(); }
   const third = createRpg(h.deps); await third.start();
-  try { assert.equal(third.store.snapshot(C.DEFAULT_GUILD_ID).players['2'].hp, 10); } finally { third.stop(); }
+  try { assert.equal(third.store.snapshot(C.DEFAULT_GUILD_ID).players['2'].hp, 9); } finally { third.stop(); }
 });
 test('persistent role-panel wizard, publish, list reopen and defaults remain usable', async () => {
   const h = harness(), rpg = createRpg(h.deps); await rpg.start();
@@ -572,7 +575,7 @@ test('NPC controls and private state reject other players, GM uses quick switch 
   const h = harness(), rpg = createRpg(h.deps); await rpg.start();
   try {
     const ids = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'setup', 'GM', st => {
-      st.config.gmRoleIds = ['gm']; Object.assign(st.players, state().players);
+      st.config.gmRoleIds = ['gm']; Object.assign(st.players, state().players);training(st,'1');
       const w = weapon(st), t = B.validateNPC(st, { name: 'NPC', attributes: { ...st.players['1'].attributes, agility: 20 }, hpMax: 50, itemIds: [w.id] });
       t.id = 'npc'; t.published = true; st.npcTemplates.npc = t;
       const b = B.createBattle(st, 'channel', 'GM', 'test'); B.join(st, b, '1'); const a = B.addNPC(st, b, 'npc', 'enemy');
@@ -591,7 +594,7 @@ test('NPC controls and private state reject other players, GM uses quick switch 
       const b = st.battles[ids.b];
       B.finish(st, b, b.current.id, minRng);
       while (b.current.actorId === ids.a) B.finish(st, b, b.current.id, minRng);
-      return B.attack(st, b, b.current.id, 'unarmed', ids.a, 'formal', minRng);
+      return B.attack(st, b, b.current.id, B.actorCharacter(st, B.actorById(b,b.current.actorId)).equipped.weapon, ids.a, 'formal', minRng);
     });
     const ownPlayer = h.interaction('1', null, {}, 'rpg:defense:' + ids.b + ':' + hit.id); await rpg.handle(ownPlayer); assert.match(ownPlayer.result.content, /GM身份组/);
     const defending = h.interaction('GM', null, {}, 'rpg:defend:' + ids.b + ':' + hit.id + ':GM:defend'); await rpg.handle(defending); validateMessage(defending.result);
@@ -1000,7 +1003,7 @@ test('upgrade cards and commands meet full Discord limits with long real IDs and
   validateMessage(U.characterView(p)); validateMessage(U.inventoryView(s, '1', '1234567890123456789'));
   validateMessage(AU.checkView(A.createCheck(s, 'GM', 'channel', { name: '鉴定', description: '字'.repeat(2000), rule: 'd20', threshold: 10 })));
   validateMessage(AU.sessionView(A.createSession(s, 'GM', 'channel', { name: '开团', description: '字'.repeat(2000), startsAt: Date.now() + 100000 })));
-  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 27); assert.equal(new Set(all.map(c => c.name)).size, all.length);
+  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 30); assert.equal(new Set(all.map(c => c.name)).size, all.length);
   function validOptions(options) {
     let optional = false;
     for (const o of options || []) { if (o.type > 2) { if (!o.required) optional = true; else assert.equal(optional, false, o.name); }
@@ -1101,7 +1104,7 @@ test('raw public button creates private child while return/cancel avoids new act
     assert.equal(i.updatedSource, undefined); assert.equal(i.deferOptions.flags, D.MessageFlags.Ephemeral);
     const tab = await click(h, rpg, '1', i, '操作分页', ['formal']);
     const attack = await click(h, rpg, '1', tab, '攻击／释放技能');
-    const selected = await click(h, rpg, '1', attack, '选择武器／技能', ['unarmed']);
+    const selected = await click(h, rpg, '1', attack, '选择武器／技能', [rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].equipped.weapon]);
     await click(h, rpg, '1', selected, '取消选择');
     const b = rpg.store.snapshot(C.DEFAULT_GUILD_ID).battles[ref]; assert.equal(b.current.formal, 1); assert.equal(b.pending, null);
     assert.ok(!jsonComponents(i.result).some(c => c.custom_id === 'rpg:personal:' + ref));
@@ -1796,7 +1799,7 @@ test('empty magazine is recorded immediately and unsupported or insufficient bur
   const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng,{mode:'auto',count:4});assert.equal(hit.ammoEmpty,true);assert.equal(w.loaded.current,0);assert.match(b.recent.at(-1).message,/无弹药/);assert.match(bodyOf(U.personalView(s,b,b.actors[0],'1')),/无弹药/);
 });
 test('ammo damage and condition snapshots survive magazine reload and template edits',()=>{
-  const s=state(),{ammo,gun}=gunFixture(s),condition=(()=>{const f=F.create(s,'GM','condition');f.data.name='弹药异常';f.data.effectType='text';return F.publish(s,f);})();const t=M.publishTemplate(s,{...ammo,name:'附带异常弹',damage:{physical:'4'},conditions:[{id:condition.id,severity:'一般'}]});const w=M.issue(s,'1',gun.id)[0];w.loaded.current=0;w.loaded.rounds=[];M.equip(s,'1',w.id);const rounds=M.issue(s,'1',t.id,4)[0];const {b}=fight(s);B.reload(s,b,b.current.id,rounds.id,w.magazineId);s.catalog[t.id].damage.physical='999';const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng);assert.equal(hit.damage.physical,7);assert.equal(hit.conditions[0].template.name,'弹药异常');assert.equal(w.loaded.rounds[0].damage.physical,'4');
+  const s=state(),{ammo,gun}=gunFixture(s),condition=(()=>{const f=F.create(s,'GM','condition');f.data.name='弹药异常';f.data.effectType='text';return F.publish(s,f);})();const t=M.publishTemplate(s,{...ammo,name:'附带异常弹',damage:{physical:'4'},conditions:[{id:condition.id,severity:'一般'}]});gun.ammoIds=[ammo.id,t.id];gun.initialMagazine.ammoIds=[ammo.id,t.id];const w=M.issue(s,'1',gun.id)[0];w.loaded.current=0;w.loaded.rounds=[];M.equip(s,'1',w.id);const rounds=M.issue(s,'1',t.id,4)[0];const {b}=fight(s);reloadViaMagazine(s,b,b.current.id,rounds.id,w.magazineId);s.catalog[t.id].damage.physical='999';const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng);assert.equal(hit.damage.physical,7);assert.equal(hit.conditions[0].template.name,'弹药异常');assert.equal(w.loaded.rounds[0].damage.physical,'4');
 });
 test('armor weakening subtracts resistance and broken armor loses defense on subsequent bullets',()=>{
   const s=state(),{gun}=gunFixture(s,{armorWeakening:{type:'physical',amount:5}}),w=M.issue(s,'1',gun.id)[0];M.equip(s,'1',w.id);const armor=M.publishTemplate(s,{kind:'防具',name:'易损甲',rarity:'white',weightKg:0,traitIds:['neutral'],quality:'标准',origin:'未知',armorType:'胸甲',durabilityMax:3,weakeningResistance:{physical:2},defenses:{physical:4}}),a=M.issue(s,'2',armor.id)[0];M.equip(s,'2',a.id);const {b}=fight(s);const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng,{mode:'auto',count:2});const result=B.defend(s,b,hit.id,'defend',minRng);assert.equal(result.total,6);assert.equal(a.durability,0);assert.equal(M.stats(s.players['2']).defenses.physical,0);assert.equal(result.armorDamage[0].lost,3);
@@ -1922,4 +1925,155 @@ test('NPC image edits are preserved when a previously opened statistics draft pu
 test('effect targets can paginate independently of existing effects without exceeding five rows',()=>{
   const s=state(),f=F.create(s,'GM','item');f.field=F.fields(f).findIndex(d=>d.key==='effects');const original=C.EFFECT_TARGETS.length;
   try{for(let n=0;n<10;n++)C.EFFECT_TARGETS.push('extra:'+n);f.data.effects=Array.from({length:30},()=>({target:'attr:strength',value:1}));f.targetPage=1;f.effectPage=1;const v=F.effectsView(s,f);validateMessage(v);assert.ok(jsonComponents(v).some(c=>c.label==='上一页目标'));assert.equal(jsonComponents(v).find(c=>c.placeholder==='删除某项效果').options.length,5);}finally{C.EFFECT_TARGETS.splice(original);}
+});
+
+function automaticFight(extra={}){
+  const s=state(),t=weapon(s,{weightKg:0,damage:{physical:'1'},...extra}),npc=npcTemplate(s,{hpMax:100,itemIds:[t.id],equipmentPreset:[{ref:t.id+'~0',hand:'main'}],ai:{mode:'auto'}});
+  training(s,'1');const b=B.createBattle(s,'channel','GM','自动战斗'),player=B.join(s,b,'1'),a=B.addNPC(s,b,npc.id,'enemy');B.position(b,a.id,25,25);B.start(s,b,null,minRng);
+  b.current={id:'npc-turn',actorId:a.id,quick:1,formal:1,move:18,moveSpent:0};return {s,b,a,player,t,npc};
+}
+test('NPC automatic action preserves the player defense and respects a manual toggle',()=>{
+  const {s,b,a}=automaticFight();AI.step(s,b,minRng);assert.equal(b.current.quick,0);AI.step(s,b,minRng);assert.ok(b.pending);assert.equal(b.pending.targetId,b.actors[0].id);
+  const frozen=C.clone(b.pending),hp=s.players['1'].hp;assert.equal(AI.step(s,b,minRng),false);assert.equal(s.players['1'].hp,hp);assert.deepEqual(b.pending,frozen);
+  B.defend(s,b,b.pending.id,'defend',minRng);a.ai.mode='manual';assert.equal(AI.step(s,b,minRng),false);
+});
+test('NPC automatic defense chooses configured probability and does not spend an action',()=>{
+  const {s,b,a,player}=automaticFight();b.current={id:'player-turn',actorId:player.id,quick:1,formal:1,move:18};B.attack(s,b,b.current.id,s.players['1'].equipped.weapon,a.id,'formal',minRng);
+  a.ai.weights=C.clone(AI.DEFAULTS);a.ai.weights.defense={defend:0,dodge:0,both:0,none:100};AI.step(s,b,minRng);assert.equal(b.pending,null);assert.equal(b.current.quick,1);assert.equal(b.history.at(-1).details.choice,'none');
+});
+test('NPC probability validation preserves decimals, rejects totals and ignores unavailable attacks',()=>{
+  assert.throws(()=>AI.validate({weights:{quick:{pass:99},formal:{pass:100},defense:{defend:100}}}),/100/);
+  const weights={quick:{pass:100},formal:{'attack:missing':99,'attack:*':1},defense:{defend:33.33,dodge:66.67}};
+  assert.equal(AI.validate({weights}).weights.defense.dodge,66.67);const {s,b,a}=automaticFight();a.ai.weights=weights;AI.step(s,b,minRng);AI.step(s,b,minRng);assert.ok(b.pending);
+});
+test('NPC targeting selects lowest HP and no preview changes live resources or random results',()=>{
+  const {s,b,a}=automaticFight({melee:false});training(s,'2');b.status='paused';b.actors.push({id:'low',userId:'2',characterId:s.players['2'].id,name:'低血角色',team:'ally',x:25,y:25});s.players['2'].hp=2;b.status='active';a.ai.target='lowest';
+  const before=JSON.stringify(s);AI.options(s,b,a);assert.equal(JSON.stringify(s),before);AI.step(s,b,minRng);AI.step(s,b,minRng);assert.equal(b.pending.targetId,'low');
+});
+test('automatic NPC routes around walls and pauses if its step limit is exceeded',()=>{
+  const {s,b,a,player}=automaticFight();a.x=25;a.y=25;player.x=125;player.y=25;b.terrain['1,0']='blocked';const move=AI.approach(b,a,player,18);assert.ok(move.y>25);assert.ok(B.movementCost(b,a,move)<=18);
+  a.aiTurn=b.current.id;a.aiSteps=64;AI.step(s,b,minRng);assert.equal(b.status,'paused');assert.match(b.pauseReason,/64/);
+});
+test('NPC explicit equipment is independent of inventory order and duplicate instances have unique IDs',()=>{
+  const s=state(),first=weapon(s),second=weapon(s,{name:'第二把'}),t=npcTemplate(s,{itemIds:[first.id,second.id],equipmentPreset:[{ref:first.id+'~0',hand:'main'}]});
+  const b=B.createBattle(s,'channel','GM','装备'),one=B.addNPC(s,b,t.id,'enemy'),two=B.addNPC(s,b,t.id,'enemy');assert.equal(one.character.inventory[one.character.equipped.weapon].templateId,first.id);
+  assert.notEqual(one.character.equipped.weapon,two.character.equipped.weapon);assert.equal(Object.values(one.character.inventory).length,2);
+  t.equipmentPreset=[];assert.ok(one.character.equipped.weapon);assert.throws(()=>B.validateNPC(s,{...t,equipmentPreset:[{ref:'missing',hand:'main'}]}),/预设装备/);
+});
+test('team movement saves votes and moves all participants only on the last confirmation',()=>{
+  const {s,m}=mapFixture();X.join(s,m,'1');X.join(s,m,'2');const r=Team.propose(s,m,'1','1,0');assert.equal(m.participants['1'].cell,'0,0');assert.deepEqual(r.yes,['1']);
+  const restored=C.clone(s),live=restored.explorations[m.id];Team.vote(restored,live,r.id,'2',true);assert.equal(live.participants['1'].cell,'1,0');assert.equal(live.participants['2'].cell,'1,0');assert.throws(()=>Team.vote(restored,live,r.id,'2',true),/结束/);
+});
+test('team movement rejects split teams, duplicates, outsiders, overloading, refusal and expiration',()=>{
+  const {s,m}=mapFixture();X.join(s,m,'1');X.join(s,m,'2');const r=Team.propose(s,m,'1','1,0');assert.throws(()=>Team.propose(s,m,'2','1,0'),/已有/);assert.throws(()=>Team.vote(s,m,r.id,'3',true),/有效角色/);
+  Team.vote(s,m,r.id,'2',false);assert.equal(m.participants['1'].cell,'0,0');const again=Team.propose(s,m,'1','1,0');Team.expire(s,m,again.expiresAt);assert.equal(m.moves[again.id].status,'expired');
+  m.participants['2'].cell='1,0';assert.throws(()=>Team.propose(s,m,'1','1,0'),/同一格/);m.participants['2'].cell='0,0';s.players['2'].inventory.heavy={id:'heavy',quantity:1,snapshot:{weight:999999}};assert.throws(()=>Team.propose(s,m,'1','1,0'),/超重/);
+});
+test('team movement invalidates membership, character, pause and layout changes',()=>{
+  for(const change of [(s,m)=>delete m.participants['2'],(s)=>s.players['2'].id='new',(s,m)=>m.status='paused',(s,m)=>m.cells['1,0'].type='wall']){
+    const {s,m}=mapFixture();X.join(s,m,'1');X.join(s,m,'2');const r=Team.propose(s,m,'1','1,0');change(s,m);Team.expire(s,m);assert.equal(m.moves[r.id].status,'cancelled');assert.equal(m.participants['1'].cell,'0,0');
+  }
+});
+test('one shared locked door consumes one charge and failed final checks consume nothing',()=>{
+  const s=state(),key=M.publishTemplate(s,{kind:'钥匙',name:'实验室钥匙',rarity:'white',weightKg:0,keyCharges:2}),{m}=mapFixture(s,{keyIds:[key.id]});X.join(s,m,'1');X.join(s,m,'2');for(const uid of ['1','2'])X.move(s,m,uid,'1,0');
+  const item=M.issue(s,'1',key.id)[0],r=Team.propose(s,m,'1','2,0',item.id);assert.equal(item.keyCharges,2);Team.vote(s,m,r.id,'2',true);assert.equal(item.keyCharges,1);assert.equal(m.participants['2'].cell,'2,0');
+});
+test('automatic encounters preserve the capacity, continue waves and unlock only on victory',()=>{
+  const s=state(),npc=npcTemplate(s),{m}=mapFixture(s,{npcIds:[npc.id]});
+  // Use an explicit larger frozen encounter to cover overflow independent of room probability validation.
+  m.cells['2,0'].room.remainingNpcs=[{template:C.clone(npc),quantity:22}];X.join(s,m,'1');m.participants['1'].cell='2,0';m.revealed['2,0']=true;
+  let changed=Team.autoEncounters(s);const first=s.battles[changed.battles[0]];assert.equal(first.actors.length,20);assert.equal(m.cells['2,0'].room.remainingNpcs[0].quantity,3);
+  for(const a of first.actors.filter(a=>!a.userId)){a.character.hp=0;require('../src/rpg/mortality').settle(s,first,a,first.actors[0].id);}
+  changed=Team.autoEncounters(s);const second=s.battles[changed.battles.at(-1)];assert.equal(first.status,'ended');assert.equal(second.actors.length,4);assert.equal(m.cells['2,0'].room.encounter,'battle');
+  for(const a of second.actors.filter(a=>!a.userId)){a.character.hp=0;require('../src/rpg/mortality').settle(s,second,a,second.actors[0].id);}Team.autoEncounters(s);assert.equal(m.cells['2,0'].room.encounter,'resolved');
+});
+test('automatic encounter configuration failure pauses without leaving partial actors or consuming the roster',()=>{
+  const s=state(),npc=npcTemplate(s),{m}=mapFixture(s,{npcIds:[npc.id]});X.join(s,m,'1');m.participants['1'].cell='2,0';m.revealed['2,0']=true;m.cells['2,0'].room.snapshot.spawn.npcX=9999;
+  const before=JSON.stringify(m.cells['2,0'].room.remainingNpcs);Team.autoEncounters(s);assert.equal(m.status,'paused');assert.equal(Object.keys(s.battles).length,0);assert.equal(JSON.stringify(m.cells['2,0'].room.remainingNpcs),before);
+});
+test('magazines store mixed supported ammunition, keep weight once and reject filling inserted magazines',()=>{
+  const s=state(),{gun,ammo,mag}=gunFixture(s),other=M.publishTemplate(s,{...ammo,name:'第二弹种',damage:{physical:'4'}});mag.ammoIds=[ammo.id,other.id];gun.ammoIds=[ammo.id,other.id];gun.initialMagazine=C.clone(mag);
+  const w=M.issue(s,'1',gun.id)[0],p=s.players['1'];M.equip(s,'1',w.id);const m=p.inventory[w.magazineId];AM.normalize(p);m.loaded.rounds=[];m.loaded.current=0;
+  const base=M.weight(p),a=M.issue(s,'1',ammo.id,2)[0],o=M.issue(s,'1',other.id,2)[0];assert.throws(()=>AM.fill(p,m.id,a.id),/抽出/);AM.swap(p,w.id,null);AM.fill(p,m.id,a.id,2);AM.fill(p,m.id,o.id,2);assert.equal(M.weight(p),base+4);AM.swap(p,w.id,m.id);assert.equal(M.weight(p),base+4);
+  assert.equal(w.loaded.rounds[2].template.id,other.id);
+});
+test('battle magazine extraction, filling and replacement each spend one quick action',()=>{
+  const s=state(),{gun,ammo}=gunFixture(s),w=M.issue(s,'1',gun.id)[0];M.equip(s,'1',w.id);const p=s.players['1'],clip=w.magazineId;AM.normalize(p);w.loaded.rounds=[];w.loaded.current=0;const rounds=M.issue(s,'1',ammo.id,4)[0],{b}=fight(s);
+  AM.battleOperation(s,b,b.current.id,{type:'extract',weapon:w.id});assert.equal(b.current.quick,0);assert.throws(()=>AM.battleOperation(s,b,b.current.id,{type:'fill',magazine:clip,ammo:rounds.id}),/快速/);
+  const owner=b.current.actorId;const again=()=>{B.finish(s,b,b.current.id,minRng);while(b.current.actorId!==owner)B.finish(s,b,b.current.id,minRng);};again();AM.battleOperation(s,b,b.current.id,{type:'fill',magazine:clip,ammo:rounds.id});assert.equal(b.current.quick,0);again();AM.battleOperation(s,b,b.current.id,{type:'swap',weapon:w.id,magazine:clip});assert.equal(b.current.quick,0);assert.equal(w.loaded.current,4);
+});
+test('multiple compatible clips and ammunition validate and unsupported rounds reject before replacement',()=>{
+  const s=state(),{gun,ammo,mag}=gunFixture(s),ammo2=M.publishTemplate(s,{...ammo,name:'第二种'}),mag2=M.publishTemplate(s,{...mag,name:'大弹夹',capacity:8,ammoIds:[ammo.id,ammo2.id]});
+  const t=M.publishTemplate(s,{...gun,ammoIds:[ammo.id,ammo2.id],magazineIds:[mag.id,mag2.id]}),w=M.issue(s,'1',t.id)[0],m=M.issue(s,'1',mag2.id)[0],a=M.issue(s,'1',ammo2.id,8)[0],p=s.players['1'];AM.fill(p,m.id,a.id);AM.swap(p,w.id,m.id);assert.equal(w.loaded.capacity,8);
+  const incompatible=M.publishTemplate(s,{...ammo,name:'错误弹种'}),bad=M.issue(s,'1',incompatible.id)[0];AM.swap(p,w.id,null);assert.throws(()=>AM.fill(p,m.id,bad.id),/不兼容/);assert.equal(m.loaded.current,8);
+});
+test('NPC empty magazines prefer a filled spare, then use the same extract-fill-insert sequence',()=>{
+  const s=state(),{gun,ammo,mag}=gunFixture(s,{current:0}),t=npcTemplate(s,{hpMax:100,itemIds:[gun.id,mag.id,ammo.id],quantities:{[ammo.id]:8},equipmentPreset:[{ref:gun.id+'~0',hand:'main'}],ai:{mode:'auto'}}),b=B.createBattle(s,'channel','GM','NPC换弹');B.join(s,b,'1');const a=B.addNPC(s,b,t.id,'enemy'),p=a.character;B.position(b,a.id,25,25);B.start(s,b,null,minRng);b.current={id:'reload1',actorId:a.id,quick:1,formal:1,move:0};
+  const spare=Object.values(p.inventory).find(i=>i.templateId===mag.id&&!AM.attached(p,i.id)),rounds=Object.values(p.inventory).find(i=>i.templateId===ammo.id);AM.fill(p,spare.id,rounds.id,4);AI.step(s,b,minRng);assert.equal(p.inventory[p.equipped.weapon].magazineId,spare.id);assert.equal(b.current.quick,0);
+});
+test('legacy magazine rounds migrate once, preserve damage and restart does not refill',()=>{
+  const s=state(),{gun}=gunFixture(s),w=M.issue(s,'1',gun.id)[0],p=s.players['1'],m=p.inventory[w.magazineId];delete m.loaded;delete w.magazineStorage;w.loaded.current=2;w.loaded.rounds=w.loaded.rounds.slice(0,2);const before=M.itemWeight(w)+M.itemWeight(m);
+  AM.migrate(s);assert.equal(m.loaded.current,2);assert.equal(M.weight(p),before);const copy=C.clone(s);assert.equal(AM.migrate(copy),false);AM.normalize(copy.players['1']);assert.equal(copy.players['1'].inventory[w.magazineId].loaded.current,2);
+});
+test('crossbows use compatible arrow magazines rather than loose arrows',()=>{
+  const s=state(),arrow=M.publishTemplate(s,{kind:'弹药',name:'弩箭',rarity:'white',weightKg:.02}),mag=M.publishTemplate(s,{kind:'弹夹',name:'弩箭匣',rarity:'white',weightKg:.1,capacity:3,ammoIds:[arrow.id]}),bow=weapon(s,{weaponType:'弩',ammoIds:[arrow.id],magazineIds:[mag.id],capacity:3,current:1}),w=M.issue(s,'1',bow.id)[0];M.equip(s,'1',w.id);const {b}=fight(s);B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng);assert.equal(w.loaded.current,0);assert.equal(b.pending.ammoEmpty,true);
+});
+test('NPC equipment panel is a three-level filtered selector and saves a template preset',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const ref=await rpg.store.transact(C.DEFAULT_GUILD_ID,'npc-panel-setup','GM',s=>{const w=weapon(s),f=F.create(s,'GM','npc');f.data.name='装备守卫';f.data.itemIds=[w.id,Object.keys(s.catalog)[0]];return f.id;});
+    const i=h.interaction('GM',null,{},'rpg:npcui:f:'+ref+':_:home');await rpg.handle(i);validateMessage(i.result);const gear=await click(h,rpg,'GM',i,'装备槽位'),category=await click(h,rpg,'GM',gear,'装备随身物品'),kind=await click(h,rpg,'GM',category,'装备大类',['武器']),items=await click(h,rpg,'GM',kind,'具体类型',['剑']);
+    const choices=jsonComponents(items.result).find(c=>c.options).options;assert.equal(choices.length,1);const hand=await click(h,rpg,'GM',items,'选择已有物品',[choices[0].value]);const saved=await click(h,rpg,'GM',hand,'持握位置',['main']);validateMessage(saved.result);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms[ref].data.equipmentPreset.length,1);
+  }finally{rpg.stop();}
+});
+test('NPC probability wizard requires explicit validated save and restricts GM access',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const ref=await rpg.store.transact(C.DEFAULT_GUILD_ID,'npc-config','GM',s=>{const f=F.create(s,'GM','npc');f.data.name='配置守卫';return f.id;});const open=h.interaction('GM',null,{},'rpg:npcui:f:'+ref+':_:home');await rpg.handle(open);
+    const mode=await click(h,rpg,'GM',open,'选择控制方式',['auto']);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms[ref].data.ai.mode,'auto');const weights=await click(h,rpg,'GM',mode,'操作概率'),op=await click(h,rpg,'GM',weights,'选择操作，再填写概率',['0']),edit=await click(h,rpg,'GM',op,'填写概率');assert.ok(edit.modal);
+    const modal=h.interaction('GM',null,{},edit.modal.toJSON().custom_id,[],{value:'99'});await rpg.handle(modal);const bad=await click(h,rpg,'GM',modal,'保存全部概率');assert.match(bad.result.content,/100/);
+    const denied=h.interaction('1',null,{},'rpg:npcui:f:'+ref+':_:home');await rpg.handle(denied);assert.match(denied.result.content,/GM/);
+  }finally{rpg.stop();}
+});
+test('public exploration request really mentions the roster, remains private on clicks and updates after all approve',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const ref=await rpg.store.transact(C.DEFAULT_GUILD_ID,'team-map','GM',s=>{const {m}=mapFixture(s);X.join(s,m,'1');X.join(s,m,'2');return m.id;});const i=h.interaction('1',null,{},'rpg:map:move:'+ref+':1,0');await rpg.handle(i);
+    const m=rpg.store.snapshot(C.DEFAULT_GUILD_ID).explorations[ref],r=m.moves[m.moveRequestId],message=h.messages.get(r.messageId);assert.deepEqual(message.lastPayload.allowedMentions.users,['1','2']);assert.match(message.content,/<@2>/);
+    const approve=h.interaction('2',null,{},'rpg:map:movevote:'+ref+':'+r.id+':yes');await rpg.handle(approve);validateMessage(approve.result);assert.equal(approve.deferOptions.flags,D.MessageFlags.Ephemeral);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).explorations[ref].participants['1'].cell,'1,0');
+    const before=h.sent.length;await rpg.exploration.publishMove(C.DEFAULT_GUILD_ID,ref,r.id);assert.equal(h.sent.length,before);
+  }finally{rpg.stop();}
+});
+test('ordinary ammunition panel fills an extracted magazine and refuses another owner',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const ref=await rpg.store.transact(C.DEFAULT_GUILD_ID,'ammo-panel','GM',s=>{const {mag,ammo}=gunFixture(s);M.issue(s,'1',ammo.id,4);return M.issue(s,'1',mag.id)[0].id;});const open=h.interaction('1','弹药管理');await rpg.handle(open);
+    const clips=await click(h,rpg,'1',open,'向抽出的弹夹填弹'),rounds=await click(h,rpg,'1',clips,'选择一项',[ref]),option=jsonComponents(rounds.result).find(c=>c.options).options[0],preview=await click(h,rpg,'1',rounds,'选择一项',[option.value]),done=await click(h,rpg,'1',preview,'确认');validateMessage(done.result);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory[ref].loaded.current,4);
+    const denied=h.interaction('2',null,{},'rpg:ammo:p:1:_:home');await rpg.handle(denied);assert.match(denied.result.content,/自己/);
+  }finally{rpg.stop();}
+});
+test('rendered exploration and battle maps are valid PNGs and all new panels obey Discord limits',()=>{
+  const {s,b}=automaticFight(),maps=require('../src/rpg/map-image'),{m}=mapFixture(s),battle=U.battleView(s,b),board=XU.board(m);validateMessage(battle);validateMessage(board);
+  for(const data of [maps.battle(s,b),maps.exploration(m),maps.exploration(m,false,0)]){assert.deepEqual([...data.slice(0,8)],[137,80,78,71,13,10,26,10]);assert.ok(data.length<4*1024*1024);}
+  const r=Team.propose(s,m,(()=>{X.join(s,m,'2');return '2';})(),'1,0');validateMessage(XU.moveCard(m,r));assert.match(battle.embeds[0].toJSON().image.url,/attachment:\/\//);
+});
+test('saved automatic combat resumes a step without repeating attacks or losing pending defense on restart',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);let restored;
+  try{const ref=await rpg.store.transact(C.DEFAULT_GUILD_ID,'auto-runtime','GM',s=>{const sample=automaticFight();s.players=sample.s.players;s.catalog=sample.s.catalog;s.npcTemplates=sample.s.npcTemplates;s.battles=sample.s.battles;return sample.b.id;});
+    await rpg.tickGuild(C.DEFAULT_GUILD_ID);await rpg.tickGuild(C.DEFAULT_GUILD_ID);const saved=rpg.store.snapshot(C.DEFAULT_GUILD_ID).battles[ref];assert.ok(saved.pending);const pending=C.clone(saved.pending),seq=saved.aiSequence;
+    const notices=h.sent.filter(m=>m.lastPayload.allowedMentions?.users?.includes('1')&&m.content?.includes('受到NPC攻击'));assert.equal(notices.length,1);rpg.stop();restored=createRpg(h.deps);await restored.start();
+    const after=restored.store.snapshot(C.DEFAULT_GUILD_ID).battles[ref];assert.deepEqual(after.pending,pending);assert.equal(after.aiSequence,seq);assert.equal(h.sent.filter(m=>m.content?.includes('受到NPC攻击')).length,1);
+    const home=h.interaction('1',null,{},'rpg:ammo:b:'+ref+':'+after.actors[0].id+':home');await restored.handle(home);const ret=await click(h,restored,'1',home,'返回装备 / 行动');validateMessage(ret.result);assert.ok(ret.result.embeds?.length);
+  }finally{rpg.stop();restored?.stop();}
+});
+
+test('NPC without a spare magazine extracts, fills and reinstalls across distinct opportunities',()=>{
+  const s=state(),{gun,ammo}=gunFixture(s),t=npcTemplate(s,{itemIds:[gun.id,ammo.id],quantities:{[ammo.id]:4},equipmentPreset:[{ref:gun.id+'~0',hand:'main'}],ai:{mode:'auto'}}),b=B.createBattle(s,'channel','GM','补弹');training(s,'1');B.join(s,b,'1');const a=B.addNPC(s,b,t.id,'enemy');B.position(b,a.id,25,25);B.start(s,b,null,minRng);const p=a.character,w=p.inventory[p.equipped.weapon],mag=w.magazineId;AM.normalize(p);w.loaded.rounds=[];w.loaded.current=0;
+  for(let n=0;n<3;n++){b.current={id:'reload-turn-'+n,actorId:a.id,quick:1,formal:1,move:0};AI.step(s,b,minRng);assert.equal(b.current.quick,0);if(n===0)assert.equal(w.magazineId,undefined);if(n===1)assert.equal(p.inventory[mag].loaded.current,4);}
+  assert.equal(w.magazineId,mag);assert.equal(w.loaded.current,4);assert.equal(b.aiSequence,3);
+});
+
+test('multiple ammo selection chooses an initial round actually compatible with the first magazine',()=>{
+  const s=state(),{gun,ammo,mag}=gunFixture(s),other=M.publishTemplate(s,{...ammo,id:undefined,name:'不同初始弹种'}),clip=M.publishTemplate(s,{...mag,id:undefined,name:'第二弹夹',ammoIds:[other.id]});
+  const w=M.publishTemplate(s,{...gun,id:undefined,ammoIds:[ammo.id,other.id],magazineIds:[clip.id,mag.id]});assert.equal(w.initialAmmo.id,other.id);assert.equal(w.initialMagazine.id,clip.id);
+});
+
+test('NPC draft equipment can be corrected after removing a preset inventory item',()=>{
+  const s=state(),w=weapon(s),data={...F.defaults('npc'),itemIds:[],equipmentPreset:[{ref:w.id+'~0',hand:'main'}]};const p=require('../src/rpg/npc-equipment').create(data,s.catalog,true);assert.equal(M.equippedIds(p).length,0);assert.throws(()=>require('../src/rpg/npc-equipment').create(data,s.catalog),/预设装备/);
 });

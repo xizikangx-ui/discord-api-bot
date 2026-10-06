@@ -17,7 +17,7 @@ function view(state,uid,cid,tab='overview',page=0){
     (active?'⚔️ 战斗中：武器切换须在自己的行动消耗快速行动；其他装备请GM暂停。':'🟢 当前可快捷装备或卸下。')+'\n○ 空位　● 已占用　⚠️ 损坏仍占槽位',[
     U.row(U.select(route('tab'),'查看装备分类',Object.entries(TABS).map(([value,label])=>({value,label,default:value===tab})))),
     U.row(U.button(route('equip'),'快捷装备',U.D.ButtonStyle.Success),U.button(route('remove'),'快捷卸下',undefined,active),
-      U.button(route('view',tab+':'+page),'刷新槽位'),U.button('profile:card:'+uid+':'+cid,'返回角色卡'))
+      U.button('ammo:p:'+uid+':_:home','弹夹管理'),U.button(route('view',tab+':'+page),'刷新槽位'),U.button('profile:card:'+uid+':'+cid,'返回角色卡'))
   ],0x1abc9c);
   if(tab==='overview'||tab==='weapon'){
     const main=p.inventory[p.equipped.weapon],off=p.inventory[p.equipped.offhand],two=main&&W.hands(main.snapshot)===2;

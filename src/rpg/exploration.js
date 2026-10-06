@@ -11,6 +11,7 @@ function quantities(text, refs, max = 100) {
 }
 function validateRoom(state, raw) {
   const r = clone(raw);
+  r.autoStart=!!r.autoStart;r.spawn=Object.fromEntries(Object.entries({playerX:25,playerY:25,npcX:475,npcY:475}).map(([key,value])=>[key,num(r.spawn?.[key]??value,'出生位置',0,499.99,false)]));
   r.name = C.text(r.name, '房间名称', 80); r.description = C.text(r.description || '', '房间描述', 2000, true);
   ok(r.categoryIds?.length === 1 && state.mapCategories[r.categoryIds[0]]?.published, '先录入并选择一个地图大类。');
   r.boxes ||= []; ok(r.boxes.every(b => C.BOXES.includes(b)), '容器类型无效。');

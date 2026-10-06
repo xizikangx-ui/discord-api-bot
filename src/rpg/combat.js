@@ -163,6 +163,8 @@ function validateNPC(state, raw) {
   for (const ref of t.itemIds) ok(state.catalog[ref]?.published, 'NPC装备或技能未发布。');
   t.itemQuantities = require('./room-settings').quantities(t.quantities || t.itemQuantities,t.itemIds,100);
   t.loadout = t.itemIds.map(ref => ({ template: clone(state.catalog[ref]), quantity: t.itemQuantities[ref] || 1 }));
+  t.ai = require('./npc-auto').validate(t.ai);
+  if (t.equipmentPreset !== undefined) require('./npc-equipment').create(t, state.catalog);
   return t;
 }
 function addNPC(state, battle, templateId, team, frozenTemplate = null) {
@@ -171,30 +173,10 @@ function addNPC(state, battle, templateId, team, frozenTemplate = null) {
   ok(template?.published, 'NPC模板不存在。');
   ok(battle.actors.length < 20, '当前战斗最多20名参战者。');
   ok(['ally', 'enemy'].includes(team), '阵营无效。');
-  const p = M.newCharacter(template.name, clone(template.attributes));
-  p.portraits = clone(template.portraits || {}); p.luck = template.luck ?? 1;
-  p.points = 0; p.hpMaxOverride = template.hpMax; p.hp = template.hpMax;
-  for (const entry of template.loadout || template.itemIds.map(ref => ({ template: state.catalog[ref], quantity: 1 }))) {
-    const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能', '钥匙'].includes(entry.template.kind);
-    for (let n = 0; n < (stateful ? entry.quantity : 1); n++) {
-    const item = M.makeItem(entry.template, stateful ? 1 : entry.quantity);
-    for (const part of M.bundleItems(item)) { p.inventory[part.id] = part; delete part.bundle; }
-    if (item.snapshot.kind === '武器') W.set(p, item.id);
-    if (item.snapshot.kind === '防具') {
-      const occupied = p.equipped.armor.flatMap(i => C.ARMOR_COVERAGE[p.inventory[i].snapshot.armorType]);
-      ok(!C.ARMOR_COVERAGE[item.snapshot.armorType].some(k => occupied.includes(k)), 'NPC防具槽位冲突。');
-      p.equipped.armor.push(item.id);
-    }
-    if (item.snapshot.kind === '饰品') {
-      const slot = item.snapshot.accessoryType;
-      ok(p.equipped.accessories.filter(i => p.inventory[i].snapshot.accessoryType === slot).length < p.slots[slot], 'NPC饰品槽位冲突。');
-      p.equipped.accessories.push(item.id);
-    }
-    if (item.snapshot.kind === '卡牌') { ok(p.equipped.cards.length < 5, 'NPC卡牌超过5张。'); p.equipped.cards.push(item.id); }
-    }
-  }
+  const p = require('./npc-equipment').create(template, state.catalog);
   const actor = { id: id('a'), templateId, humanoid: !!template.humanoid, baseXP: template.baseXP || 0, templateVersion: template.version, name: template.name, team, character: p, retreated: false,
     x: team === 'enemy' ? battle.width * 50 - 25 : 25, y: team === 'enemy' ? battle.height * 50 - 25 : 25 };
+  actor.ai = require('./npc-auto').config(template.ai);
   battle.actors.push(actor); return actor;
 }
 function position(battle, actorId, x, y, team) {
@@ -361,6 +343,7 @@ function move(state, b, turnId, x, y) {
   record(b, actor.name + '移动至(' + actor.x + ',' + actor.y + ')。');
 }
 function abilities(p) {
+  require('./ammunition').normalize(p);
   const weapons = W.equipped(p).filter(ref => Dur.usable(p.inventory[ref]));
   if (!weapons.length) return [];
   const result = weapons.map(ref => ({ key: ref, attack: p.inventory[ref].snapshot }));
@@ -394,17 +377,17 @@ function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng =
     actor.casting = null;
   }
   const weapon = p.inventory[abilityKey];
-  const firearm=C.FIREARMS.includes(t.weaponType),mode=firing.mode || 'semi';
+  const firearm=C.FIREARMS.includes(t.weaponType),magazineWeapon=require('./ammunition').usesMagazine(t),mode=firing.mode || 'semi';
   ok(['semi','auto'].includes(mode), '射击模式无效。');
   const count=mode==='auto'?num(firing.count,'连射发数',1,10000):1;
   ok(mode==='semi'||firearm,'只有枪械可以全自动射击。');
-  if(firearm){ok((t.fireModes||['semi']).includes(mode),'这把枪械不支持所选射击模式。');ok(weapon?.loaded?.current>=count,'无弹药或剩余弹药不足，请装填或减少连射发数。');}
+  if(magazineWeapon){ok((t.fireModes||['semi']).includes(mode),'这把枪械不支持所选射击模式。');ok(weapon?.loaded?.current>=count,'无弹药或剩余弹药不足，请装填或减少连射发数。');}
   if(weapon&&t.kind==='武器')ok(Dur.current(weapon)>=count,'武器耐久不足，请修复或减少连射发数。');
   const shots=[],damage={},rolls={},conditions=clone(t.conditions||[]);const targetStats=M.stats(targetP);
   for(let n=0;n<count;n++){
     let round={};
-    if(firearm){round=weapon.loaded.rounds?.shift() || {};weapon.loaded.current--;}
-    else if(['弓','弩'].includes(t.weaponType)){
+    if(magazineWeapon){round=weapon.loaded.rounds?.shift() || {};weapon.loaded.current--;}
+    else if(t.weaponType==='弓'){
       const ammo=Object.values(p.inventory).find(i=>i.snapshot.kind==='弹药'&&i.snapshot.ammoType===t.ammoType&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0));
       ok(ammo,'缺少对应箭矢。');round={effects:clone(ammo.snapshot.effects||[]),damage:clone(ammo.snapshot.damage||{}),conditions:clone(ammo.snapshot.conditions||[])};
       ammo.quantity--;if(!ammo.quantity)delete p.inventory[ammo.id];
@@ -422,10 +405,11 @@ function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng =
     for(const ref of round.conditions||[]){const previous=conditions.find(c=>c.id===ref.id);if(!previous)conditions.push(clone(ref));else if(C.SEVERITIES.indexOf(ref.severity)>C.SEVERITIES.indexOf(previous.severity))Object.assign(previous,clone(ref));}
     shots.push({damage:part,rolls:shotRolls,hit:M.modify(stats.effects,'hit',t.hit)});if(!n)Object.assign(rolls,shotRolls);
   }
+  if(magazineWeapon)p.ammoVersion=(p.ammoVersion||0)+1;
   turn[action]--;if(weapon&&t.kind==='武器')Dur.drain(weapon,count);
-  const empty=firearm&&weapon.loaded.current===0;
+  const empty=magazineWeapon&&weapon.loaded.current===0;
   const pending={id:id('h'),turnId,attackerId:actor.id,targetId,attackName:t.name,hit:shots[0]?.hit??t.hit,damage,rolls,shots,conditions,
-    armorWeakening:clone(t.armorWeakening||{type:'physical',amount:0}),fireMode:mode,shotCount:count,ammoRemaining:firearm?weapon.loaded.current:null,ammoEmpty:empty,
+    armorWeakening:clone(t.armorWeakening||{type:'physical',amount:0}),fireMode:mode,shotCount:count,ammoRemaining:magazineWeapon?weapon.loaded.current:null,ammoEmpty:empty,
     defenses:clone(targetStats.defenses),agility:M.signedModifier(targetStats.effects,'dodge',targetStats.attributes.agility),expiresAt:Date.now()+60000};
   b.pending = pending;
   record(b, actor.name + '使用' + t.name + '攻击' + target.name + (firearm?'，'+(mode==='auto'?'全自动连射':'半自动')+count+'发':'')+'，等待防守。'+(empty?' ⚠️ 弹夹已空：无弹药，请装填。':''), {hit:pending.hit,damage,shots,ammoEmpty:empty});
@@ -474,33 +458,7 @@ function confirmCasting(state, b, turnId) {
   turn.quick--; actor.casting.confirmed = true;
   record(b, actor.name + '确认吟唱完成。');
 }
-function reload(state, b, turnId, ammunitionId, magazineId, weaponId) {
-  const { actor, p, turn } = current(state, b, turnId);
-  ok(!b.pending && turn.quick > 0, '快速行动不可用。');
-  weaponId ||= W.equipped(p).find(ref => p.inventory[ref].loaded);
-  ok(W.equipped(p).includes(weaponId), '只能装填已装备武器。');
-  const weapon = p.inventory[weaponId]; const ammo = p.inventory[ammunitionId];
-  ok(weapon?.loaded && ammo?.snapshot.kind === '弹药' && ammo.snapshot.ammoType === weapon.snapshot.ammoType, '武器和弹药不兼容。');
-  if (magazineId) {
-    const magazine = p.inventory[magazineId];
-    ok(magazine?.snapshot.kind === '弹夹' && magazine.snapshot.magazineType === weapon.snapshot.magazineType &&
-      magazine.snapshot.ammoType === weapon.snapshot.ammoType && magazine.snapshot.capacity >= weapon.loaded.capacity, '弹夹与武器不兼容。');
-    ok(!M.isAttached(p, magazineId) || weapon.magazineId === magazineId, '弹夹已装到其他武器。');
-    if (actor.userId) ok(M.available(state, actor.userId, magazineId) > 0, '弹夹已被预留。');
-    weapon.magazineId = magazineId;
-  }
-  ok(weapon.magazineId && p.inventory[weapon.magazineId]?.snapshot.kind === '弹夹', '缺少已装配的兼容弹夹。');
-  const quantity = Math.min(weapon.loaded.capacity - weapon.loaded.current,
-    actor.userId ? M.available(state, actor.userId, ammunitionId) : ammo.quantity);
-  ok(quantity > 0, '载弹已满或可用弹药不足。');
-  weapon.loaded.rounds ||= Array.from({ length: weapon.loaded.current }, () => ({ weight: weapon.loaded.weight, effects: [] }));
-  weapon.loaded.rounds.push(...Array.from({ length: quantity }, () => ({ weight: ammo.snapshot.weight, effects: clone(ammo.snapshot.effects || []), damage:clone(ammo.snapshot.damage || {}), conditions:clone(ammo.snapshot.conditions || []) })));
-  weapon.loaded.current += quantity; weapon.loaded.weight = ammo.snapshot.weight;
-  ammo.quantity -= quantity; if (!ammo.quantity) delete p.inventory[ammunitionId];
-  turn.quick--;
-  M.syncHP(p);
-  record(b, actor.name + '装填' + quantity + '发弹药。');
-}
+function reload() { throw new Error('旧直接装填已停用，请使用弹夹管理：先填弹夹，再更换弹夹。'); }
 function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');

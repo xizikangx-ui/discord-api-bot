@@ -25,9 +25,9 @@ function defaults(kind, itemKind = '杂物') {
     levels: Object.fromEntries(C.SEVERITIES.map(s => [s, { enabled: s === '一般', difficulty: 10,
       duration: { kind: 'actions', count: 3 }, worsenAfter: 0, description: '', effects: [] }])) };
   if (kind === 'mapcategory') return { name: '', description: '' };
-  if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: {}, supplyIds: [], supplyQuantities: {}, npcIds: [], npcQuantities: {}, keyIds: [], randomContainers: [], randomSupplies: [], randomNpcs: [] };
+  if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: {}, supplyIds: [], supplyQuantities: {}, npcIds: [], npcQuantities: {}, keyIds: [], autoStart: true, spawn: {playerX:25,playerY:25,npcX:475,npcY:475}, randomContainers: [], randomSupplies: [], randomNpcs: [] };
   if (kind === 'npc') return { humanoid: false, baseXP: 0, name: '', description: '', attributes: Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, 3])),
-    hpMax: 9, itemIds: [], quantities: {} };
+    hpMax: 9, itemIds: [], quantities: {}, equipmentPreset: [], ai: require('./npc-auto').config() };
   return { title: '领取玩家身份组', description: '选择身份组后领取。', roleIds: [], exclusive: false, allowCancel: true, labels: {} };
 }
 function fields(form) {
@@ -48,7 +48,7 @@ function fields(form) {
     return list;
   }
   if (kind === 'mapcategory') return common;
-  if (kind === 'room') return [...common, refField('categoryIds', '地图大类（先录入）', 'mapCategories', 1),
+  if (kind === 'room') return [...common, refField('categoryIds', '地图大类（先录入）', 'mapCategories', 1),field('autoStart','全队进入后自动开战','bool'),field('spawn.playerX','玩家出生横坐标（米）','number'),field('spawn.playerY','玩家出生纵坐标（米）','number'),field('spawn.npcX','NPC出生横坐标（米）','number'),field('spawn.npcY','NPC出生纵坐标（米）','number'),
     {...enumField('boxes', '固定容器类型', C.BOXES), type: 'multi', limit: 12}, {key:'containerCounts',label:'固定容器数量（下拉选择）',type:'fixedRoom',source:'boxes',refs:'boxes',max:10},
     refField('supplyIds', '固定物资', 'catalog', 25, t => t.kind !== '技能'), {key:'supplyQuantities',label:'固定物资数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'supplyIds',max:100},
     refField('npcIds', '固定NPC', 'npcTemplates', 19), {key:'npcQuantities',label:'固定NPC数量（下拉选择）',type:'fixedRoom',source:'npcTemplates',refs:'npcIds',max:19},
@@ -57,7 +57,7 @@ function fields(form) {
     {key:'randomSupplies',label:'随机散落物资 · 0—6件概率',type:'randomRoom',source:'catalog',max:6,limit:25,predicate:t=>t.kind!=='技能'},
     {key:'randomNpcs',label:'随机NPC · 0—10个概率',type:'randomRoom',source:'npcTemplates',max:10,limit:25}];
   if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
-    field('hpMax', '生命上限', 'number'), refField('itemIds', '装备及技能', 'catalog', 25),
+    field('hpMax', '生命上限', 'number'), refField('itemIds', '随身物品及技能（装备另设槽位）', 'catalog', 25),
     {key:'quantities',label:'初始物品数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'itemIds',max:100}];
   if (kind === 'rolepanel') return [field('title', '面板标题'), field('description', '面板说明', 'long'),
     field('roleIds', '领取身份组', 'roles'), field('exclusive', '互斥单选', 'bool'), field('allowCancel', '允许取消领取', 'bool'),
@@ -77,7 +77,7 @@ function fields(form) {
     field('title', '可选称号'), field('supernatural', '超凡装备', 'bool'), field('appearance', '外貌', 'long'), enumField('origin', '产地', C.ORIGINS),
     refField('preinstalled', '初装配件', 'catalog', 10, t => t.kind === '配件'));
   if (d.kind === '武器') list.push(enumField('weaponType', '武器类型', C.WEAPON_TYPES), field('otherType', '其他类型说明'),
-    refField('ammoIds', '选择已有弹药', 'catalog', 1, t=>t.kind==='弹药'), refField('magazineIds', '选择已有弹夹', 'catalog', 1, t=>t.kind==='弹夹'), {...enumField('fireModes','射击模式',['semi','auto'].map(value=>({value,label:value==='semi'?'半自动（单发）':'全自动（连射）'}))),type:'multi',limit:2}, field('capacity', '载弹上限', 'number'), field('current', '初始载弹', 'number'));
+    refField('ammoIds', '选择兼容弹药（可多选）', 'catalog', 25, t=>t.kind==='弹药'), refField('magazineIds', '选择兼容弹夹／箭匣（可多选）', 'catalog', 25, t=>t.kind==='弹夹'), {...enumField('fireModes','射击模式',['semi','auto'].map(value=>({value,label:value==='semi'?'半自动（单发）':'全自动（连射）'}))),type:'multi',limit:2}, field('capacity', '载弹上限', 'number'), field('current', '初始载弹', 'number'));
   if(d.kind==='武器')list.push(enumField('armorWeakening.type','护甲削弱类型',Object.entries(C.DAMAGE_TYPES).map(([value,label])=>({value,label}))),field('armorWeakening.amount','护甲削弱点数（每发／击，0关闭）','number'));
   if(d.kind==='防具')list.push(...Object.entries(C.DAMAGE_TYPES).map(([k,n])=>field('weakeningResistance.'+k,n+'抗削弱点数','number')));
   if (d.kind === '武器' && d.weaponType === '其他') list.push(field('melee', '其他类型是否近战（否则远程）', 'bool'));
@@ -94,7 +94,7 @@ function fields(form) {
   if (d.kind === '饰品') list.push(enumField('accessoryType', '饰品位置', Object.entries(C.ACCESSORY_NAMES).map(([value, label]) => ({ value, label }))));
   if (d.kind === '卡牌') list.push(field('uniqueText', '独特效果说明', 'long'), refField('skillIds', '关联技能', 'catalog', 10, t => t.kind === '技能'));
   if(d.kind==='弹药')list.push(field('damage.physical','物理附加伤害（固定值或骰式）'),field('damage.magical','魔法附加伤害（留空无）'),field('damage.mental','精神附加伤害（留空无）'),field('conditions','赋予异常及等级','conditions'));
-  if(d.kind==='弹夹')list.push(refField('ammoIds','选择兼容弹药','catalog',1,t=>t.kind==='弹药'));
+  if(d.kind==='弹夹')list.push(refField('ammoIds','选择兼容弹药（可多选）','catalog',25,t=>t.kind==='弹药'));
   if (d.kind === '弹夹') list.push(field('capacity', '装弹量', 'number'));
   if (d.kind === '配件') list.push(field('attachmentSlot', '装配位置名称'),
     { ...enumField('compatible', '兼容类型', [...C.WEAPON_TYPES, ...Object.keys(C.ARMOR_COVERAGE)]), type: 'multi', limit: 25 });
@@ -160,6 +160,7 @@ function view(state, form, preview = false) {
     U.row(U.button('formpublish:' + form.id, form.kind === 'rolepanel' ? '发布领取面板' : '发布模板', U.D.ButtonStyle.Success),
       U.button('formexit:' + form.id, '保存并退出'), U.button('formdelete:' + form.id, '删除草稿', U.D.ButtonStyle.Danger))
   ]);
+  if(form.kind==='npc')result.components.push(U.row(U.button('npcui:f:'+form.id+':_:home','NPC自动操作 / 装备槽位',U.D.ButtonStyle.Primary)));
   if(form.kind==='npc')result.rpgPortraits=form.data.portraits || {};
   return result;
 }

@@ -72,8 +72,9 @@ function signedModifier(effects, target, base = 0) {
     Math.max(0, 1 + selected.filter(e => e.op === 'percent').reduce((s, e) => s + e.value, 0) / 100);
 }
 function weight(p) {
+  require('./ammunition').normalize(p);
   return Object.values(p.inventory).reduce((sum, item) => {
-    const loaded = item.loaded || {};
+    const loaded = item.magazineStorage ? {} : (item.loaded || {});
     return sum + item.snapshot.weight * item.quantity + (loaded.rounds ? loaded.rounds.reduce((s, r) => s + r.weight, 0) :
       (loaded.weight || 0) * (loaded.current || 0));
   }, 0);
@@ -180,8 +181,8 @@ function validateTemplate(state, raw) {
     t.title = C.text(t.title || '', '称号', 100, true);
     t.supernatural = Boolean(t.supernatural);
   }
-  if(['武器','弹夹'].includes(t.kind)&&t.ammoIds?.length){ok(t.ammoIds.length===1,'请选择一种弹药。');const ammo=state.catalog[t.ammoIds[0]];ok(ammo?.published&&ammo.kind==='弹药','选择的弹药尚未发布。');t.ammoType=ammo.ammoType;}
-  if(t.kind==='武器'&&t.magazineIds?.length){ok(t.magazineIds.length===1,'请选择一种弹夹。');const mag=state.catalog[t.magazineIds[0]];ok(mag?.published&&mag.kind==='弹夹'&&mag.ammoType===t.ammoType,'弹夹和弹药不兼容，请重新选择。');t.magazineType=mag.magazineType;}
+  if(['武器','弹夹'].includes(t.kind)&&t.ammoIds?.length){ok(t.ammoIds.length<=25,'最多25种弹药。');for(const ref of t.ammoIds)ok(state.catalog[ref]?.published&&state.catalog[ref].kind==='弹药','弹药尚未发布。');t.ammoType=state.catalog[t.ammoIds[0]].ammoType;}
+  if(t.kind==='武器'&&t.magazineIds?.length){ok(t.magazineIds.length<=25,'最多25种弹夹。');for(const ref of t.magazineIds){const mag=state.catalog[ref];ok(mag?.published&&mag.kind==='弹夹','弹夹尚未发布。');ok((t.ammoIds?.length?t.ammoIds.map(id=>state.catalog[id]):Object.values(state.catalog).filter(a=>a.kind==='弹药'&&a.ammoType===t.ammoType)).some(a=>require('./ammunition').ammoCompatible(mag,a)),'弹夹与所选弹药不兼容，没有交集。');}t.magazineType=state.catalog[t.magazineIds[0]].magazineType;}
   if (t.kind === '武器' || t.kind === '技能') {
     if (t.kind === '武器') {
       ok(C.WEAPON_TYPES.includes(t.weaponType), '武器类型无效。');
@@ -190,12 +191,13 @@ function validateTemplate(state, raw) {
       if (t.weaponType === '其他') t.otherType = C.text(t.otherType, '其他类型', 80);
       t.melee = ![...C.FIREARMS, '弓', '弩', '法杖'].includes(t.weaponType) && t.melee !== false;
       if ([...C.FIREARMS, '弓', '弩'].includes(t.weaponType)) t.ammoType = C.text(t.ammoType, '弹药类型', 80);
-      if (C.FIREARMS.includes(t.weaponType)) {
+      if ([...C.FIREARMS,'弩'].includes(t.weaponType)) {
         t.magazineType = C.text(t.magazineType, '弹夹类型', 80);
         t.capacity = num(t.capacity, '载弹上限', 1, 10000);
         t.current = num(t.current ?? t.capacity, '当前载弹', 0, t.capacity);
         t.fireModes=[...new Set(t.fireModes||['semi'])];ok(t.fireModes.length&&t.fireModes.every(m=>['semi','auto'].includes(m)),'请选择半自动或全自动模式。');
-        const ammo = t.ammoIds?.length ? state.catalog[t.ammoIds[0]] : Object.values(state.catalog).find(a => a.published && a.kind === '弹药' && a.ammoType === t.ammoType);
+        const firstMagazine=t.magazineIds?.length?state.catalog[t.magazineIds[0]]:null;
+        const ammo = t.ammoIds?.length ? t.ammoIds.map(ref=>state.catalog[ref]).find(a=>!firstMagazine||require('./ammunition').ammoCompatible(firstMagazine,a)) : Object.values(state.catalog).find(a => a.published && a.kind === '弹药' && a.ammoType === t.ammoType);
         ok(ammo, '请先录入对应弹药，用于载弹重量和装填。');
         t.ammoWeight = ammo.weight;
         t.initialAmmo = clone(ammo);
@@ -260,10 +262,10 @@ function validateTemplate(state, raw) {
     ok(!attachmentPositions.has(part.attachmentSlot), '初装配件位置重复。');
     attachmentPositions.add(part.attachmentSlot);
   }
-  if (t.kind === '武器' && C.FIREARMS.includes(t.weaponType)) {
+  if (t.kind === '武器' && [...C.FIREARMS,'弩'].includes(t.weaponType)) {
     const magazine = t.magazineIds?.length ? state.catalog[t.magazineIds[0]] : Object.values(state.catalog).find(a => a.published && a.kind === '弹夹' &&
       a.magazineType === t.magazineType && a.ammoType === t.ammoType && a.capacity >= t.capacity);
-    ok(magazine&&magazine.capacity>=t.capacity&&magazine.ammoType===t.ammoType, '请先发布兼容弹夹，其容量须不小于武器载弹上限。');
+    ok(magazine && require('./ammunition').ammoCompatible(magazine,t.initialAmmo), '请先发布兼容弹夹／箭匣。');ok(t.current<=magazine.capacity,'初始载弹不能超过初装弹夹容量。');
     t.initialMagazine = clone(magazine);
   }
   t.skillIds ||= [];
@@ -281,22 +283,23 @@ function publishTemplate(state, raw, existingId) {
 }
 function makeItem(template, quantity = 1) {
   const item = { id: id('i'), templateId: template.id, version: template.version, snapshot: clone(template), quantity,
-    attachments: [], ...(['武器','防具'].includes(template.kind)?{durability:template.durabilityMax??100}:{}), ...(template.kind === '武器' && C.FIREARMS.includes(template.weaponType)
+    attachments: [], ...(['武器','防具'].includes(template.kind)?{durability:template.durabilityMax??100}:{}), ...(require('./ammunition').usesMagazine(template)
       ? { loaded: { current: template.current, capacity: template.capacity, weight: template.ammoWeight, ammoType: template.ammoType,
-        rounds: Array.from({ length: template.current }, () => ({ weight: template.ammoWeight, effects: clone(template.initialAmmo?.effects || []), damage:clone(template.initialAmmo?.damage || {}), conditions:clone(template.initialAmmo?.conditions || []) })) } } : {}) };
+        rounds: Array.from({ length: template.current || 0 }, () => require('./ammunition').round(template.initialAmmo || {weight:template.ammoWeight||0,ammoType:template.ammoType})) } } : {}) };
+  if(template.kind==='弹夹')item.loaded=require('./ammunition').empty(template);
   if (template.kind === '钥匙') item.keyCharges = template.keyCharges;
   const parts = (template.initialParts || []).map(t => makeItem(t));
   item.attachments = parts.map(p => p.id);
   if (template.initialMagazine) {
     const magazine = makeItem(template.initialMagazine);
-    item.magazineId = magazine.id; parts.push(magazine);
+    item.magazineId = magazine.id;magazine.loaded=clone(item.loaded || require('./ammunition').empty(magazine.snapshot));magazine.loaded.capacity=magazine.snapshot.capacity;item.loaded=magazine.loaded;item.magazineStorage=true;parts.push(magazine);
   }
   if (parts.length) item.bundle = parts;
   return item;
 }
 function bundleItems(item) { return [item, ...(item.bundle || []).flatMap(bundleItems)]; }
 function itemWeight(item) { return bundleItems(item).reduce((s, i) => s + i.snapshot.weight * i.quantity +
-  (i.loaded?.rounds ? i.loaded.rounds.reduce((n, r) => n + r.weight, 0) : (i.loaded?.current || 0) * (i.loaded?.weight || 0)), 0); }
+  (i.magazineStorage ? 0 : i.loaded?.rounds ? i.loaded.rounds.reduce((n, r) => n + r.weight, 0) : (i.loaded?.current || 0) * (i.loaded?.weight || 0)), 0); }
 function activeOffer(offer, now = Date.now()) { return ['editing', 'ready'].includes(offer.status) && offer.expiresAt > now; }
 function reserved(state, userId, excludedOffer) {
   const items = {}; let coins = 0;
