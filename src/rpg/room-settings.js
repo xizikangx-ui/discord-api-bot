@@ -40,7 +40,7 @@ function quantities(value, refs, max) {
 }
 const summary = entries => (entries || []).map(e => e.probabilities.map((p,n)=>p ? n+'个 '+p+'%' : '').filter(Boolean).join(' / ')).join('；') || '未配置';
 function definition(f, index) {
-  const def=require('./forms').fields(f)[index];ok(f.kind==='room' && f.field===index && ['randomRoom','fixedRoom'].includes(def?.type),'房间配置字段已变化。');return def;
+  const def=require('./forms').fields(f)[index];ok(['room','npc'].includes(f.kind) && f.field===index && ['randomRoom','fixedRoom'].includes(def?.type),'房间配置字段已变化。');return def;
 }
 function choices(s,f,def) {
   if(def.type==='fixedRoom') return (f.data[def.refs] || []).map(ref=>({value:ref,label:def.source==='boxes' ? ref : s[def.source][ref]?.name || ref}));

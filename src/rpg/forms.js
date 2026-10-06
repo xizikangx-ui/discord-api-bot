@@ -13,9 +13,9 @@ const enumField = (key, label, values) => field(key, label, 'choice', values);
 const refField = (key, label, source, limit = 10, predicate) => ({ key, label, type: 'refs', source, limit, predicate });
 function defaults(kind, itemKind = '杂物') {
   if (kind === 'item') return { kind: itemKind, name: '', description: '', rarity: 'white', weightKg: 0, value: 0,
-    quality: '标准', origin: '未知', title: '', appearance: '', supernatural: false, traitIds: ['neutral'], effects: [], boxes: [],
+    durabilityMax:100, armorWeakening:{type:'physical',amount:0}, weakeningResistance:{physical:0,magical:0,mental:0},repairKinds:['武器','防具'],repairAmount:10,repairMaxLoss:0, quality: '标准', origin: '未知', title: '', appearance: '', supernatural: false, traitIds: ['neutral'], effects: [], boxes: [],
     weaponType: '剑', otherType: '', melee: true, ammoType: '', magazineType: '', capacity: 1, current: 0,
-    hit: 10, range: 1, primary: 'physical', damage: { physical: '1d6', magical: '', mental: '' }, conditions: [],
+    ammoIds: [], magazineIds: [], fireModes: ['semi'], hit: 10, range: 1, primary: 'physical', damage: { physical: itemKind==='弹药'?'0':'1d6', magical: '', mental: '' }, conditions: [],
     armorType: '胸甲', defenses: { physical: 0, magical: 0, mental: 0 }, accessoryType: 'body',
     uniqueText: '', skillIds: [], preinstalled: [], compatible: [], attachmentSlot: '瞄具',
     special: 'heart', keyCharges: 1, heal: '0', clearConditions: [], duration: { kind: 'actions', count: 3 }, action: 'formal', casting: 0 };
@@ -26,8 +26,8 @@ function defaults(kind, itemKind = '杂物') {
   if (kind === 'mapcategory') return { name: '', description: '' };
   if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: {}, supplyIds: [], supplyQuantities: {}, npcIds: [], npcQuantities: {}, keyIds: [], randomContainers: [], randomSupplies: [], randomNpcs: [] };
   if (kind === 'npc') return { humanoid: false, baseXP: 0, name: '', description: '', attributes: Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, 3])),
-    hpMax: 9, itemIds: [], quantities: '' };
-  return { title: '领取玩家身份组', description: '选择身份组后领取。', roleIds: [], exclusive: false, allowCancel: true, labels: '' };
+    hpMax: 9, itemIds: [], quantities: {} };
+  return { title: '领取玩家身份组', description: '选择身份组后领取。', roleIds: [], exclusive: false, allowCancel: true, labels: {} };
 }
 function fields(form) {
   const kind = form.kind, d = form.data;
@@ -56,13 +56,15 @@ function fields(form) {
     {key:'randomNpcs',label:'随机NPC · 0—10个概率',type:'randomRoom',source:'npcTemplates',max:10,limit:25}];
   if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
     field('hpMax', '生命上限', 'number'), refField('itemIds', '装备及技能', 'catalog', 25),
-    field('quantities', '初始数量（每行 模板编号 数量）', 'long')];
+    {key:'quantities',label:'初始物品数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'itemIds',max:100}];
   if (kind === 'rolepanel') return [field('title', '面板标题'), field('description', '面板说明', 'long'),
     field('roleIds', '领取身份组', 'roles'), field('exclusive', '互斥单选', 'bool'), field('allowCancel', '允许取消领取', 'bool'),
-    field('labels', '按钮标签（每行 身份组ID=标签）', 'long')];
+    field('labels', '自定义领取标签（选择身份组）', 'roleLabels')];
   const list = [...common, enumField('rarity', '六色稀有度', C.RARITIES.map(r => ({ value: r.id, label: r.name }))),
     field('weightKg', '重量kg（两位小数）', 'number'), field('value', '参考价值', 'number'),
     { ...enumField('boxes', '可从哪些箱型抽出', C.BOXES), type: 'multi', limit: 12 }];
+  if(['武器','防具'].includes(d.kind))list.push(field('durabilityMax','最大耐久','number'));
+  if(d.kind==='修复道具')list.push({...enumField('repairKinds','可修复类型',['武器','防具']),type:'multi',limit:2},field('repairAmount','每次修复耐久点数','number'),field('repairMaxLoss','每次修复削减耐久上限（0不削减）','number'));
   if (d.kind === '钥匙') list.push(field('keyCharges', '初始钥匙次数', 'number'));
   if (['武器', '防具', '饰品', '卡牌'].includes(d.kind)) list.push(refField('traitIds', '词条（1至10）', 'traits'));
   list.push(field('effects', C.CONSUMABLES.includes(d.kind) ? '使用后的持续增减益' : '额外结构化数值效果', 'effects'));
@@ -70,7 +72,9 @@ function fields(form) {
     field('title', '可选称号'), field('supernatural', '超凡装备', 'bool'), field('appearance', '外貌', 'long'), enumField('origin', '产地', C.ORIGINS),
     refField('preinstalled', '初装配件', 'catalog', 10, t => t.kind === '配件'));
   if (d.kind === '武器') list.push(enumField('weaponType', '武器类型', C.WEAPON_TYPES), field('otherType', '其他类型说明'),
-    field('ammoType', '兼容弹药类型文字'), field('magazineType', '兼容弹夹类型文字'), field('capacity', '载弹上限', 'number'), field('current', '初始载弹', 'number'));
+    refField('ammoIds', '选择已有弹药', 'catalog', 1, t=>t.kind==='弹药'), refField('magazineIds', '选择已有弹夹', 'catalog', 1, t=>t.kind==='弹夹'), {...enumField('fireModes','射击模式',['semi','auto'].map(value=>({value,label:value==='semi'?'半自动（单发）':'全自动（连射）'}))),type:'multi',limit:2}, field('capacity', '载弹上限', 'number'), field('current', '初始载弹', 'number'));
+  if(d.kind==='武器')list.push(enumField('armorWeakening.type','护甲削弱类型',Object.entries(C.DAMAGE_TYPES).map(([value,label])=>({value,label}))),field('armorWeakening.amount','护甲削弱点数（每发／击，0关闭）','number'));
+  if(d.kind==='防具')list.push(...Object.entries(C.DAMAGE_TYPES).map(([k,n])=>field('weakeningResistance.'+k,n+'抗削弱点数','number')));
   if (d.kind === '武器' && d.weaponType === '其他') list.push(field('melee', '其他类型是否近战（否则远程）', 'bool'));
   if (d.kind === '武器' || d.kind === '技能') {
     list.push(field('hit', '固定命中', 'number'), field('range', '射程格数', 'number'),
@@ -84,8 +88,9 @@ function fields(form) {
     ...Object.entries(C.DAMAGE_TYPES).map(([k, n]) => field('defenses.' + k, n + '防御', 'number')));
   if (d.kind === '饰品') list.push(enumField('accessoryType', '饰品位置', Object.entries(C.ACCESSORY_NAMES).map(([value, label]) => ({ value, label }))));
   if (d.kind === '卡牌') list.push(field('uniqueText', '独特效果说明', 'long'), refField('skillIds', '关联技能', 'catalog', 10, t => t.kind === '技能'));
-  if (d.kind === '弹药' || d.kind === '弹夹') list.push(field('ammoType', '兼容弹药类型文字'));
-  if (d.kind === '弹夹') list.push(field('magazineType', '弹夹类型文字'), field('capacity', '弹夹容量', 'number'));
+  if(d.kind==='弹药')list.push(field('damage.physical','物理附加伤害（固定值或骰式）'),field('damage.magical','魔法附加伤害（留空无）'),field('damage.mental','精神附加伤害（留空无）'),field('conditions','赋予异常及等级','conditions'));
+  if(d.kind==='弹夹')list.push(refField('ammoIds','选择兼容弹药','catalog',1,t=>t.kind==='弹药'));
+  if (d.kind === '弹夹') list.push(field('capacity', '装弹量', 'number'));
   if (d.kind === '配件') list.push(field('attachmentSlot', '装配位置名称'),
     { ...enumField('compatible', '兼容类型', [...C.WEAPON_TYPES, ...Object.keys(C.ARMOR_COVERAGE)]), type: 'multi', limit: 25 });
   if (d.kind === '特殊物品') list.push(enumField('special', '世界树物品', [{ value: 'heart', label: '世界树之心' }, { value: 'tear', label: '世界树之泪' }]));
@@ -100,10 +105,14 @@ function create(state, owner, kind, itemKind, existingId) {
   if (existingId) ok(old, '模板不存在。');
   const data = old ? C.clone(old) : defaults(kind, itemKind);
   if (kind === 'item' && old) {
+    if(['武器','弹夹'].includes(old.kind)){data.ammoIds=old.ammoIds || (old.initialAmmo?.id ? [old.initialAmmo.id] : Object.values(state.catalog).filter(t=>t.kind==='弹药'&&t.ammoType===old.ammoType).slice(0,1).map(t=>t.id));data.magazineIds=old.magazineIds || (old.initialMagazine?.id?[old.initialMagazine.id]:[]);}
+    data.durabilityMax ??=100;data.armorWeakening||={type:'physical',amount:0};data.weakeningResistance||={physical:0,magical:0,mental:0};
+    data.fireModes ||= ['semi'];
     data.duration ||= { kind: 'actions', count: 3 };
     data.weightKg = old.weight / 100; data.effects = C.clone(old.ownEffects ||
       old.effects.slice((old.traitIds || []).flatMap(ref => state.traits[ref]?.effects || []).length));
   }
+  if(kind==='npc'&&old&&!data.quantities)data.quantities=C.clone(old.itemQuantities||{});
   if (kind === 'condition' && old) for (const s of C.SEVERITIES) data.levels[s] = { ...defaults(kind).levels[s], ...(old.levels[s] || {}), enabled: !!old.levels[s] };
   const form = { id: C.id('f'), owner, kind, existingId: existingId || null, data, page: 0, field: 0, choicePage: 0,
     effectOp: 'add', createdAt: Date.now() };
@@ -111,6 +120,7 @@ function create(state, owner, kind, itemKind, existingId) {
 }
 function owned(state, formId, owner) { const f = state.forms[formId]; ok(f && f.owner === owner, '草稿不存在或不属于你。'); return f; }
 function display(value, field, state, limit = 120) {
+  if(field.type==='roleLabels')return typeof value==='object'?Object.entries(value||{}).map(([id,label])=>'<@&'+id+'>：'+label).join('、')||'默认身份组名称':String(value||'默认身份组名称');
   if (field.type === 'randomRoom') return ((value || []).map(e => (field.source==='boxes' ? e.ref : state[field.source][e.ref]?.name || e.ref)+': '+R.summary([e])).join('\n') || '未配置').slice(0,limit);
   if (field.type === 'fixedRoom' && value && typeof value==='object') return Object.entries(value).map(([ref,n])=>(field.source==='boxes' ? ref : state[field.source][ref]?.name || ref)+' ×'+n).join('、') || '默认1';
   if (field.type === 'bool') return value ? '开启' : '关闭';
@@ -174,15 +184,18 @@ function setChoice(state, form, page, selected) {
     ok(values.length <= (def.limit || 10), '最多选择' + (def.limit || 10) + '项。');
     set(form.data, def.key, def.type === 'conditions' ? values.map(x => { const [id, severity] = x.split('|'); return { id, severity }; }) : values);
   } else set(form.data, def.key, selected[0]);
+  if(def.key==='magazineIds'&&selected.length){const mag=state.catalog[selected[0]];form.data.capacity=mag.capacity;form.data.current=Math.min(form.data.current||0,mag.capacity);if(!form.data.ammoIds?.length)form.data.ammoIds=Object.values(state.catalog).filter(t=>t.kind==='弹药'&&t.ammoType===mag.ammoType).slice(0,1).map(t=>t.id);}
 }
 function effectsView(state, form) {
   const def = fields(form)[form.field], effects = get(form.data, def.key) || [], conditional = def.type === 'conditionEffects';
+  const page=Math.max(0,Math.min(form.effectPage||0,Math.max(0,Math.ceil(effects.length/25)-1)));
   const targets = conditional ? C.CONDITION_TARGETS : C.EFFECT_TARGETS;
   return U.payload(def.label, display(effects, def, state) + '\n\n' + (conditional ? '填写固定值或骰式，系统按扣除处理。' :
     '运算：' + (form.effectOp === 'percent' ? '百分比修正' : '固定加减') + '。负数表示减益。'), [
     U.row(U.select('formtarget:' + form.id, '新增效果：选择目标', targets.map(value => ({ value, label: C.targetLabel(value) })))),
-    ...(effects.length ? [U.row(U.select('formremoveeffect:' + form.id, '删除某项效果', effects.slice(0, 25).map((e, n) =>
-      ({ label: C.targetLabel(e.target) + ' ' + (e.amount ?? e.value), value: String(n) }))))] : []),
+    ...(effects.length ? [U.row(U.select('formremoveeffect:' + form.id, '删除某项效果', effects.slice(page*25,page*25+25).map((e, n) =>
+      ({ label: C.targetLabel(e.target) + ' ' + (e.amount ?? e.value), value: String(page*25+n) }))))] : []),
+    ...(effects.length>25?[U.row(U.button('formeffectpage:'+form.id+':'+(page-1),'上一页效果',undefined,!page),U.button('formeffectpage:'+form.id+':'+(page+1),'下一页效果',undefined,(page+1)*25>=effects.length))]:[]),
     U.row(...(!conditional ? [U.button('formop:' + form.id, '切换固定／百分比')] : []), U.button('formclear:' + form.id, '清空效果'), U.button('formback:' + form.id, '返回草稿'))
   ]);
 }
@@ -208,10 +221,10 @@ function publish(state, form) {
       result = { ...data, title: C.text(data.title, '标题', 100), description: C.text(data.description, '说明', 2000, true),
         channelId: previous?.channelId || null, messageId: previous?.messageId || null };
       const labels = {};
-      for (const line of data.labels.split('\n').filter(Boolean)) {
-        const [roleId, ...text] = line.split('=');
-        ok(data.roleIds.includes(roleId.trim()), '标签中包含未选择的身份组。');
-        labels[roleId.trim()] = C.text(text.join('='), '按钮标签', 80);
+      const pairs=typeof data.labels==='object'?Object.entries(data.labels||{}):String(data.labels||'').split('\n').filter(Boolean).map(line=>{const [id,...parts]=line.split('=');return [id.trim(),parts.join('=')];});
+      for (const [roleId, textValue] of pairs) {
+        if(!data.roleIds.includes(roleId))continue;
+        labels[roleId]=C.text(textValue,'按钮标签',80);
       }
       result.labels = labels;
     }

@@ -3,6 +3,7 @@ const C = require('./constants'), M = require('./model'), B = require('./combat'
 const { requireThat: ok, number: num } = C;
 const { D, row, button, select, payload, modal } = U;
 const R = require('./room-settings');
+const RL=require('./role-labels');
 function createHandlers(context) {
   const { snapshot, tx, needGM, needConfig, owner, battle, canActor, configView, safeRoles, publishRoles,
     claim, formView, offerAccess, catalogView, pickView, publishBattle, store } = context;
@@ -16,6 +17,7 @@ function createHandlers(context) {
   }
   async function openModal(i, s) {
     if (i.isModalSubmit?.()) return false;
+    if(await RL.openModal(i,s,needConfig))return true;
     if (await R.openModal(i,s,needGM)) return true;
     const [action, ...args] = parts(i);
     if (action === 'formedit') {
@@ -36,21 +38,11 @@ function createHandlers(context) {
         '新增' + C.targetLabel(target), [{ key: 'value', label: conditional ? '非负扣除数值或骰式，例如1d6' : '修正数值，可为负数', value: conditional ? '1' : '0' }]));
       return true;
     }
+    if(action==='firecount'){const f=F.owned(s,args[0],i.user.id);ok(f.kind==='fire'&&!f.done&&f.expiresAt>Date.now(),'射击步骤已失效。');const values=[f.battleId,f.actorId,i.user.id,f.turnId];const {p}=prefixContext(i,s,values,i.member,true);const w=p.inventory[f.abilityKey];ok(w?.loaded?.current>0,'无弹药，请装填。');await i.showModal(modal('firesubmit:'+f.id,'全自动连射',[{key:'count',label:'连射发数（剩余 '+w.loaded.current+' 发）',value:Math.min(3,w.loaded.current)}]));return true;}
     if (action === 'move') {
       const { a, prefix } = prefixContext(i, s, args, i.member, true);
       await i.showModal(modal('movevalue:' + prefix, '移动（米）', [
         { key: 'x', label: '横向米数', value: a.x }, { key: 'y', label: '纵向米数', value: a.y }]));
-      return true;
-    }
-    if (action === 'quote') {
-      owner(i, args[1]); const offer = offerAccess(s, args[0], i.member, i.user.id);
-      ok(offer.type === 'trade' && offer.sides[i.user.id] && M.activeOffer(offer), '不能修改此报价。');
-      const side = offer.sides[i.user.id];
-      await i.showModal(modal('quotevalue:' + offer.id + ':' + i.user.id, '填写自己的报价', [
-        { key: 'items', label: '每行：背包物品编号 数量，最多10种', long: true, required: false,
-          value: side.items.map(e => e.id + ' ' + e.quantity).join('\n') },
-        { key: 'coins', label: '游戏币（没有填0）', value: side.coins }
-      ]));
       return true;
     }
     return false;
@@ -90,6 +82,7 @@ function createHandlers(context) {
     }
     if (action === 'formedit') {
       const def = F.fields(f)[f.field];
+      if(def.type==='roleLabels')return RL.view(f,i.guild);
       if (['randomRoom','fixedRoom'].includes(def.type)) return R.view(s,f);
       if (['choice', 'refs', 'multi', 'conditions'].includes(def.type)) return F.choiceView(s, f);
       if (['effects', 'conditionEffects'].includes(def.type)) return F.effectsView(s, f);
@@ -140,11 +133,13 @@ function createHandlers(context) {
     if (action === 'formdelete') return payload('已删除草稿', formId);
     const next = snapshot(i.guildId), draft = F.owned(next, formId, i.user.id);
     if (['formchoicepage', 'formchoice'].includes(action)) return F.choiceView(next, draft);
-    if (['formop', 'formremoveeffect', 'formeffectvalue'].includes(action)) return F.effectsView(next, draft);
+    if (['formop', 'formremoveeffect', 'formeffectvalue','formeffectpage'].includes(action)) return F.effectsView(next, draft);
     return F.view(next, draft);
   }
   async function component(i, member) {
     const [action, ...args] = parts(i), uid = i.user.id, s = snapshot(i.guildId);
+    let fireForm;if(action==='firesubmit'){fireForm=F.owned(s,args[0],uid);ok(fireForm.kind==='fire'&&!fireForm.done&&fireForm.expiresAt>Date.now(),'射击步骤已失效。');args.splice(0,args.length,fireForm.battleId,fireForm.actorId,uid,fireForm.turnId,fireForm.action,fireForm.abilityKey,fireForm.targetId);}
+    if(action==='formlabelsave')return RL.handle(i,member,context);
     if (action.startsWith('formroom')) return R.handle(i,member,context);
     if (action === 'cardpage') {
       const p = M.player(s, args[0]); ok(p.id === args[1], '角色卡已经变化，请重新查看。');
@@ -179,7 +174,7 @@ function createHandlers(context) {
           const panel = s.rolePanels[value.slice(6)]; ok(panel, '领取面板已失效。');
           const f = await tx(i, st => {
             const draft = F.create(st, uid, 'rolepanel', null, panel.id);
-            draft.data.labels = Object.entries(panel.labels).map(([id, label]) => id + '=' + label).join('\n');
+            draft.data.labels = C.clone(panel.labels);
             return draft;
           });
           return F.view(snapshot(i.guildId), f);
@@ -218,6 +213,7 @@ function createHandlers(context) {
       return U.itemView(s, args[0], uid, action === 'bagitem' ? i.values[0] : args[2], action === 'itempage' ? Number(args[3]) : 0);
     }
     if (action === 'baguse') {
+      owner(i,args[0]);if(M.player(s,uid).inventory[args[1]]?.snapshot.kind==='修复道具')return context.selections.repairStart(i,args[1]);
       owner(i, args[0]); const result = await context.use(i, args[1]);
       return payload('已使用 · ' + result.name, '恢复 ' + result.healed + ' HP · 当前 ' + result.hp +
         '\n解除：' + (result.cleared.join('、') || '无') + '\n持续效果：' + U.effectsText(result.effects),
@@ -238,16 +234,9 @@ function createHandlers(context) {
       return payload('已保存', message);
     }
     if (action === 'offer') return U.offerView(s, offerAccess(s, args[0], member, uid), uid);
-    if (['quotevalue', 'offerconfirm', 'offercancel'].includes(action)) {
+    if (['offerconfirm', 'offercancel'].includes(action)) {
       owner(i, args[1]); offerAccess(s, args[0], member, uid);
       await tx(i, st => {
-        if (action === 'quotevalue') {
-          const items = i.fields.getTextInputValue('items').trim().split('\n').filter(Boolean).map(line => {
-            const match = line.trim().match(/^(i[0-9a-f]{12})\s+(?:[x×]\s*)?(\d+)$/);
-            ok(match, '物品报价每行填写“背包编号 数量”。'); return { id: match[1], quantity: Number(match[2]) };
-          });
-          return M.updateOffer(st, args[0], uid, items, i.fields.getTextInputValue('coins'));
-        }
         if (action === 'offerconfirm') return M.confirmOffer(st, args[0], uid, Number(args[2]));
         M.cancelOffer(st, args[0], uid, U.gm(st, member)); return '取消';
       });
@@ -347,20 +336,27 @@ function createHandlers(context) {
       const next = snapshot(i.guildId);
       return U.personalView(next, battle(next, b.id), B.actorById(battle(next, b.id), a.id), uid, 'status');
     }
-    if (action === 'attackpick') {
-      const type = args[4];
-      const abilities = B.abilities(p).filter(x => type === 'formal' ? x.attack.kind !== '技能' || x.attack.action === 'formal' :
-        x.attack.kind === '技能' ? x.attack.action === 'quick' : x.attack.supernatural);
-      if (args[5] === 'select') {
-        const ability = abilities.find(x => x.key === i.values[0]); ok(ability, '攻击方式已失效。');
-        const targets = b.actors.filter(t => t.id !== a.id && !t.retreated && B.actorCharacter(s, t).hp > 0);
-        ok(targets.length, '没有有效攻击目标。');
-        return payload('选择目标 · ' + ability.attack.name, '固定命中 ' + ability.attack.hit + ' · 射程 ' + ability.attack.range + '格', [
-          row(select('target:' + prefix + ':' + type + ':' + ability.key, '攻击目标', targets.map(t => ({ label: t.name, value: t.id })))),
-          row(button('attackpick:' + prefix + ':' + type + ':0', '返回武器选择'), button('view:' + prefix + ':overview', '取消选择'))]);
-      }
-      return pickView('选择武器／技能', abilities.map(x => ({ label: x.attack.name, value: x.key })), 'attackpick:' + prefix + ':' + type, Number(args[5]));
+    function targetsView(ability,type,mode='semi'){
+      const targets=b.actors.filter(t=>t.id!==a.id&&!t.retreated&&!t.deathId&&B.actorCharacter(s,t).hp>0);ok(targets.length,'没有有效攻击目标。');
+      return payload('选择目标 · '+ability.attack.name,'固定命中 '+ability.attack.hit+' · 射程 '+ability.attack.range+'格'+(C.FIREARMS.includes(ability.attack.weaponType)?' · '+(mode==='auto'?'全自动':'半自动'):''),[
+        row(select('target:'+prefix+':'+type+':'+ability.key+':'+mode,'攻击目标',targets.map(t=>({label:t.name,value:t.id})))),
+        row(button('attackpick:'+prefix+':'+type+':0','返回武器选择'),button('view:'+prefix+':overview','取消选择'))]);
     }
+    if(action==='firemode'){const ability=B.abilities(p).find(x=>x.key===args[5]);ok(ability&&C.FIREARMS.includes(ability.attack.weaponType),'枪械已失效。');ok((ability.attack.fireModes||['semi']).includes(i.values[0]),'枪械模式已变化。');return targetsView(ability,args[4],i.values[0]);}
+    if (action === 'attackpick') {
+      const type=args[4],abilities=B.abilities(p).filter(x=>type==='formal'?x.attack.kind!=='技能'||x.attack.action==='formal':x.attack.kind==='技能'?x.attack.action==='quick':x.attack.supernatural);
+      if(args[5]==='select'){
+        const ability=abilities.find(x=>x.key===i.values[0]);ok(ability,'攻击方式已失效。');
+        if(C.FIREARMS.includes(ability.attack.weaponType)){const w=p.inventory[ability.key];ok(w?.loaded?.current>0,'弹夹已空：无弹药，请装填。');return payload('射击模式 · '+ability.attack.name,'剩余弹药 '+w.loaded.current+' 发。选择射击模式后选择目标。',[
+          row(select('firemode:'+prefix+':'+type+':'+ability.key,'选择射击模式',(ability.attack.fireModes||['semi']).map(value=>({value,label:value==='semi'?'半自动 · 一次一发':'全自动 · 自选连射发数'})))),
+          row(button('attackpick:'+prefix+':'+type+':0','返回武器选择'),button('view:'+prefix+':overview','取消选择'))]);}
+        return targetsView(ability,type);
+      }
+      return pickView('选择武器／技能',abilities.map(x=>({label:x.attack.name,value:x.key})),'attackpick:'+prefix+':'+type,Number(args[5]));
+    }
+    if(action==='target'&&args[6]==='auto'){const target=B.actorById(b,i.values[0]);const f=await tx(i,st=>{prefixContext(i,st,args,member,true);const f={id:C.id('f'),kind:'fire',owner:uid,battleId:b.id,actorId:a.id,turnId,action:args[4],abilityKey:args[5],targetId:target.id,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});return payload('全自动连射 · '+target.name,'选择连射发数，一次行动只消耗一次行动预算。',[row(button('firecount:'+f.id,'填写连射发数'),button('view:'+prefix+':overview','取消选择'))]);}
+    function repairView(toolId,page){const Dur=require('./durability'),tool=p.inventory[toolId];ok(tool?.snapshot.kind==='修复道具','道具已失效。');return pickView('选择要修复的装备',Object.values(p.inventory).filter(item=>tool.snapshot.repairKinds.includes(item.snapshot.kind)&&Dur.current(item)<Dur.maximum(item)&&(!a.userId||M.available(s,a.userId,item.id)>0)).map(item=>({label:item.snapshot.name,value:item.id,description:'耐久 '+Dur.current(item)+'/'+Dur.maximum(item)})),'repairpick:'+prefix+':'+toolId,Number(page)||0);}
+    if(action==='repairpick'&&args[5]!=='select')return repairView(args[4],args[5]);
     if (action === 'reloadmagpick') {
       const weapon = p.inventory[p.equipped.weapon], ammo = p.inventory[args[4]];
       ok(weapon?.loaded && ammo?.snapshot.kind === '弹药', '武器或弹药不可用。');
@@ -375,10 +371,11 @@ function createHandlers(context) {
     }
     if (['reloadpick', 'weaponpick', 'itempick'].includes(action)) {
       const kind = { reloadpick: '弹药', weaponpick: '武器', itempick: '消耗品' }[action];
-      let items = Object.values(p.inventory).filter(item => (action === 'itempick' ? C.CONSUMABLES.includes(item.snapshot.kind) : item.snapshot.kind === kind) &&
+      let items = Object.values(p.inventory).filter(item => (action === 'itempick' ? [...C.CONSUMABLES,'修复道具'].includes(item.snapshot.kind) : item.snapshot.kind === kind) &&
         (!a.userId || M.available(s, a.userId, item.id) > 0));
       if (action === 'reloadpick') items = items.filter(item => item.snapshot.ammoType === p.inventory[p.equipped.weapon]?.snapshot.ammoType);
       if (args[4] === 'select') {
+        if(action==='itempick'&&p.inventory[i.values[0]]?.snapshot.kind==='修复道具')return repairView(i.values[0],0);
         if (action === 'reloadpick') {
           const ammoId = i.values[0], weapon = p.inventory[p.equipped.weapon]; ok(weapon?.loaded && p.inventory[ammoId], '武器或弹药不可用。');
           const magazines = Object.values(p.inventory).filter(m => m.snapshot.kind === '弹夹' && m.snapshot.magazineType === weapon.snapshot.magazineType &&
@@ -396,9 +393,11 @@ function createHandlers(context) {
     const result = await tx(i, st => {
       const live = prefixContext(i, st, args, member, true), next = live.b;
       if (action === 'movevalue') B.move(st, next, turnId, i.fields.getTextInputValue('x'), i.fields.getTextInputValue('y'));
-      else if (action === 'target') return B.attack(st, next, turnId, args[5], i.values[0], args[4]);
+      else if (action === 'target') return B.attack(st,next,turnId,args[5],i.values[0],args[4],undefined,{mode:args[6]||'semi'});
+      else if(action==='firesubmit'){const f=F.owned(st,fireForm.id,uid);ok(!f.done&&f.expiresAt>Date.now(),'射击步骤已完成或过期。');const result=B.attack(st,next,turnId,args[5],args[6],args[4],undefined,{mode:'auto',count:i.fields.getTextInputValue('count')});f.done=true;return result;}
       else if (action === 'reloadmag' || action === 'reloadmagpick') B.reload(st, next, turnId, args[4], i.values[0]);
       else if (action === 'weaponpick') B.switchWeapon(st, next, turnId, i.values[0] === 'none' ? null : i.values[0]);
+      else if(action==='repairpick')B.useItem(st,next,turnId,args[4],undefined,i.values[0]);
       else if (action === 'itempick') B.useItem(st, next, turnId, i.values[0]);
       else if (action === 'cast') B.confirmCasting(st, next, turnId);
       else if (action === 'pass') B.pass(st, next, turnId, args[4]);
@@ -410,11 +409,11 @@ function createHandlers(context) {
     });
     await publishBattle(i.guildId, b.id);
     const next = snapshot(i.guildId), liveBattle = battle(next, b.id), liveActor = B.actorById(liveBattle, a.id);
-    if (action === 'target') {
+    if (action === 'target'||action==='firesubmit') {
       if (result.casting) return U.personalView(next, liveBattle, liveActor, uid, 'quick');
       const target = B.actorById(liveBattle, result.targetId), ch = await context.textChannel(i.guildId, liveBattle.channelId);
       const roles = target.userId ? [] : next.config.gmRoleIds;
-      const message = await ch.send({ content: (target.userId ? '<@' + target.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) + ' 请为 **' + target.name + '** 选择防守方式。',
+      const message = await ch.send({ content: (target.userId ? '<@' + target.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) + ' 请为 **' + target.name + '** 选择防守方式。'+(result.shotCount>1?'（连射 '+result.shotCount+' 发，每发单独抵扣防御）':'')+(result.ammoEmpty?'\n⚠️ '+liveActor.name+'的弹夹已空：无弹药，请装填。':''),
         components: [row(button('defense:' + b.id + ':' + result.id, '打开防守面板', D.ButtonStyle.Danger))],
         allowedMentions: { parse: [], users: target.userId ? [target.userId] : [], roles } });
       await store.transact(i.guildId, 'combat-prompt:' + message.id, uid, st => {

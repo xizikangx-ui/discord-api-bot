@@ -1,5 +1,6 @@
 'use strict';
 const C = require('./constants');
+const Dur=require('./durability');
 const { randomInt } = require('node:crypto');
 const { requireThat: ok, number: num, clone, id } = C;
 
@@ -45,7 +46,7 @@ function sourceEffects(p) {
   const result = [];
   for (const itemId of equippedIds(p)) {
     const item = p.inventory[itemId];
-    if (!item) continue;
+    if (!item || !Dur.usable(item)) continue;
     result.push(...(item.snapshot.effects || []));
     for (const attachmentId of item.attachments || []) result.push(...(p.inventory[attachmentId]?.snapshot.effects || []));
     if (item.magazineId) result.push(...(p.inventory[item.magazineId]?.snapshot.effects || []));
@@ -80,7 +81,7 @@ function stats(p, extraEffects = []) {
     .map(([k, v]) => [k, Math.floor(modify(effects, 'attr:' + k, v))]));
   const defenses = Object.fromEntries(Object.keys(C.DAMAGE_TYPES).map(k => [k, 0]));
   for (const armorId of p.equipped.armor) {
-    const armor = p.inventory[armorId]?.snapshot;
+    const item=p.inventory[armorId],armor = item&&Dur.usable(item)?item.snapshot:null;
     if (armor) for (const k of Object.keys(defenses)) defenses[k] += armor.defenses[k] || 0;
   }
   for (const k of Object.keys(defenses)) defenses[k] = modify(effects, 'defense:' + k, defenses[k]);
@@ -154,6 +155,10 @@ function validateTemplate(state, raw) {
   ok(Math.abs(kg * 100 - Math.round(kg * 100)) < 0.000001, '重量最多两位小数。');
   t.weight = Math.round(kg * 100);
   delete t.weightKg;
+  if(['武器','防具'].includes(t.kind))t.durabilityMax=num(t.durabilityMax??100,'最大耐久',1,1000000);
+  if(t.kind==='武器'){t.armorWeakening||={type:'physical',amount:0};ok(C.DAMAGE_TYPES[t.armorWeakening.type],'请选择护甲削弱类型。');t.armorWeakening.amount=num(t.armorWeakening.amount??0,'护甲削弱',0,1000000);}
+  if(t.kind==='防具')t.weakeningResistance=Object.fromEntries(Object.keys(C.DAMAGE_TYPES).map(k=>[k,num(t.weakeningResistance?.[k]||0,'抗削弱',0,1000000)]));
+  if(t.kind==='修复道具'){t.repairKinds=[...new Set(t.repairKinds||[])];ok(t.repairKinds.length&&t.repairKinds.every(k=>['武器','防具'].includes(k)),'请选择可修复武器、防具或两者。');t.repairAmount=num(t.repairAmount,'修复点数',1,1000000);t.repairMaxLoss=num(t.repairMaxLoss??0,'削减耐久上限',0,1000000);}
   if (t.kind === '钥匙') t.keyCharges = num(t.keyCharges ?? 1, '钥匙次数', 0, 100000);
   t.value = num(t.value || 0, '参考价值', 0, C.MAX_MONEY);
   t.boxes = [...new Set(t.boxes || [])];
@@ -171,6 +176,8 @@ function validateTemplate(state, raw) {
     t.title = C.text(t.title || '', '称号', 100, true);
     t.supernatural = Boolean(t.supernatural);
   }
+  if(['武器','弹夹'].includes(t.kind)&&t.ammoIds?.length){ok(t.ammoIds.length===1,'请选择一种弹药。');const ammo=state.catalog[t.ammoIds[0]];ok(ammo?.published&&ammo.kind==='弹药','选择的弹药尚未发布。');t.ammoType=ammo.ammoType;}
+  if(t.kind==='武器'&&t.magazineIds?.length){ok(t.magazineIds.length===1,'请选择一种弹夹。');const mag=state.catalog[t.magazineIds[0]];ok(mag?.published&&mag.kind==='弹夹'&&mag.ammoType===t.ammoType,'弹夹和弹药不兼容，请重新选择。');t.magazineType=mag.magazineType;}
   if (t.kind === '武器' || t.kind === '技能') {
     if (t.kind === '武器') {
       ok(C.WEAPON_TYPES.includes(t.weaponType), '武器类型无效。');
@@ -181,7 +188,8 @@ function validateTemplate(state, raw) {
         t.magazineType = C.text(t.magazineType, '弹夹类型', 80);
         t.capacity = num(t.capacity, '载弹上限', 1, 10000);
         t.current = num(t.current ?? t.capacity, '当前载弹', 0, t.capacity);
-        const ammo = Object.values(state.catalog).find(a => a.published && a.kind === '弹药' && a.ammoType === t.ammoType);
+        t.fireModes=[...new Set(t.fireModes||['semi'])];ok(t.fireModes.length&&t.fireModes.every(m=>['semi','auto'].includes(m)),'请选择半自动或全自动模式。');
+        const ammo = t.ammoIds?.length ? state.catalog[t.ammoIds[0]] : Object.values(state.catalog).find(a => a.published && a.kind === '弹药' && a.ammoType === t.ammoType);
         ok(ammo, '请先录入对应弹药，用于载弹重量和装填。');
         t.ammoWeight = ammo.weight;
         t.initialAmmo = clone(ammo);
@@ -210,12 +218,13 @@ function validateTemplate(state, raw) {
   if (t.kind === '饰品') ok(C.ACCESSORY_LIMITS[t.accessoryType], '饰品类型无效。');
   if (t.kind === '卡牌') t.uniqueText = C.text(t.uniqueText || '', '独特效果', 2000, true);
   if (t.kind === '弹药' || t.kind === '弹夹') {
-    t.ammoType = C.text(t.ammoType, '弹药类型', 80);
+    t.ammoType = C.text(t.ammoType || t.name, '弹药类型', 80);
     if (t.kind === '弹夹') {
-      t.magazineType = C.text(t.magazineType, '弹夹类型', 80);
+      t.magazineType = C.text(t.magazineType || t.name, '弹夹类型', 80);
       t.capacity = num(t.capacity, '容量', 1, 10000);
     }
   }
+  if(t.kind==='弹药'){t.damage ||= {};for(const [type,expr] of Object.entries(t.damage)){ok(C.DAMAGE_TYPES[type],'附加伤害类型无效。');if(expr)ok(C.dice(expr,'normal',min=>min).total>=0,'弹药附加伤害不能为负数。');}t.conditions=(t.conditions||[]).map(ref=>{const condition=state.conditionTemplates[ref.id];ok(condition?.published&&condition.levels[ref.severity],'弹药附带异常或等级未发布。');return {id:ref.id,severity:ref.severity,template:clone(condition)};});}
   if (t.kind === '配件') {
     t.attachmentSlot = C.text(t.attachmentSlot, '配件位置', 50);
     t.compatible = [...new Set(t.compatible || [])];
@@ -245,9 +254,9 @@ function validateTemplate(state, raw) {
     attachmentPositions.add(part.attachmentSlot);
   }
   if (t.kind === '武器' && C.FIREARMS.includes(t.weaponType)) {
-    const magazine = Object.values(state.catalog).find(a => a.published && a.kind === '弹夹' &&
+    const magazine = t.magazineIds?.length ? state.catalog[t.magazineIds[0]] : Object.values(state.catalog).find(a => a.published && a.kind === '弹夹' &&
       a.magazineType === t.magazineType && a.ammoType === t.ammoType && a.capacity >= t.capacity);
-    ok(magazine, '请先发布兼容弹夹，其容量须不小于武器载弹上限。');
+    ok(magazine&&magazine.capacity>=t.capacity&&magazine.ammoType===t.ammoType, '请先发布兼容弹夹，其容量须不小于武器载弹上限。');
     t.initialMagazine = clone(magazine);
   }
   t.skillIds ||= [];
@@ -265,9 +274,9 @@ function publishTemplate(state, raw, existingId) {
 }
 function makeItem(template, quantity = 1) {
   const item = { id: id('i'), templateId: template.id, version: template.version, snapshot: clone(template), quantity,
-    attachments: [], ...(template.kind === '武器' && C.FIREARMS.includes(template.weaponType)
+    attachments: [], ...(['武器','防具'].includes(template.kind)?{durability:template.durabilityMax??100}:{}), ...(template.kind === '武器' && C.FIREARMS.includes(template.weaponType)
       ? { loaded: { current: template.current, capacity: template.capacity, weight: template.ammoWeight, ammoType: template.ammoType,
-        rounds: Array.from({ length: template.current }, () => ({ weight: template.ammoWeight, effects: clone(template.initialAmmo?.effects || []) })) } } : {}) };
+        rounds: Array.from({ length: template.current }, () => ({ weight: template.ammoWeight, effects: clone(template.initialAmmo?.effects || []), damage:clone(template.initialAmmo?.damage || {}), conditions:clone(template.initialAmmo?.conditions || []) })) } } : {}) };
   if (template.kind === '钥匙') item.keyCharges = template.keyCharges;
   const parts = (template.initialParts || []).map(t => makeItem(t));
   item.attachments = parts.map(p => p.id);

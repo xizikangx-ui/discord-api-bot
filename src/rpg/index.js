@@ -10,6 +10,8 @@ const { createBattleGM } = require('./battle-gm');
 const { createNavigation } = require('./navigation');
 const { createBuyback, availability } = require('./buyback');
 const { createFactions } = require('./factions');
+const Text=require('./texts');
+const { createSelections } = require('./selections');
 const { createExploration } = require('./exploration-ui');
 const { requireThat: ok, number: num } = C;
 const { D, E, row, button, select, payload, modal } = U;
@@ -222,16 +224,18 @@ function createRpg(deps) {
       button('view:' + match.slice(1).join(':') + ':quick', '取消选择')));
     return result;
   }
-  async function use(i, ref) {
+  async function use(i, ref, target, selectionId) {
     const result = await tx(i, st => {
+      if(selectionId){const f=F.owned(st,selectionId,i.user.id);ok(!f.done&&f.expiresAt>Date.now()&&f.characterId===M.player(st,i.user.id).id,'使用操作已完成或角色已变化。');f.done=true;}
       const p = M.player(st, i.user.id), b = M.battleFor(st, i.user.id);
       ok(M.available(st, i.user.id, ref) > 0, '物品不存在或已被交易预留。');
       ok(b?.status !== 'paused', '战斗暂停时不能消耗快速行动，请GM恢复战斗后使用。');
       if (b?.status === 'active') {
         const a = b.actors.find(a => a.userId === i.user.id);
         ok(b.current?.actorId === a?.id, '只能在自己的当前行动使用物品。');
-        const result = B.useItem(st, b, b.current.id, ref); B.nextOpportunity(st, b); return result;
+        const result = B.useItem(st, b, b.current.id, ref,undefined,target); B.nextOpportunity(st, b); return result;
       }
+      if(p.inventory[ref]?.snapshot.kind==='修复道具'){ok(M.available(st,i.user.id,target)>0,'目标装备已预留或不存在。');return require('./durability').repair(p,ref,target);}
       return M.consume(p, ref);
     }, '使用食物药品');
     const b = M.battleFor(snapshot(i.guildId), i.user.id); if (b) await publishBattle(i.guildId, b.id);
@@ -248,7 +252,7 @@ function createRpg(deps) {
       const target = i.options.get('成员')?.value;
       entries = Object.values(s.players[target]?.inventory || {}).filter(t => !availability(s, target, t).reason);
     }
-    if (i.commandName === '使用') entries = entries.filter(t => C.CONSUMABLES.includes(t.snapshot.kind));
+    if(i.commandName==='使用')entries=entries.filter(t=>[...C.CONSUMABLES,'修复道具'].includes(t.snapshot.kind));
     await i.respond(entries.filter(t => ((t.snapshot?.name || t.name) + t.id).toLowerCase().includes(q)).slice(0, 25)
       .map(t => ({ name: ((t.snapshot?.name || t.name).slice(0, 60) + ' · ' + t.id +
         (i.commandName === 'gm' && sub === '收购' ? ' · 可售 ' + availability(s, i.options.get('成员').value, t).quantity : '')).slice(0, 100), value: t.id })));
@@ -261,7 +265,7 @@ function createRpg(deps) {
     if (name === '势力') return factions.home(s, uid);
     if (name === '开团' || name === '鉴定') return activities.slash(i, member);
     if (name === '跑团配置面板') { needConfig(member); return configView(s); }
-    if (name === '规则') return payload('规则 · ' + (o.getString('章节') || '总览'), chapters[o.getString('章节') || '总览']);
+    if(name==='规则')return Text.read(s,'rule/'+(o.getString('章节')||'总览'));
     if (name === 'rd') {
       const result = await tx(i, () => C.dice(o.getString('骰式') || '1d100', o.getString('模式') || 'normal'), '公开掷骰');
       return payload('掷骰 · ' + result.expression, '<@' + uid + '> → **' + result.total + '**\n' +
@@ -298,6 +302,8 @@ function createRpg(deps) {
         [row(button('activity:loot:menu:0', '查看公示记录'), button('bag:' + uid + ':' + uid + ':0', '查看个人背包'))]);
     }
     if (name === '使用') {
+      if(!o.getString('物品'))return selections.list(s,uid,'使用');
+      if(M.player(s,uid).inventory[o.getString('物品')]?.snapshot.kind==='修复道具')return selections.repairStart(i,o.getString('物品'));
       const result = await use(i, o.getString('物品'));
       return payload('已使用 · ' + result.name, '恢复 ' + result.healed + ' HP · 当前 ' + result.hp +
         '\n解除异常：' + (result.cleared.join('、') || '无') + '\n持续效果：' + U.effectsText(result.effects),
@@ -308,6 +314,7 @@ function createRpg(deps) {
       return U.inventoryView(s, target(), uid);
     }
     if (name === '丢弃') {
+      if(!o.getString('物品'))return selections.list(s,uid,'丢弃');
       const item = M.transferable(s, uid, o.getString('物品'), o.getInteger('数量') || 1);
       const token = await tx(i, st => {
         const f = { id: C.id('x'), owner: uid, kind: 'drop', itemId: item.id, quantity: o.getInteger('数量') || 1, expiresAt: Date.now() + 60000 };
@@ -317,7 +324,10 @@ function createRpg(deps) {
     }
     if (name === '装备') {
       const operation = o.getString('操作'), ref = o.getString('物品');
+      if(!operation)return selections.home();
+      if(!ref || (['装配','拆下'].includes(operation)&&!o.getString('配件')))return selections.list(s,uid,operation);
       if (operation === '使用道具') {
+        if(M.player(s,uid).inventory[ref]?.snapshot.kind==='修复道具')return selections.repairStart(i,ref);
         const result = await use(i, ref);
         return payload('已使用 · ' + result.name, '恢复 ' + result.healed + ' HP，当前HP ' + result.hp +
           '\n持续效果：' + U.effectsText(result.effects), [row(button('bag:' + uid + ':' + uid + ':0', '返回背包'))]);
@@ -362,15 +372,17 @@ function createRpg(deps) {
       await store.recover(i.guildId); ready.add(i.guildId);
       return payload('加密存档已重新读取', '当前版本 ' + snapshot(i.guildId).revision + '。请核对背包、交易及战斗记录后继续。');
     }
+    if(sub==='文本编辑')return texts.home(s);
     if (sub === '模板库') return catalogView(s, o.getString('类型') || '物品', 0);
     if (sub === '抽取公示') return activities.slash(i, member);
     if (sub === '草稿') {
-      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback'].includes(f.kind));
+      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback','selection','fire'].includes(f.kind));
       if (ref) return formView(s, ref, uid);
       return pickView('选择持久草稿', forms.map(f => ({ value: f.id, label: f.data?.name || f.data?.title || f.kind, description: f.id })), 'drafts', 0);
     }
     if (sub === 'npc' || sub === '修改模板') {
       const ref = o.getString('物品');
+      if(sub==='修改模板'&&!ref)return catalogView(s,'物品',0);
       const f = await tx(i, st => { needGM(st, member); return F.create(st, uid, sub === 'npc' ? 'npc' : 'item', null, ref); });
       return F.view(snapshot(i.guildId), f);
     }
@@ -389,6 +401,7 @@ function createRpg(deps) {
       const offer = await tx(i, st => { needGM(st, member); return M.createOffer(st, uid, target, 'buyback', o.getString('物品'), o.getInteger('数量') || 1, o.getInteger('价格')); });
       await announceOffer(i, offer); return U.offerView(snapshot(i.guildId), offer, uid);
     }
+    if(sub==='发放'&&!o.getString('物品')){M.player(s,target);return selections.list(s,uid,'发放',0,target);}
     const result = await tx(i, st => {
       needGM(st, member);
       const p = M.player(st, target), amount = o.getInteger('数量') || 1;
@@ -426,6 +439,7 @@ function createRpg(deps) {
       return a ? U.personalView(s, b, a, i.user.id) : U.battleView(s, b);
     }
     needGM(s, member);
+    if(['添加npc','位置','生命','异常','解除异常','移出'].includes(sub)&&!(sub==='添加npc'?o.getString('模板'):o.getString('角色')))return gmUI.entry(s,channelBattle(s,i.channelId), {'添加npc':'npc','位置':'actors','生命':'actors','异常':'conditions','解除异常':'conditions','移出':'remove'}[sub]);
     if (sub === '生命' && o.getInteger('数值') === 0) {
       const b = channelBattle(s, i.channelId), a = B.actorById(b, o.getString('角色')), p = B.actorCharacter(s, a);
       if (a.userId) return payload('确认玩家死亡并销卡', a.name + '的HP将归零，清空角色和全部资产。', [
@@ -485,8 +499,10 @@ function createRpg(deps) {
   const buyback = createBuyback({ snapshot, tx, needGM, announceOffer });
   const factions = createFactions({ snapshot, tx });
   const exploration = createExploration({ snapshot, tx, store, textChannel, client, needGM, activities, publishBattle, gmUI, logFailure });
+  const texts=Text.createTexts({snapshot,tx,needGM,pickView});
+  const selections=createSelections({snapshot,tx,needGM,pickView,use,publishBattle,offerAccess,owner});
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
-    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI });
+    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI,selections });
   async function handle(i) {
     const ours = (i.isChatInputCommand?.() || i.isAutocomplete?.()) ? commandNames.has(i.commandName) : i.customId?.startsWith('rpg:');
     if (!ours) return false;
@@ -505,7 +521,7 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await openModal(i, s))) return true;
+      if (i.customId && (await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       const privateSource = !!i.message?.flags?.has(E);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
@@ -515,8 +531,10 @@ function createRpg(deps) {
         i.customId.startsWith('rpg:map:') ? await exploration.component(i, member) :
         i.customId.startsWith('rpg:activity:') ? await activities.component(i, member) :
         i.customId.startsWith('rpg:buyback:') ? await buyback.component(i, member) :
+        i.customId.startsWith('rpg:text:') ? await texts.component(i,member) :
         i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
-        i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) : await component(i, member);
+        i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) :
+        /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
       const response = result || payload('已完成', '操作已保存。');
       await i.editReply(publicResult ? response : navigation.wrap(i, response));
     } catch (error) {

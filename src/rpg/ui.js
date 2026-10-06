@@ -96,10 +96,17 @@ function itemView(state, userId, viewerId, ref, page = 0) {
   const t = item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity) || C.RARITIES.at(-1);
   const sections = [t.kind === '钥匙' ? '剩余开门次数：' + item.keyCharges : '', t.description || '暂无描述', effectsText(t.effects),
     t.uniqueText || '', t.appearance || ''].filter(Boolean);
-  if (t.kind === '武器' || t.kind === '技能') sections.push('固定命中 ' + t.hit + ' · 射程 ' + t.range + '格\n伤害：' +
+  if (['武器','技能'].includes(t.kind)) sections.push('固定命中 ' + t.hit + ' · 射程 ' + t.range + '格\n伤害：' +
     Object.entries(t.damage || {}).filter(([, v]) => v).map(([k, v]) => C.DAMAGE_TYPES[k] + ' ' + v).join('／') +
     '\n' + (t.kind === '武器' ? '类型 ' + t.weaponType + (t.melee ? ' · 近战' : ' · 远程') : '行动 ' + t.action + ' · 吟唱 ' + t.casting) +
     (item.loaded ? '\n载弹 ' + item.loaded.current + '/' + item.loaded.capacity : ''));
+  if(['武器','防具'].includes(t.kind)){const Dur=require('./durability');sections.push('耐久 '+Dur.current(item)+'/'+Dur.maximum(item)+(Dur.usable(item)?'':' · 已损坏'));}
+  if(t.kind==='武器'&&t.armorWeakening?.amount)sections.push('护甲削弱 '+C.DAMAGE_TYPES[t.armorWeakening.type]+' '+t.armorWeakening.amount+'点／发或击');
+  if(t.kind==='防具')sections.push('抗削弱 '+Object.entries(t.weakeningResistance||{}).map(([k,v])=>C.DAMAGE_TYPES[k]+' '+v).join('／'));
+  if(t.kind==='修复道具')sections.push('修复 '+t.repairKinds.join('／')+' · 每件恢复 '+t.repairAmount+' 点耐久'+(t.repairMaxLoss?' · 每次削减上限 '+t.repairMaxLoss+' 点':' · 不削减耐久上限'));
+  if(t.kind==='弹夹')sections.push('装弹量 '+t.capacity+' 发 · 兼容弹药 '+t.ammoType);
+  if(t.kind==='弹药')sections.push('附加伤害：'+(Object.entries(t.damage||{}).filter(([,v])=>v).map(([k,v])=>C.DAMAGE_TYPES[k]+' '+v).join('／')||'无')+'\n附带异常：'+((t.conditions||[]).map(c=>c.template?.name+'·'+c.severity).join('、')||'无'));
+  if(t.kind==='武器'&&item.loaded)sections.push('射击模式：'+(t.fireModes||['semi']).map(v=>v==='auto'?'全自动':'半自动').join('／')+(item.loaded.current===0?'\n⚠️ 弹夹已空：无弹药，请装填。':''));
   if (t.kind === '防具') sections.push('覆盖 ' + t.armorType + '\n' + Object.entries(t.defenses || {}).map(([k, v]) => C.DAMAGE_TYPES[k] + '防御 ' + v).join('／'));
   if (t.quality || t.origin || t.title) sections.push('品质 ' + (t.quality || '—') + ' · 产地 ' + (t.origin || '—') + '\n称号 ' + (t.title || '无'));
   if (item.attachments?.length) sections.push('配件：\n' + item.attachments.map(id => p.inventory[id]?.snapshot.name || id).join('\n'));
@@ -109,7 +116,7 @@ function itemView(state, userId, viewerId, ref, page = 0) {
     row(button('itempage:' + userId + ':' + viewerId + ':' + ref + ':' + (page - 1), '上一页', undefined, page === 0),
       button('itempage:' + userId + ':' + viewerId + ':' + ref + ':' + (page + 1), '下一页', undefined, page === pages.length - 1),
       button('bag:' + userId + ':' + viewerId + ':0', '返回背包'),
-      ...(userId === viewerId && C.CONSUMABLES.includes(t.kind) ? [button('baguse:' + userId + ':' + ref, '使用一件', D.ButtonStyle.Success, M.available(state, userId, ref) < 1)] : []))
+      ...(userId === viewerId && [...C.CONSUMABLES,'修复道具'].includes(t.kind) ? [button('baguse:' + userId + ':' + ref, '使用一件', D.ButtonStyle.Success, M.available(state, userId, ref) < 1)] : []))
   ], r.color);
   result.embeds[0].addFields(field('分类 / 稀有度', t.kind + ' / ' + r.name, true),
     field('数量 / 重量', item.quantity + ' / ' + C.kg(M.itemWeight(item)), true), field('参考价值', t.value, true));
@@ -159,6 +166,8 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   let body = characterView(p, true).embeds[0].data.description + '\n\n位置 (' + a.x + ',' + a.y + ')　动作点 ' + p.ap +
     '\n' + (turn ? '快速 ' + turn.quick + '／正式 ' + turn.formal + '／剩余移动 ' + turn.move + '米' : '当前不是此角色的行动机会。') +
     '\n吟唱：' + (a.casting ? a.casting.name + ' ' + a.casting.count + '/' + a.casting.required + (a.casting.confirmed ? ' · 已确认' : '') : '无') +
+    (p.inventory[p.equipped.weapon]?.loaded?.current===0?'\n⚠️ 弹夹已空：无弹药，请装填。':'')+
+    (p.inventory[p.equipped.weapon]&&!require('./durability').usable(p.inventory[p.equipped.weapon])?'\n⚠️ 武器耐久为0，无法攻击，请修复。':'')+
     '\n装备：' + (M.equippedIds(p).map(ref => p.inventory[ref]?.snapshot.name).join('、').slice(0, 320) || '无') +
     '\n饰品槽位 头' + p.slots.head + ' 身' + p.slots.body + ' 戒' + p.slots.ring + '／卡牌槽位 ' + p.slots.card;
   const statePages = Math.max(1, Math.ceil(p.conditions.length / 3), Math.ceil((p.temporaryEffects || []).length / 3));

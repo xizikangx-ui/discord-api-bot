@@ -21,7 +21,7 @@ const WEAPON_TYPES = ['弓', '弩', '刀', '枪', '剑', '戟', '斧', '匕首',
 const FIREARMS = WEAPON_TYPES.slice(8, 15);
 const ORIGINS = ['未知', '文明产物', '自然造物', '神战遗留', '名匠工造', '黎明重工', '天启公司', '地方产品'];
 const CONSUMABLES = ['消耗品', '食物', '药品'];
-const ITEM_KINDS = ['杂物', '武器', '防具', '饰品', '卡牌', '弹药', '弹夹', '配件', '技能', '特殊物品', '钥匙', ...CONSUMABLES];
+const ITEM_KINDS = ['杂物', '武器', '防具', '饰品', '卡牌', '弹药', '弹夹', '配件', '技能', '特殊物品', '钥匙', '修复道具', ...CONSUMABLES];
 const ARMOR_COVERAGE = { '头盔': ['head'], '胸甲': ['chest'], '臂甲': ['arms'], '内甲': ['inner'],
   '腿甲': ['legs'], '靴甲': ['feet'], '上身甲': ['head', 'chest', 'arms'],
   '下身甲': ['legs', 'feet'], '全甲': ['head', 'chest', 'arms', 'legs', 'feet'] };

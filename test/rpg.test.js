@@ -1732,3 +1732,115 @@ test('fixed supply dropdown reaches quantity 100 without entering IDs and enforc
     assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms[data.f].data.supplyQuantities[data.ref],100);
   }finally{rpg.stop();}
 });
+
+const Dur=require('../src/rpg/durability'),Texts=require('../src/rpg/texts');
+function gunFixture(s,extra={}){
+  const ammo=M.publishTemplate(s,{kind:'弹药',name:'测试弹',rarity:'white',weightKg:.01,damage:{physical:'2'}});
+  const mag=M.publishTemplate(s,{kind:'弹夹',name:'测试弹夹',rarity:'white',weightKg:.1,ammoIds:[ammo.id],capacity:4});
+  const gun=weapon(s,{weaponType:'步枪',ammoIds:[ammo.id],magazineIds:[mag.id],capacity:4,current:4,fireModes:['semi','auto'],damage:{physical:'3'},...extra});
+  return{ammo,mag,gun};
+}
+test('RPG ID-based slash entries all open selectors without mandatory identifiers',()=>{
+  for(const command of commands().map(c=>c.toJSON())){assert.ok((command.options||[]).length<=25);for(const o of command.options||[]){if(o.options)for(const f of o.options)assert.ok(!f.required||!['物品','模板','角色','编号','配件'].includes(f.name));else assert.ok(!o.required||!['物品','模板','角色','编号','配件'].includes(o.name));}}
+});
+test('ammo and magazine wizards expose damage conditions weight capacity and reference dropdowns',()=>{
+  const s=state(),{ammo,mag,gun}=gunFixture(s);assert.equal(ammo.ammoType,'测试弹');assert.equal(mag.magazineType,'测试弹夹');assert.equal(gun.initialAmmo.id,ammo.id);assert.equal(gun.initialMagazine.id,mag.id);
+  for(const kind of ['弹药','弹夹','武器','防具','修复道具']){const f=F.create(s,'GM','item',kind);validateMessage(F.view(s,f));const fields=F.fields(f);assert.ok(!fields.some(d=>['ammoType','magazineType'].includes(d.key)));if(['武器','弹夹'].includes(kind))assert.equal(fields.find(d=>d.key==='ammoIds').type,'refs');}
+  const wrong=M.publishTemplate(s,{kind:'弹药',name:'不兼容',rarity:'white',weightKg:0});assert.throws(()=>weapon(s,{weaponType:'步枪',ammoIds:[wrong.id],magazineIds:[mag.id],capacity:4,current:0}),/不兼容/);
+});
+test('template reference and NPC quantity editors paginate without handwritten identifiers',()=>{
+  const s=state();for(let n=0;n<31;n++)M.publishTemplate(s,{kind:'弹药',name:'子弹'+n,rarity:'white',weightKg:0});
+  const f=F.create(s,'GM','item','武器');f.field=F.fields(f).findIndex(d=>d.key==='ammoIds');validateMessage(F.choiceView(s,f));f.choicePage=1;validateMessage(F.choiceView(s,f));const ref=F.options(s,F.fields(f)[f.field])[30].value;F.setChoice(s,f,1,[ref]);assert.deepEqual(f.data.ammoIds,[ref]);
+  const npc=F.create(s,'GM','npc');npc.data.name='NPC';npc.data.itemIds=[ref];npc.field=F.fields(npc).findIndex(d=>d.key==='quantities');validateMessage(R.view(s,npc));validateMessage(R.detail(s,npc,npc.field,ref,3));npc.data.quantities={[ref]:100};assert.equal(B.validateNPC(s,npc.data).loadout[0].quantity,100);
+});
+test('effects beyond 25 are reachable on a second dropdown page',()=>{
+  const s=state(),f=F.create(s,'GM','trait');f.field=F.fields(f).findIndex(d=>d.key==='effects');f.data.effects=Array.from({length:30},()=>({target:'hit',op:'add',value:1}));f.effectPage=1;const v=F.effectsView(s,f);validateMessage(v);const menu=v.components.flatMap(r=>r.toJSON().components).find(c=>c.placeholder==='删除某项效果');assert.equal(menu.options[4].value,'29');
+});
+test('GM can issue through paginated named templates with no own character and stale duplicate rejected',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const i=h.interaction('GM','gm',{sub:'发放',成员:'1'});await rpg.handle(i);validateMessage(i.result);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players.GM,undefined);
+    const next=await click(h,rpg,'GM',i,'下一页');const menu=next.result.components.flatMap(r=>r.toJSON().components).find(c=>c.options);const ref=menu.options[0].value;
+    const selected=await click(h,rpg,'GM',next,'下拉选择 · 发放',[ref]);const opened=await click(h,rpg,'GM',selected,'填写数量');const preview=await submit(h,rpg,'GM',opened,{quantity:'2'});const token=control(preview.result,'确认发放');const confirmed=await click(h,rpg,'GM',preview,'确认发放');assert.match(bodyOf(confirmed.result),/已完成/);assert.equal(Object.values(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory)[0].quantity,2);
+    const duplicate=h.interaction('GM',null,{},token);await rpg.handle(duplicate);assert.match(duplicate.result.content,/失效/);assert.equal(Object.values(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory)[0].quantity,2);
+  }finally{rpg.stop();}
+});
+test('inventory dropdown drop confirm is owner bound and cannot debit twice',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const ref=await rpg.store.transact(C.DEFAULT_GUILD_ID,'drop-seed','GM',s=>M.issue(s,'1',Object.keys(s.catalog)[0],2)[0].id);
+    const i=h.interaction('1','丢弃');await rpg.handle(i);const selection=await click(h,rpg,'1',i,'下拉选择 · 丢弃',[ref]);const opened=await click(h,rpg,'1',selection,'填写数量');const preview=await submit(h,rpg,'1',opened,{quantity:'1'});const token=control(preview.result,'确认丢弃');const bad=h.interaction('2',null,{},token);await rpg.handle(bad);assert.match(bad.result.content,/失效/);
+    const done=await click(h,rpg,'1',preview,'确认丢弃');assert.match(bodyOf(done.result),/已完成/);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory[ref].quantity,1);
+  }finally{rpg.stop();}
+});
+test('trade quote selector saves item quantities coins and clears confirmations on change',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const data=await rpg.store.transact(C.DEFAULT_GUILD_ID,'quote-seed','GM',s=>{const item=M.issue(s,'1',Object.keys(s.catalog)[0],3)[0];s.players['1'].balance=20;const offer=M.createOffer(s,'1','2','trade');return{item:item.id,offer:offer.id};});
+    let i=h.interaction('1',null,{},'rpg:quote:'+data.offer+':1');await rpg.handle(i);validateMessage(i.result);assert.equal(i.modal,undefined);let opened=await click(h,rpg,'1',i,'选择自己的报价物品',[data.item]);i=await submit(h,rpg,'1',opened,{value:'2'});assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers[data.offer].sides['1'].items[0].quantity,2);
+    opened=await click(h,rpg,'1',i,'填写游戏币');i=await submit(h,rpg,'1',opened,{value:'5'});assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers[data.offer].sides['1'].coins,5);
+    opened=await click(h,rpg,'1',i,'选择自己的报价物品',[data.item]);i=await submit(h,rpg,'1',opened,{value:'0'});assert.deepEqual(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers[data.offer].sides['1'].items,[]);assert.deepEqual(rpg.store.snapshot(C.DEFAULT_GUILD_ID).offers[data.offer].confirmations,{});
+  }finally{rpg.stop();}
+});
+test('battle slash management routes select NPC actors and conditions with no mandatory IDs',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    await rpg.store.transact(C.DEFAULT_GUILD_ID,'battle-select-seed','GM',s=>{const b=B.createBattle(s,'channel','GM','下拉战斗');B.join(s,b,'1');const n=B.validateNPC(s,{...F.defaults('npc'),name:'NPC'});s.npcTemplates.n={...n,id:'n',version:1,published:true};});
+    for(const sub of ['添加npc','位置','生命','异常','解除异常','移出']){const i=h.interaction('GM','战斗',{sub});await rpg.handle(i);validateMessage(i.result);assert.ok(i.result.components.some(r=>r.toJSON().components.some(c=>c.options)));}
+  }finally{rpg.stop();}
+});
+test('semi and auto each freeze ammo bonuses, debit rounds, and defend each bullet once',()=>{
+  const s=state(),{gun}=gunFixture(s),w=M.issue(s,'1',gun.id)[0];M.equip(s,'1',w.id);const armor=M.publishTemplate(s,{kind:'防具',name:'甲',rarity:'white',weightKg:0,traitIds:['neutral'],quality:'标准',origin:'未知',armorType:'胸甲',defenses:{physical:2}});const a=M.issue(s,'2',armor.id)[0];M.equip(s,'2',a.id);const {b}=fight(s);
+  const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng,{mode:'auto',count:2});assert.equal(hit.shots.length,2);assert.equal(hit.damage.physical,10);assert.equal(w.loaded.current,2);assert.equal(w.durability,98);assert.equal(b.current.formal,0);const result=B.defend(s,b,hit.id,'defend',minRng);assert.equal(result.total,6);assert.throws(()=>B.defend(s,b,hit.id,'defend',minRng),/已结算/);
+});
+test('empty magazine is recorded immediately and unsupported or insufficient burst leaves assets unchanged',()=>{
+  const s=state(),{gun}=gunFixture(s),w=M.issue(s,'1',gun.id)[0];M.equip(s,'1',w.id);const {b}=fight(s);let before=C.clone(s);assert.throws(()=>B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng,{mode:'auto',count:5}),/弹药/);assert.deepEqual(s,before);
+  const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng,{mode:'auto',count:4});assert.equal(hit.ammoEmpty,true);assert.equal(w.loaded.current,0);assert.match(b.recent.at(-1).message,/无弹药/);assert.match(bodyOf(U.personalView(s,b,b.actors[0],'1')),/无弹药/);
+});
+test('ammo damage and condition snapshots survive magazine reload and template edits',()=>{
+  const s=state(),{ammo,gun}=gunFixture(s),condition=(()=>{const f=F.create(s,'GM','condition');f.data.name='弹药异常';f.data.effectType='text';return F.publish(s,f);})();const t=M.publishTemplate(s,{...ammo,name:'附带异常弹',damage:{physical:'4'},conditions:[{id:condition.id,severity:'一般'}]});const w=M.issue(s,'1',gun.id)[0];w.loaded.current=0;w.loaded.rounds=[];M.equip(s,'1',w.id);const rounds=M.issue(s,'1',t.id,4)[0];const {b}=fight(s);B.reload(s,b,b.current.id,rounds.id,w.magazineId);s.catalog[t.id].damage.physical='999';const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng);assert.equal(hit.damage.physical,7);assert.equal(hit.conditions[0].template.name,'弹药异常');assert.equal(w.loaded.rounds[0].damage.physical,'4');
+});
+test('armor weakening subtracts resistance and broken armor loses defense on subsequent bullets',()=>{
+  const s=state(),{gun}=gunFixture(s,{armorWeakening:{type:'physical',amount:5}}),w=M.issue(s,'1',gun.id)[0];M.equip(s,'1',w.id);const armor=M.publishTemplate(s,{kind:'防具',name:'易损甲',rarity:'white',weightKg:0,traitIds:['neutral'],quality:'标准',origin:'未知',armorType:'胸甲',durabilityMax:3,weakeningResistance:{physical:2},defenses:{physical:4}}),a=M.issue(s,'2',armor.id)[0];M.equip(s,'2',a.id);const {b}=fight(s);const hit=B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng,{mode:'auto',count:2});const result=B.defend(s,b,hit.id,'defend',minRng);assert.equal(result.total,6);assert.equal(a.durability,0);assert.equal(M.stats(s.players['2']).defenses.physical,0);assert.equal(result.armorDamage[0].lost,3);
+});
+test('broken weapons cannot attack; repair tools cap durability and combined tools repair either type',()=>{
+  const s=state(),t=weapon(s,{durabilityMax:1}),w=M.issue(s,'1',t.id)[0];M.equip(s,'1',w.id);const {b}=fight(s);B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng);assert.equal(w.durability,0);assert.ok(!B.abilities(s.players['1']).some(a=>a.key===w.id));
+  const tool=M.publishTemplate(s,{kind:'修复道具',name:'组合工具',rarity:'white',weightKg:.1,repairKinds:['武器','防具'],repairAmount:10}),i=M.issue(s,'1',tool.id,2)[0];const result=Dur.repair(s.players['1'],i.id,w.id);assert.equal(result.repaired,1);assert.equal(i.quantity,1);assert.throws(()=>Dur.repair(s.players['1'],i.id,w.id),/耐久已满/);assert.equal(i.quantity,1);
+  delete w.durability;delete w.durabilityMax;delete w.snapshot.durabilityMax;assert.equal(Dur.current(w),100);
+});
+test('repair selection is private, confirms named target and duplicated use consumes only one tool',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const refs=await rpg.store.transact(C.DEFAULT_GUILD_ID,'repair-seed','GM',s=>{const w=M.issue(s,'1',weapon(s).id)[0];w.durability=10;const t=M.publishTemplate(s,{kind:'修复道具',name:'武器工具',rarity:'white',weightKg:0,repairKinds:['武器'],repairAmount:5}),tool=M.issue(s,'1',t.id,2)[0];return{w:w.id,t:tool.id};});
+    const i=h.interaction('1','使用',{物品:refs.t});await rpg.handle(i);validateMessage(i.result);const preview=await click(h,rpg,'1',i,'选择要修复的装备',[refs.w]);assert.match(bodyOf(preview.result),/测试武器/);const token=control(preview.result,'确认使用');const done=await click(h,rpg,'1',preview,'确认使用');assert.match(bodyOf(done.result),/耐久/);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory[refs.w].durability,15);const old=h.interaction('1',null,{},token);await rpg.handle(old);assert.match(old.result.content,/失效/);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].inventory[refs.t].quantity,1);
+  }finally{rpg.stop();}
+});
+test('GM text drafts are private persistent versioned, rules reflect edits and others cannot publish',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const i=h.interaction('GM','gm',{sub:'文本编辑'});await rpg.handle(i);validateMessage(i.result);let view=await click(h,rpg,'GM',i,'GM文本编辑',['rule/世界背景']);const opened=await click(h,rpg,'GM',view,'编辑正文');view=await submit(h,rpg,'GM',opened,{value:'新的原点背景'});assert.equal(Texts.get(rpg.store.snapshot(C.DEFAULT_GUILD_ID),'rule/世界背景'),FA.WORLD);const published=await click(h,rpg,'GM',view,'发布文本');validateMessage(published.result);assert.equal(Texts.get(rpg.store.snapshot(C.DEFAULT_GUILD_ID),'rule/世界背景'),'新的原点背景');
+    const rules=h.interaction('1','规则',{章节:'世界背景'});await rpg.handle(rules);assert.equal(bodyOf(rules.result),'新的原点背景');const lore=h.interaction('1',null,{},'rpg:faction:world');await rpg.handle(lore);assert.equal(bodyOf(lore.result),'新的原点背景');const bad=h.interaction('1','gm',{sub:'文本编辑'});await rpg.handle(bad);assert.match(bad.result.content,/GM身份组/);
+    const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);assert.equal(Texts.get(restored.snapshot(C.DEFAULT_GUILD_ID),'rule/世界背景'),'新的原点背景');
+  }finally{rpg.stop();}
+});
+test('role label selection edits configured role only and old ID-based drafts remain readable',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    h.guild.roles.cache.set('player',{id:'player',name:'玩家'});const id=await rpg.store.transact(C.DEFAULT_GUILD_ID,'label-seed','ADMIN',s=>{const f=F.create(s,'ADMIN','rolepanel');f.data.roleIds=['player'];f.data.labels='player=旧标签';f.field=F.fields(f).findIndex(d=>d.key==='labels');return f.id;});const i=h.interaction('ADMIN',null,{},'rpg:formedit:'+id);await rpg.handle(i);const opened=await click(h,rpg,'ADMIN',i,'选择身份组',['player']);const saved=await submit(h,rpg,'ADMIN',opened,{value:'加入探险'});validateMessage(saved.result);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).forms[id].data.labels.player,'加入探险');
+  }finally{rpg.stop();}
+});
+
+test('auto fire wizard uses a short receipt, chooses mode and amount and publishes empty warning immediately',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    const uid='123456789012345678';h.members[uid]={...h.members['1'],id:uid,user:{id:uid,username:'长ID玩家'}};const data=await rpg.store.transact(C.DEFAULT_GUILD_ID,'burst-wizard-seed','GM',s=>{s.players[uid]=s.players['1'];delete s.players['1'];s.players[uid].userId=uid;const {gun}=gunFixture(s),w=M.issue(s,uid,gun.id)[0];M.equip(s,uid,w.id);const b=B.createBattle(s,'channel','GM','连射');B.join(s,b,uid);B.join(s,b,'2');B.start(s,b,null,minRng);return{b:b.id,w:w.id};});
+    const i=h.interaction(uid,'战斗',{sub:'面板'});await rpg.handle(i);let view=await click(h,rpg,uid,i,'操作分页',['formal']);view=await click(h,rpg,uid,view,'攻击／释放技能');view=await click(h,rpg,uid,view,'选择武器／技能',[data.w]);view=await click(h,rpg,uid,view,'选择射击模式',['auto']);const target=rpg.store.snapshot(C.DEFAULT_GUILD_ID).battles[data.b].actors.find(a=>a.userId==='2');view=await click(h,rpg,uid,view,'攻击目标',[target.id]);const opened=await click(h,rpg,uid,view,'填写连射发数');assert.ok(opened.modal);const token=opened.modal.toJSON().custom_id;assert.ok(token.length<=100);const done=await submit(h,rpg,uid,opened,{count:'4'});assert.match(bodyOf(done.result),/无弹药/);const s=rpg.store.snapshot(C.DEFAULT_GUILD_ID);assert.equal(s.battles[data.b].pending.shotCount,4);assert.equal(s.players[uid].inventory[data.w].loaded.current,0);assert.ok(h.sent.some(v=>v.content?.includes('弹夹已空')));
+    const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);assert.deepEqual(restored.snapshot(C.DEFAULT_GUILD_ID).battles[data.b].pending,s.battles[data.b].pending);assert.equal(restored.snapshot(C.DEFAULT_GUILD_ID).players[uid].inventory[data.w].durability,96);
+  }finally{rpg.stop();}
+});
+test('text chapters beyond a page remain editable and stale edits cannot overwrite published text',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{
+    let i=h.interaction('GM','gm',{sub:'文本编辑'});await rpg.handle(i);i=await click(h,rpg,'GM',i,'下一页');const key=Texts.definitions().at(-1).key;let view=await click(h,rpg,'GM',i,'GM文本编辑',[key]);const edit=await click(h,rpg,'GM',view,'编辑正文');await rpg.store.transact(C.DEFAULT_GUILD_ID,'other-gm-text','GM',s=>{s.config.textOverrides||={};s.config.textOverrides[key]={text:'其他GM的新文本',version:1};});const stale=h.interaction('GM',null,{},edit.modal.toJSON().custom_id,null,{value:'旧编辑覆盖'});await rpg.handle(stale);assert.match(stale.result.content,/其他GM修改/);assert.equal(Texts.get(rpg.store.snapshot(C.DEFAULT_GUILD_ID),key),'其他GM的新文本');
+  }finally{rpg.stop();}
+});
+
+test('repair maximum loss is per instance, defaults to zero, clamps current and preserves a minimum of one',()=>{
+  const s=state(),w=M.issue(s,'1',weapon(s,{durabilityMax:100}).id)[0];w.durability=80;
+  const t=M.publishTemplate(s,{kind:'修复道具',name:'应急修复',rarity:'white',weightKg:0,repairKinds:['武器'],repairAmount:50,repairMaxLoss:30});const tool=M.issue(s,'1',t.id,2)[0];const result=Dur.repair(s.players['1'],tool.id,w.id);assert.equal(result.maximum,70);assert.equal(result.maximumLost,30);assert.equal(w.durability,70);assert.equal(w.snapshot.durabilityMax,100);
+  w.durability=0;tool.snapshot.repairMaxLoss=9999;const second=Dur.repair(s.players['1'],tool.id,w.id);assert.equal(second.maximum,1);assert.equal(w.durability,1);assert.equal(s.players['1'].inventory[tool.id],undefined);
+});
+test('reserved repair tools reject use and combat repairs consume exactly one quick action',()=>{
+  const s=state(),w=M.issue(s,'1',weapon(s).id)[0];w.durability=10;const t=M.publishTemplate(s,{kind:'修复道具',name:'工具',rarity:'white',weightKg:0,repairKinds:['武器','防具'],repairAmount:20}),tool=M.issue(s,'1',t.id,2)[0];const offer=M.createOffer(s,'1','2','trade');M.updateOffer(s,offer.id,'1',[{id:tool.id,quantity:2}],0);const {b}=fight(s);assert.throws(()=>B.useItem(s,b,b.current.id,tool.id,minRng,w.id),/预留/);assert.equal(w.durability,10);assert.equal(b.current.quick,1);M.cancelOffer(s,offer.id,'1');const result=B.useItem(s,b,b.current.id,tool.id,minRng,w.id);assert.equal(result.repaired,20);assert.equal(b.current.quick,0);assert.equal(tool.quantity,1);assert.throws(()=>B.useItem(s,b,b.current.id,tool.id,minRng,w.id),/快速/);
+});

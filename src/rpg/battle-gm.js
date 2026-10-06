@@ -164,6 +164,7 @@ function createBattleGM(context) {
     return ['conditionapply', 'clear'].includes(action) ? conditions(next, live, B.actorById(live, arg)) :
       ['positionsubmit', 'hpsubmit'].includes(action) ? actorView(next, live, B.actorById(live, arg)) : view(next, live);
   }
-  return { view, component, openModal };
+  function entry(s,b,action){return pick(s,b,action,action==='npc'?Object.values(s.npcTemplates).filter(t=>t.published).map(t=>({value:t.id,label:t.name,description:t.id})):b.actors.filter(a=>!a.deathId).map(a=>({value:a.id,label:a.name,description:a.id})),0);}
+  return { view, component, openModal, entry };
 }
 module.exports = { createBattleGM };

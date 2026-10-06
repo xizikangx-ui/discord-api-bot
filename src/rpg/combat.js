@@ -1,5 +1,6 @@
 'use strict';
 const { randomInt } = require('node:crypto');
+const Dur=require('./durability');
 const C = require('./constants');
 const M = require('./model');
 const { requireThat: ok, number: num, clone, id } = C;
@@ -159,12 +160,7 @@ function validateNPC(state, raw) {
   t.humanoid = !!t.humanoid; t.baseXP = num(t.baseXP ?? 0, '基础击杀经验', 0, 1000000000);
   t.itemIds ||= [];
   for (const ref of t.itemIds) ok(state.catalog[ref]?.published, 'NPC装备或技能未发布。');
-  t.itemQuantities = {};
-  for (const line of (t.quantities || '').split('\n').filter(Boolean)) {
-    const match = line.trim().match(/^(\S+)\s+(\d+)$/);
-    ok(match && t.itemIds.includes(match[1]), 'NPC数量每行填写已选模板编号和数量。');
-    t.itemQuantities[match[1]] = num(match[2], 'NPC物品数量', 1, 100);
-  }
+  t.itemQuantities = require('./room-settings').quantities(t.quantities || t.itemQuantities,t.itemIds,100);
   t.loadout = t.itemIds.map(ref => ({ template: clone(state.catalog[ref]), quantity: t.itemQuantities[ref] || 1 }));
   return t;
 }
@@ -366,7 +362,7 @@ const UNARMED = { id: 'unarmed', name: '徒手', kind: '武器', weaponType: '�
   hit: 10, damage: { physical: '0' }, primary: 'physical', range: 0, conditions: [] };
 function abilities(p) {
   const result = [{ key: 'unarmed', attack: UNARMED }];
-  if (p.equipped.weapon && p.inventory[p.equipped.weapon]) result.push({ key: p.equipped.weapon, attack: p.inventory[p.equipped.weapon].snapshot });
+  if (p.equipped.weapon && p.inventory[p.equipped.weapon] && Dur.usable(p.inventory[p.equipped.weapon])) result.push({ key: p.equipped.weapon, attack: p.inventory[p.equipped.weapon].snapshot });
   for (const item of Object.values(p.inventory)) if (item.snapshot.kind === '技能') result.push({ key: item.id, attack: item.snapshot });
   for (const ref of p.equipped.cards) {
     const item = p.inventory[ref];
@@ -374,7 +370,7 @@ function abilities(p) {
   }
   return result;
 }
-function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng = randomInt) {
+function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng = randomInt, firing = {}) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending, '已有攻击等待防守。');
   const ability = abilities(p).find(a => a.key === abilityKey);
@@ -396,34 +392,41 @@ function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng =
     actor.casting = null;
   }
   const weapon = p.inventory[abilityKey];
-  let ammoEffects = [];
-  if (C.FIREARMS.includes(t.weaponType)) {
-    ok(weapon?.loaded?.current > 0, '弹药已空，请装填。');
-    if (weapon.loaded.rounds) ammoEffects = clone(weapon.loaded.rounds.shift().effects || []);
-    weapon.loaded.current--;
-  } else if (['弓', '弩'].includes(t.weaponType)) {
-    const ammunition = Object.values(p.inventory).find(i => i.snapshot.kind === '弹药' && i.snapshot.ammoType === t.ammoType &&
-      (actor.userId ? M.available(state, actor.userId, i.id) > 0 : i.quantity > 0));
-    ok(ammunition, '缺少对应箭矢。'); ammoEffects = clone(ammunition.snapshot.effects || []);
-    ammunition.quantity--; if (!ammunition.quantity) delete p.inventory[ammunition.id];
+  const firearm=C.FIREARMS.includes(t.weaponType),mode=firing.mode || 'semi';
+  ok(['semi','auto'].includes(mode), '射击模式无效。');
+  const count=mode==='auto'?num(firing.count,'连射发数',1,10000):1;
+  ok(mode==='semi'||firearm,'只有枪械可以全自动射击。');
+  if(firearm){ok((t.fireModes||['semi']).includes(mode),'这把枪械不支持所选射击模式。');ok(weapon?.loaded?.current>=count,'无弹药或剩余弹药不足，请装填或减少连射发数。');}
+  if(weapon&&t.kind==='武器')ok(Dur.current(weapon)>=count,'武器耐久不足，请修复或减少连射发数。');
+  const shots=[],damage={},rolls={},conditions=clone(t.conditions||[]);const targetStats=M.stats(targetP);
+  for(let n=0;n<count;n++){
+    let round={};
+    if(firearm){round=weapon.loaded.rounds?.shift() || {};weapon.loaded.current--;}
+    else if(['弓','弩'].includes(t.weaponType)){
+      const ammo=Object.values(p.inventory).find(i=>i.snapshot.kind==='弹药'&&i.snapshot.ammoType===t.ammoType&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0));
+      ok(ammo,'缺少对应箭矢。');round={effects:clone(ammo.snapshot.effects||[]),damage:clone(ammo.snapshot.damage||{}),conditions:clone(ammo.snapshot.conditions||[])};
+      ammo.quantity--;if(!ammo.quantity)delete p.inventory[ammo.id];
+    }
+    const stats=M.stats(p,round.effects||[]),part={},shotRolls={};
+    for(const type of Object.keys(C.DAMAGE_TYPES)){
+      const expr=t.damage[type],extra=round.damage?.[type];if(!expr&&!extra)continue;
+      const roll=expr?C.dice(expr,'normal',rng):null,bonus=extra?C.dice(extra,'normal',rng):null;
+      shotRolls[type]={...(roll||{total:0}),...(bonus?{ammunition:bonus}: {})};
+      let base=Math.max(0,(roll?.total||0)+(bonus?.total||0));
+      if(t.melee&&type===t.primary)base+=stats.attributes.strength;
+      base=M.modify(stats.effects,'attack:'+type,base);if(type!=='physical')base*=1+stats.attributes.intelligence*.1;
+      part[type]=Math.max(0,base);damage[type]=(damage[type]||0)+part[type];
+    }
+    for(const ref of round.conditions||[]){const previous=conditions.find(c=>c.id===ref.id);if(!previous)conditions.push(clone(ref));else if(C.SEVERITIES.indexOf(ref.severity)>C.SEVERITIES.indexOf(previous.severity))Object.assign(previous,clone(ref));}
+    shots.push({damage:part,rolls:shotRolls,hit:M.modify(stats.effects,'hit',t.hit)});if(!n)Object.assign(rolls,shotRolls);
   }
-  turn[action]--;
-  const s = M.stats(p, ammoEffects); const targetStats = M.stats(targetP);
-  const damage = {}; const rolls = {};
-  for (const [type, expression] of Object.entries(t.damage)) {
-    if (!expression) continue;
-    const roll = C.dice(expression, 'normal', rng); rolls[type] = roll;
-    let base = Math.max(0, roll.total);
-    if (t.melee && type === t.primary) base += s.attributes.strength;
-    base = M.modify(s.effects, 'attack:' + type, base);
-    if (type !== 'physical') base *= 1 + s.attributes.intelligence * 0.1;
-    damage[type] = Math.max(0, base);
-  }
-  const pending = { id: id('h'), turnId, attackerId: actor.id, targetId, attackName: t.name,
-    hit: M.modify(s.effects, 'hit', t.hit), damage, rolls, conditions: clone(t.conditions || []),
-    defenses: clone(targetStats.defenses), agility: M.signedModifier(targetStats.effects, 'dodge', targetStats.attributes.agility), expiresAt: Date.now() + 60000 };
+  turn[action]--;if(weapon&&t.kind==='武器')Dur.drain(weapon,count);
+  const empty=firearm&&weapon.loaded.current===0;
+  const pending={id:id('h'),turnId,attackerId:actor.id,targetId,attackName:t.name,hit:shots[0]?.hit??t.hit,damage,rolls,shots,conditions,
+    armorWeakening:clone(t.armorWeakening||{type:'physical',amount:0}),fireMode:mode,shotCount:count,ammoRemaining:firearm?weapon.loaded.current:null,ammoEmpty:empty,
+    defenses:clone(targetStats.defenses),agility:M.signedModifier(targetStats.effects,'dodge',targetStats.attributes.agility),expiresAt:Date.now()+60000};
   b.pending = pending;
-  record(b, actor.name + '使用' + t.name + '攻击' + target.name + '，等待防守。', { hit: pending.hit, damage, rolls });
+  record(b, actor.name + '使用' + t.name + '攻击' + target.name + (firearm?'，'+(mode==='auto'?'全自动连射':'半自动')+count+'发':'')+'，等待防守。'+(empty?' ⚠️ 弹夹已空：无弹药，请装填。':''), {hit:pending.hit,damage,shots,ammoEmpty:empty});
   return pending;
 }
 function defend(state, b, pendingId, choice, rng = randomInt) {
@@ -437,12 +440,10 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
     dodge = C.dice('1d20', 'disadvantage', rng);
     dodge.total += hit.agility; dodge.success = p.hp > 0 && dodge.total > hit.hit;
   }
-  let total = 0; const breakdown = {}; const saves = [];
+  let total = 0; const breakdown = {}; const saves = [];const armorDamage=[];
   if (!dodge?.success) {
     const fraction = choice === 'both' ? 0.5 : choice === 'defend' ? 1 : 0;
-    for (const [type, value] of Object.entries(hit.damage)) {
-      breakdown[type] = Math.max(0, Math.floor(value - hit.defenses[type] * fraction)); total += breakdown[type];
-    }
+    let defenses=hit.defenses;for(const shot of hit.shots||[{damage:hit.damage}]){for(const [type,value] of Object.entries(shot.damage)){const amount=Math.max(0,Math.floor(value-defenses[type]*fraction));breakdown[type]=(breakdown[type]||0)+amount;total+=amount;}armorDamage.push(...Dur.weaken(p,hit.armorWeakening));defenses=M.stats(p).defenses;}
     p.hp = Math.max(0, p.hp - total);
     for (const ref of hit.conditions) {
       const attacker = actorById(b, hit.attackerId), origin = actorCharacter(state, attacker);
@@ -450,10 +451,12 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
     }
   }
   record(b, target.name + (dodge?.success ? '成功闪避。' : '受到' + total + '伤害，剩余' + p.hp + 'HP。'),
-    { choice, dodge, breakdown, saves });
+    { choice, dodge, breakdown, saves,armorDamage });
+  if(armorDamage.length)record(b,'护甲削弱：'+armorDamage.map(d=>d.name+'耐久 -'+d.lost+'（剩余'+d.durability+'）').join('、'));
+  M.syncHP(p);
   b.pending = null;
   if (p.hp <= 0) require('./mortality').settle(state, b, target, hit.attackerId);
-  const result = { target: target.name, total, dodge, breakdown, saves, hp: p.hp, defaulted };
+  const result = { target: target.name, total, dodge, breakdown, saves, armorDamage,hp: p.hp, defaulted };
   if (b.status === 'active' && b.current) {
     const active = actorById(b, b.current.actorId);
     if (actorCharacter(state, active).hp <= 0) {
@@ -487,7 +490,7 @@ function reload(state, b, turnId, ammunitionId, magazineId) {
     actor.userId ? M.available(state, actor.userId, ammunitionId) : ammo.quantity);
   ok(quantity > 0, '载弹已满或可用弹药不足。');
   weapon.loaded.rounds ||= Array.from({ length: weapon.loaded.current }, () => ({ weight: weapon.loaded.weight, effects: [] }));
-  weapon.loaded.rounds.push(...Array.from({ length: quantity }, () => ({ weight: ammo.snapshot.weight, effects: clone(ammo.snapshot.effects || []) })));
+  weapon.loaded.rounds.push(...Array.from({ length: quantity }, () => ({ weight: ammo.snapshot.weight, effects: clone(ammo.snapshot.effects || []), damage:clone(ammo.snapshot.damage || {}), conditions:clone(ammo.snapshot.conditions || []) })));
   weapon.loaded.current += quantity; weapon.loaded.weight = ammo.snapshot.weight;
   ammo.quantity -= quantity; if (!ammo.quantity) delete p.inventory[ammunitionId];
   turn.quick--;
@@ -503,12 +506,13 @@ function switchWeapon(state, b, turnId, itemId) {
   }
   p.equipped.weapon = itemId || null; turn.quick--; M.syncHP(p);
 }
-function useItem(state, b, turnId, itemId, rng = randomInt) {
+function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');
   const item = p.inventory[itemId];
-  ok(C.CONSUMABLES.includes(item?.snapshot.kind), '该道具没有已录入的使用效果。');
+  ok([...C.CONSUMABLES,'修复道具'].includes(item?.snapshot.kind), '该道具没有已录入的使用效果。');
   if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '道具已预留。');
+  if(p.inventory[itemId]?.snapshot.kind==='修复道具'){if(actor.userId)ok(M.available(state,actor.userId,repairTarget)>0,'装备已被预留。');const result=Dur.repair(p,itemId,repairTarget);turn.quick--;M.syncHP(p);turn.move=Math.max(0,C.round2(M.stats(p).move-(turn.moveSpent||0)));record(b,actor.name+'使用'+result.name+'修复'+result.target+' '+result.repaired+'点耐久。',result);return result;}
   const result = M.consume(p, itemId, rng, turnId);
   turn.move = Math.max(0, C.round2(M.stats(p).move - (turn.moveSpent || 0)));
   turn.quick--; record(b, actor.name + '使用' + result.name + '，恢复' + result.healed + 'HP。', result);

@@ -12,7 +12,7 @@ const DEPARTMENTS = {
   plague: { name: '瘟疫部', responsibility: '卫生', description: '医疗救治、防疫隔离、异常污染调查与公共卫生。' },
   famine: { name: '饥荒部', responsibility: '经济', description: '生产、粮食、能源、物流、贸易及资源分配。' }
 };
-const departmentText = () => Object.values(DEPARTMENTS).map(d => '**' + d.name + '｜' + d.responsibility + '**：' + d.description).join('\n');
+const departmentText = s => Object.entries(DEPARTMENTS).map(([key,d]) => '**' + d.name + '｜' + d.responsibility + '**：' + (s?require('./texts').get(s,'department/'+key):d.description)).join('\n');
 function label(value) {
   const f = FACTIONS[value?.id];
   return f ? f.name + (value.id === 'apocalypse' && DEPARTMENTS[value.department] ? ' · ' + DEPARTMENTS[value.department].name : '') : '未选择';
@@ -35,11 +35,11 @@ function createFactions({ snapshot, tx }) {
       row(button('faction:world', '世界背景'), button('faction:select', '选择 / 修改势力', D.ButtonStyle.Primary, !p))
     ]);
   }
-  function preview(p, id, department = 'none') {
+  function preview(s,p, id, department = 'none') {
     const f = FACTIONS[id]; C.requireThat(f, '势力无效。');
     if (id === 'apocalypse') C.requireThat(DEPARTMENTS[department], '请选择天启重工部门。');
     return payload('确认势力归属', p.name + '\n当前：' + label(p.faction) + '\n选择：**' + label({ id, department }) + '**\n\n' +
-      f.description + (id === 'apocalypse' ? '\n\n' + DEPARTMENTS[department].description : ''), [
+      require('./texts').get(s,'faction/'+id).slice(0,1500) + (id === 'apocalypse' ? '\n\n' + require('./texts').get(s,'department/'+department).slice(0,1500) : ''), [
       row(button('faction:confirm:' + p.id + ':' + id + ':' + department, '确认归属', D.ButtonStyle.Success),
         button('faction:select', '返回选择'), button('faction:home', '取消'))
     ], f.color);
@@ -47,10 +47,11 @@ function createFactions({ snapshot, tx }) {
   async function component(i) {
     const [, action, ref, id, department] = i.customId.split(':').slice(1), s = snapshot(i.guildId), uid = i.user.id;
     if (action === 'home') return home(s, uid);
-    if (action === 'world') return payload('世界背景 · 原点之后', WORLD, [back()], 0x8e44ad);
+    if (action === 'world') return payload('世界背景 · 原点之后', require('./texts').get(s,'rule/世界背景'), [back()], 0x8e44ad);
+    if(action==='lorepage'){const Text=require('./texts'),key=ref;const text=key==='apocalypse'?Text.get(s,'faction/'+key)+'\n\n'+departmentText(s):Text.get(s,'faction/'+key),pages=Math.ceil(text.length/3500),page=Math.max(0,Math.min(Number(id)||0,pages-1));return payload(FACTIONS[key].name,text.slice(page*3500,(page+1)*3500),[row(button('faction:lorepage:'+key+':'+(page-1),'上一页',undefined,!page),button('faction:lorepage:'+key+':'+(page+1),'下一页',undefined,page>=pages-1)),back()],FACTIONS[key].color);}
     if (action === 'read') {
       const f = FACTIONS[i.values[0]]; C.requireThat(f, '势力无效。');
-      return payload(f.name, f.description + (i.values[0] === 'apocalypse' ? '\n\n' + departmentText() : ''), [back()], f.color);
+      const text=require('./texts').get(s,'faction/'+i.values[0])+(i.values[0]==='apocalypse'?'\n\n'+departmentText(s):'');return payload(f.name,text.slice(0,3500),[row(button('faction:lorepage:'+i.values[0]+':0','上一页',undefined,true),button('faction:lorepage:'+i.values[0]+':1','下一页',undefined,text.length<=3500)),back()],f.color);
     }
     const p = M.player(s, uid);
     if (action === 'select') return payload('选择势力', '当前：' + label(p.faction), [
@@ -58,13 +59,13 @@ function createFactions({ snapshot, tx }) {
     ]);
     if (action === 'pick') {
       const id = i.values[0]; C.requireThat(FACTIONS[id], '势力无效。');
-      if (id !== 'apocalypse') return preview(p, id);
-      return payload('天启重工 · 选择部门', departmentText(), [
+      if (id !== 'apocalypse') return preview(s,p, id);
+      return payload('天启重工 · 选择部门', Object.entries(DEPARTMENTS).map(([key,d])=>'**'+d.name+'｜'+d.responsibility+'**：'+require('./texts').get(s,'department/'+key).slice(0,650)).join('\n'), [
         row(select('faction:department', '选择一个部门', Object.entries(DEPARTMENTS).map(([value, d]) =>
           ({ label: d.name + '｜' + d.responsibility, value })))), row(button('faction:select', '返回势力选择'), button('faction:home', '取消'))
       ], FACTIONS.apocalypse.color);
     }
-    if (action === 'department') return preview(p, 'apocalypse', i.values[0]);
+    if (action === 'department') return preview(s,p, 'apocalypse', i.values[0]);
     C.requireThat(action === 'confirm', '势力操作无效。');
     await tx(i, st => choose(st, uid, ref, id, department), '修改角色势力归属');
     return home(snapshot(i.guildId), uid);
