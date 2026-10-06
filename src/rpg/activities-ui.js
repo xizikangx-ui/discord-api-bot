@@ -10,7 +10,7 @@ function checkView(c) {
     row(button('activity:check:roll:' + c.id, '参与鉴定', D.ButtonStyle.Primary, c.status !== 'open'),
       button('activity:check:results:' + c.id + ':0', '查看结果'), button('activity:check:manage:' + c.id, 'GM管理'))
   ], c.status === 'open' ? 0x9b59b6 : 0x95a5a6);
-  result.embeds[0].addFields(field('判定规则', c.rule === 'd20' ? '1d20' + (c.attribute !== 'none' ? '＋有效' + C.ATTRIBUTES[c.attribute] : '') + ' ≥ ' + c.threshold :
+  result.embeds[0].addFields(field('判定规则', c.rule === 'd20' ? '1d20' + (c.skillId?'＋'+c.skillName+'等级':c.attribute !== 'none' ? '＋有效' + C.ATTRIBUTES[c.attribute] : '') + ' ≥ ' + c.threshold :
     '1d100 ≤ ' + c.threshold, true), field('每人次数', c.maxAttempts, true), field('进度', Object.keys(c.attempts).length + '人参与 / ' + successes + '人通过', true),
     field('状态 / 发布GM', (c.status === 'open' ? '开放中' : '已结束') + ' / <@' + c.owner + '>'));
   result.embeds[0].setFooter({ text: '鉴定 ' + c.id + ' · 玩家身份组＋有效角色卡' }); return result;
@@ -18,7 +18,7 @@ function checkView(c) {
 function attemptView(c, a) {
   const result = payload('鉴定结果 · ' + c.name, '<@' + a.userId + '> · 第' + a.number + '次\n\n**' + (a.success ? '✅ 成功' : '❌ 失败') + '**',
     [], a.success ? 0x2ecc71 : 0xed4245);
-  result.embeds[0].addFields(field('骰点', a.roll.total, true), field('属性加成', a.modifier, true),
+  result.embeds[0].addFields(field('骰点', a.roll.total, true), field(a.skillId?'技能等级 · '+a.skillName:'属性加成', a.modifier, true),
     field('合计 / 门槛', a.total + (c.rule === 'd20' ? ' ≥ ' : ' ≤ ') + c.threshold, true));
   result.embeds[0].setFooter({ text: c.id + ' · 结果 ' + a.id }); return result;
 }
@@ -237,7 +237,7 @@ function createActivities(context) {
         ({ label: c.name + ' · ' + (c.status === 'open' ? '开放中' : '已结束'), value: c.id })), 'check:menu');
       const c = await tx(i, st => A.createCheck(st, i.user.id, i.channelId, { name: i.options.getString('名称'),
         rule: i.options.getString('规则'), description: i.options.getString('说明'), threshold: i.options.getInteger('门槛'),
-        attribute: i.options.getString('属性'), maxAttempts: i.options.getInteger('次数') ?? 1 }), '发布鉴定');
+        attribute: i.options.getString('属性'), skillId:i.options.getString('技能'), maxAttempts: i.options.getInteger('次数') ?? 1 }), '发布鉴定');
       await publish(i.guildId, 'check', c.id);
       return checkManage(snapshot(i.guildId).checks[c.id]);
     }

@@ -247,7 +247,7 @@ function createHandlers(context) {
     if (action === 'catalog') { needGM(s, member); return catalogView(s, args[0], Number(args[1])); }
     if (action === 'templateedit') {
       needGM(s, member);
-      const source = args[0], ref = i.values[0], kind = { catalog: 'item', traits: 'trait', conditionTemplates: 'condition', npcTemplates: 'npc' }[source];
+      const source = args[0], ref = i.values[0], kind = { catalog: 'item', traits: 'trait', conditionTemplates: 'condition', npcTemplates: 'npc', checkSkillTemplates:'checkskill' }[source];
       ok(kind, '模板类型无效。');
       const f = await tx(i, st => { needGM(st, member); return F.create(st, uid, kind, null, ref); });
       return F.view(snapshot(i.guildId), f);

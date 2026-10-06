@@ -19,7 +19,7 @@ function createSelections(context) {
   function list(s, uid, op, page=0, target='') {
     const values=op==='发放' ? Object.values(s.catalog).filter(t=>t.published).map(t=>({value:t.id,label:t.name,description:t.kind+' · v'+t.version+' · '+t.id})) : entries(s,uid,op);
     const v=pickView('下拉选择 · '+op, values, 'choose:'+op+':'+target, Number(page)||0);
-    v.components.push(U.row(U.button('choose:home','返回操作菜单'))); return v;
+    v.components.push(U.row(U.button(target==='equipment'?'gear:view:'+uid+':'+M.player(s,uid).id+':overview:0':'choose:home',target==='equipment'?'返回装备槽位':'返回操作菜单'))); return v;
   }
   function home() { return U.payload('背包操作','选择操作，再下拉选择物品。', [U.row(U.select('choose:operation','选择操作', ['使用','丢弃',...operations].map(value=>({value,label:value}))))]); }
   function quote(s, uid, id, page=0) {
@@ -59,11 +59,12 @@ function createSelections(context) {
       live.done=true;return live.name+' · '+live.operation+'已完成';
     },'下拉物品操作');
     const b=M.battleFor(snapshot(i.guildId),uid);if(b)await publishBattle(i.guildId,b.id);
+    if(f.returnEquipment){const next=snapshot(i.guildId),v=require('./equipment').view(next,uid,f.characterId);v.content='✅ '+result;return v;}
     return U.payload('已保存',result,[U.row(U.button('choose:home','返回操作菜单'))]);
   }
   function preview(f) {return U.payload('确认 · '+f.operation,f.name+' ×'+f.quantity+(f.partName?' → '+f.partName:'')+'\n'+(f.operation==='丢弃'?'丢弃不可恢复。':f.weapon&&f.operation==='装备'?(f.hands===2?'双手武器占用两手，原有武器回到背包。':'单手武器放入所选手位；被替换的武器回到背包。'):'请确认本次操作。'),[
     ...(f.weapon&&f.operation==='装备'&&f.hands===1?[U.row(U.select('choosehand:'+f.id,'选择主手或副手',[{value:'main',label:'主手',default:(f.hand||'main')==='main'},{value:'off',label:'副手',default:f.hand==='off'}]))]:[]),
-    U.row(U.button('choosedo:'+f.id,'确认'+f.operation,f.operation==='丢弃'?U.D.ButtonStyle.Danger:U.D.ButtonStyle.Success),U.button('choose:home','取消'))]);}
+    U.row(U.button('choosedo:'+f.id,'确认'+f.operation,f.operation==='丢弃'?U.D.ButtonStyle.Danger:U.D.ButtonStyle.Success),U.button(f.returnEquipment?'gear:view:'+f.owner+':'+f.characterId+':overview:0':'choose:home','取消'))]);}
   async function component(i,member) {
     const [action,arg,target,step]=i.customId.split(':').slice(1),s=snapshot(i.guildId),uid=i.user.id;
     if(action==='quote') {context.owner(i,target);offerAccess(s,arg,member,uid);return quote(s,uid,arg);}
@@ -82,7 +83,7 @@ function createSelections(context) {
       ok(['使用','丢弃','发放',...operations].includes(arg),'操作无效。');if(arg==='发放'){needGM(s,member);M.player(s,target);}
       if(step!=='select')return list(s,uid,arg,step,target);
       const ref=i.values[0],options=arg==='发放'?Object.values(s.catalog).filter(t=>t.published).map(t=>({value:t.id})):entries(s,uid,arg);ok(options.some(o=>o.value===ref),'物品已不可用，请重新选择。');
-      const f=await tx(i,st=>{const t=arg==='发放'?st.catalog[ref]:M.player(st,uid).inventory[ref].snapshot;const f={id:C.id('f'),owner:uid,kind:'selection',operation:arg,ref,target,name:t.name,templateVersion:t.version,characterId:M.player(st,arg==='发放'?target:uid).id,weapon:t.kind==='武器',hands:t.kind==='武器'?W.hands(t):null,hand:'main',quantity:1,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});
+      const f=await tx(i,st=>{const t=arg==='发放'?st.catalog[ref]:M.player(st,uid).inventory[ref].snapshot;const f={id:C.id('f'),owner:uid,kind:'selection',operation:arg,ref,target,returnEquipment:target==='equipment',name:t.name,templateVersion:t.version,characterId:M.player(st,arg==='发放'?target:uid).id,weapon:t.kind==='武器',hands:t.kind==='武器'?W.hands(t):null,hand:'main',quantity:1,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});
       if(['发放','丢弃'].includes(arg))return U.payload('数量 · '+f.name,'选择物品完成，请填写数量。',[U.row(U.button('chooseamount:'+f.id,'填写数量'),U.button('choose:'+arg+':'+target+':0','返回物品列表'))]);
       if(['装配','拆下'].includes(arg))return parts(s,uid,f);
       if(M.player(s,uid).inventory[f.ref]?.snapshot.kind==='修复道具')return repairTargets(s,uid,f);

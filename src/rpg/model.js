@@ -14,7 +14,7 @@ function newCharacter(name, attributes, adaptation = 1) {
   return { id: id('c'), name, attributes, adaptation, luck: 1, gender: null, age: null, ageVersion: 0, profile: {}, portraits: {}, allocationVersion: 0, profileVersion: 0, level: 1, xpCenti: 0, points: 2,
     hp: attributes.constitution * 3, balance: 0, inventory: {}, conditions: [], temporaryEffects: [], ap: 0,
     equipped: { weapon: null, offhand: null, armor: [], accessories: [], cards: [] },
-    slots: { head: 1, body: 3, ring: 1, card: 5 }, tickets: { card: 0, boxes: {} }, pendingLoot: {},
+    slots: { head: 1, body: 3, ring: 1, card: 5 }, tickets: { card: 0, boxes: {} }, pendingLoot: {}, checkSkills: {},
     faction: null, createdAt: Date.now() };
 }
 function rollCharacter(state, userId, name, reroll = false, rng = randomInt) {

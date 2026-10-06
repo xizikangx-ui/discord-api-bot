@@ -62,7 +62,7 @@ function characterView(p, privateView = false, page = 0) {
   const pages = Math.max(1+profilePages.length, Math.ceil(p.conditions.length / 8), Math.ceil((p.temporaryEffects || []).length / 3));
   if (p.userId && !privateView && pages > 1) v.components = [row(button('cardpage:' + p.userId + ':' + p.id + ':' + Math.max(0,page-1), '上一页 / 状态', undefined, page <= 0),
     button('cardpage:' + p.userId + ':' + p.id + ':' + Math.min(pages-1,page+1), '下一页 / 个人描述', undefined, page >= pages-1))];
-  if(p.userId)v.components.push(row(button('profile:home:'+p.userId+':'+p.id,'角色设置 / 分配自由点')));
+  if(p.userId)v.components.push(row(button('profile:home:'+p.userId+':'+p.id,'角色设置 / 分配自由点'),button('gear:view:'+p.userId+':'+p.id+':overview:0','装备槽位',D.ButtonStyle.Primary),button('checkskill:own:'+p.userId+':'+p.id+':0','鉴定技能')));
   v.rpgPortraits = p.portraits || {};
   v.embeds[0].setFooter({ text: '角色 ' + p.id + ' · '+(page+1)+'/'+pages+' · ' + (privateView ? '本人及GM可见' : '公开属性') }); return v;
 }

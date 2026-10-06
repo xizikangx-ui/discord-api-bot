@@ -58,7 +58,7 @@ function createBulkIssue({ snapshot, tx, needGM }) {
   }
   function options(s, field) {
     return field === 'targets' ? Object.values(s.players).map(p => ({ value: p.userId, label: p.name,
-      description: '玩家 ' + p.userId + ' · ' + M.stats(p).carried + '/' + M.stats(p).limit + 'kg' })) :
+      description: '玩家 ' + p.userId + ' · ' + C.kg(M.stats(p).carried) + '/' + C.kg(M.stats(p).limit) })) :
       Object.values(s.catalog).filter(t => t.published).map(t => ({ value: t.id, label: t.name, description: t.kind + ' · v' + t.version + ' · ' + t.id }));
   }
   function list(s, f, field, page) {

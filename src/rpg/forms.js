@@ -12,6 +12,7 @@ const field = (key, label, type = 'text', values, max) => ({ key, label, type, v
 const enumField = (key, label, values) => field(key, label, 'choice', values);
 const refField = (key, label, source, limit = 10, predicate) => ({ key, label, type: 'refs', source, limit, predicate });
 function defaults(kind, itemKind = '杂物') {
+  if (kind === 'checkskill') return { name: '', level: 1 };
   if (kind === 'item') return { kind: itemKind, name: '', description: '', rarity: 'white', weightKg: 0, value: 0,
     durabilityMax:100, armorWeakening:{type:'physical',amount:0}, weakeningResistance:{physical:0,magical:0,mental:0},repairKinds:['武器','防具'],repairAmount:10,repairMaxLoss:0, quality: '标准', origin: '未知', title: '', appearance: '', supernatural: false, traitIds: ['neutral'], effects: [], boxes: [],
     weaponType: '剑', handedness: 'auto', otherType: '', melee: true, ammoType: '', magazineType: '', capacity: 1, current: 0,
@@ -32,6 +33,7 @@ function defaults(kind, itemKind = '杂物') {
 function fields(form) {
   const kind = form.kind, d = form.data;
   const common = [field('name', '名称'), field('description', '描述', 'long')];
+  if (kind === 'checkskill') return [field('name', '技能名称'), field('level', '初始等级', 'number')];
   if (kind === 'trait') return [...common, field('effects', '结构化数值效果', 'effects')];
   if (kind === 'condition') {
     const list = [...common, enumField('type', '异常类型', Object.entries(C.DAMAGE_TYPES).map(([value, label]) => ({ value, label }))),
@@ -103,7 +105,8 @@ function fields(form) {
   return list;
 }
 function create(state, owner, kind, itemKind, existingId) {
-  const source = { item: 'catalog', trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels' }[kind];
+  const source = { item: 'catalog', trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels', checkskill: 'checkSkillTemplates' }[kind];
+  if (kind === 'checkskill') state.checkSkillTemplates ||= {};
   const old = existingId ? state[source][existingId] : null;
   if (existingId) ok(old, '模板不存在。');
   const data = old ? C.clone(old) : defaults(kind, itemKind);
@@ -214,7 +217,11 @@ function publish(state, form) {
   let result;
   if (form.kind === 'item') result = M.publishTemplate(state, data, form.existingId);
   else {
-    const source = { trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels' }[form.kind];
+    const source = { trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels', checkskill: 'checkSkillTemplates' }[form.kind];
+    if (form.kind === 'checkskill') {
+      state.checkSkillTemplates ||= {};
+      result = { name: C.text(data.name, '技能名称', 80), level: C.number(data.level, '初始等级', 0, 1000000) };
+    }
     if (form.kind === 'trait') result = { name: C.text(data.name, '词条名称', 80), description: C.text(data.description, '说明', 2000, true), effects: M.normalizeEffects(data.effects) };
     if (form.kind === 'condition') {
       for (const severity of C.SEVERITIES) {

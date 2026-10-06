@@ -73,6 +73,11 @@ function validateCheck(raw) {
   return data;
 }
 function createCheck(state, owner, channelId, raw) {
+  if(raw.skillId){
+    const skill=state.checkSkillTemplates?.[raw.skillId];ok(skill?.published,'鉴定技能未发布。');ok(raw.rule==='d20','技能鉴定使用d20规则。');
+    ok(!raw.attribute||raw.attribute==='none','技能等级与属性不叠加，请将属性设为无。');
+    raw={...raw,skillName:skill.name,skillVersion:skill.version,attribute:'none'};
+  }
   const c = { ...validateCheck(raw), id: C.id('q'), owner, channelId, status: 'open', version: 1,
     attempts: {}, createdAt: Date.now(), messageId: null };
   state.checks[c.id] = c; return c;
@@ -83,10 +88,13 @@ function rollCheck(state, ref, userId, rng = randomInt) {
   ok(!attempts.some(a => a.success), '已经成功完成本次鉴定。');
   ok(attempts.length < c.maxAttempts, '本次鉴定的次数已经用完。');
   M.expireEffects(p);
+  const skill=c.skillId?p.checkSkills?.[c.skillId]:null;
+  ok(!c.skillId||skill,'尚未学习本次鉴定需要的技能，请GM发放。');
   const roll = C.dice(c.rule === 'd20' ? '1d20' : '1d100', 'normal', rng);
-  const modifier = c.attribute === 'none' ? 0 : M.stats(p).attributes[c.attribute];
+  const modifier = skill?skill.level:c.attribute === 'none' ? 0 : M.stats(p).attributes[c.attribute];
   const total = roll.total + modifier;
   const attempt = { id: C.id('r'), userId, characterId: p.id, at: Date.now(), roll, modifier, total,
+    ...(skill?{skillId:c.skillId,skillName:skill.name,skillLevel:skill.level}:{}),
     threshold: c.threshold, success: c.rule === 'd20' ? total >= c.threshold : total <= c.threshold, number: attempts.length + 1 };
   c.attempts[userId] = [...attempts, attempt]; return attempt;
 }

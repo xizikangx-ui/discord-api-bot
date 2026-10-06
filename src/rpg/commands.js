@@ -44,6 +44,7 @@ function commands() {
     cmd('录入异常', 'GM录入异常、各级效果与恶化规则'),
     str(cmd('规则', '跑团规则、公式及示例'), '章节', '速查章节', false, ['总览', '世界背景', '势力', '建卡', '升级', '负重', '装备', '交易', '抽取', '食物药品', '鉴定', '开团', '地图', '击杀与死亡', '保险箱', '战斗', '异常', '指令', '角色设置', '时运', '物价']),
   ];
+  list.push(cmd('录入鉴定技能', 'GM仅填写技能名称与初始等级，预览后发布'), cmd('鉴定技能', '查看自己的鉴定技能等级和经验'));
   const check = cmd('鉴定', 'GM发布或管理玩家鉴定');
   check.addSubcommand(s => {
     str(str(s.setName('发布').setDescription('发布公开鉴定要求'), '名称', '鉴定名称'), '规则', '判定规则', true,
@@ -51,7 +52,8 @@ function commands() {
     int(s, '门槛', 'd20难度或d100判定值，d100最多100', true, 1, 1000000);
     str(s, '说明', '任务要求', false);
     str(s, '属性', '仅d20有效，默认无属性加成', false, [{ name: '无', value: 'none' }, ...Object.entries(C.ATTRIBUTES).map(([value, name]) => ({ value, name }))]);
-    return int(s, '次数', '每人最多尝试次数，默认1', false, 1, 10);
+    int(s, '次数', '每人最多尝试次数，默认1', false, 1, 10);
+    return s.addStringOption(o=>o.setName('技能').setDescription('选择已录入的鉴定技能，d20用技能等级替代属性').setRequired(false).setAutocomplete(true));
   });
   check.addSubcommand(s => s.setName('管理').setDescription('GM查看、结束或重新公示鉴定'));
   list.push(check);
@@ -60,6 +62,11 @@ function commands() {
   gm.addSubcommand(s => int(user(s.setName('属性点').setDescription('额外发放自由属性点')), '数量', '点数', true, 1, 100000));
   gm.addSubcommand(s => int(item(user(s.setName('发放').setDescription('单人快捷发放；不填成员打开批量面板'), false), '物品', false), '数量', '发放数量', false, 1, 100));
   gm.addSubcommand(s => int(item(user(s.setName('批量发放').setDescription('多选玩家和物品，分别设置每人数量并确认'), false), '物品', false), '数量', '预选物品的每人数量', false, 1, 100));
+  gm.addSubcommand(s => {
+    user(s.setName('鉴定技能').setDescription('选择鉴定技能发放给玩家，或发放技能经验'));
+    str(s,'动作','默认发放技能；经验每100点升一级',false,['发放','经验']);
+    return s;
+  });
   gm.addSubcommand(s => int(str(user(s.setName('次数').setDescription('发放抽卡或指定箱型次数')), '类型', '抽卡或箱型', true, ['抽卡', ...C.BOXES]), '数量', '发放次数', true, 1, 100000));
   gm.addSubcommand(s => int(int(item(user(s.setName('收购').setDescription('GM私有选物报价面板，或填写完整参数快捷收购')), '物品', false), '价格', '快捷收购总价，面板中可填写', false, 0, C.MAX_MONEY), '数量', '收购数量', false, 1, 100000));
   gm.addSubcommand(s => user(s.setName('销卡').setDescription('确认后清空角色与财产，保留审计')));
@@ -67,7 +74,7 @@ function commands() {
   gm.addSubcommand(s => s.setName('npc').setDescription('创建或继续NPC模板草稿'));
   gm.addSubcommand(s => s.setName('草稿').setDescription('下拉选择自己的持久录入草稿'));
   gm.addSubcommand(s => item(s.setName('修改模板').setDescription('选择模板发布新版本；已发放实例不变'), '物品', false));
-  gm.addSubcommand(s => str(s.setName('模板库').setDescription('查看物品、词条、异常和NPC模板'), '类型', '模板分类', false, ['物品', '词条', '异常', 'NPC']));
+  gm.addSubcommand(s => str(s.setName('模板库').setDescription('查看物品、词条、异常、NPC和鉴定技能模板'), '类型', '模板分类', false, ['物品', '词条', '异常', 'NPC', '鉴定技能']));
   gm.addSubcommand(s => s.setName('恢复存档').setDescription('重新读取加密存档，核对不明确写入结果'));
   gm.addSubcommand(s => s.setName('文本编辑').setDescription('下拉编辑背景、势力、部门与规则正文'));
   gm.addSubcommand(s => s.setName('抽取公示').setDescription('查看与补发已存抽取结果，不重新抽取'));
