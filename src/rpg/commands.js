@@ -58,7 +58,8 @@ function commands() {
   const gm = cmd('gm', 'GM发放、收购、销卡、模板和NPC管理');
   gm.addSubcommand(s => int(user(s.setName('经验').setDescription('发放经验，自动应用适应性与升级')), '数量', '基础经验', true, 1, 1000000000));
   gm.addSubcommand(s => int(user(s.setName('属性点').setDescription('额外发放自由属性点')), '数量', '点数', true, 1, 100000));
-  gm.addSubcommand(s => int(item(user(s.setName('发放').setDescription('下拉选择模板物品或技能发放')), '物品', false), '数量', '发放数量', false, 1, 100));
+  gm.addSubcommand(s => int(item(user(s.setName('发放').setDescription('单人快捷发放；不填成员打开批量面板'), false), '物品', false), '数量', '发放数量', false, 1, 100));
+  gm.addSubcommand(s => int(item(user(s.setName('批量发放').setDescription('多选玩家和物品，分别设置每人数量并确认'), false), '物品', false), '数量', '预选物品的每人数量', false, 1, 100));
   gm.addSubcommand(s => int(str(user(s.setName('次数').setDescription('发放抽卡或指定箱型次数')), '类型', '抽卡或箱型', true, ['抽卡', ...C.BOXES]), '数量', '发放次数', true, 1, 100000));
   gm.addSubcommand(s => int(int(item(user(s.setName('收购').setDescription('GM私有选物报价面板，或填写完整参数快捷收购')), '物品', false), '价格', '快捷收购总价，面板中可填写', false, 0, C.MAX_MONEY), '数量', '收购数量', false, 1, 100000));
   gm.addSubcommand(s => user(s.setName('销卡').setDescription('确认后清空角色与财产，保留审计')));

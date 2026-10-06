@@ -1,6 +1,7 @@
 'use strict';
 const C = require('./constants');
 const Dur=require('./durability');
+const W=require('./weapons');
 const { randomInt } = require('node:crypto');
 const { requireThat: ok, number: num, clone, id } = C;
 
@@ -10,9 +11,9 @@ function player(state, userId) {
   return p;
 }
 function newCharacter(name, attributes, adaptation = 1) {
-  return { id: id('c'), name, attributes, adaptation, luck: 1, gender: null, profile: {}, portraits: {}, allocationVersion: 0, profileVersion: 0, level: 1, xpCenti: 0, points: 2,
+  return { id: id('c'), name, attributes, adaptation, luck: 1, gender: null, age: null, ageVersion: 0, profile: {}, portraits: {}, allocationVersion: 0, profileVersion: 0, level: 1, xpCenti: 0, points: 2,
     hp: attributes.constitution * 3, balance: 0, inventory: {}, conditions: [], temporaryEffects: [], ap: 0,
-    equipped: { weapon: null, armor: [], accessories: [], cards: [] },
+    equipped: { weapon: null, offhand: null, armor: [], accessories: [], cards: [] },
     slots: { head: 1, body: 3, ring: 1, card: 5 }, tickets: { card: 0, boxes: {} }, pendingLoot: {},
     faction: null, createdAt: Date.now() };
 }
@@ -23,7 +24,7 @@ function rollCharacter(state, userId, name, reroll = false, rng = randomInt) {
   else if (draft) return draft;
   const attributes = Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, rng(1, 7)]));
   draft = { id: id('d'), userId, name: C.text(name || '未命名角色', '角色名', 50), attributes,
-    gender: draft?.gender || null, profile: clone(draft?.profile || {}), adaptation: rng(1, 11), rerolls: reroll ? draft.rerolls + 1 : 0, at: Date.now() };
+    gender: draft?.gender || null, age: draft?.age ?? null, profile: clone(draft?.profile || {}), adaptation: rng(1, 11), rerolls: reroll ? draft.rerolls + 1 : 0, at: Date.now() };
   state.characterDrafts[userId] = draft;
   return draft;
 }
@@ -32,14 +33,14 @@ function confirmCharacter(state, userId) {
   const d = state.characterDrafts[userId];
   ok(['male','female'].includes(d.gender), '请先下拉选择男性或女性。');
   const p = newCharacter(d.name, clone(d.attributes), d.adaptation);
-  p.gender = d.gender; p.profile = clone(d.profile || {});
+  p.gender = d.gender; p.age = d.age ?? null; p.profile = clone(d.profile || {});
   p.userId = userId; p.initialRolls = clone(d);
   state.players[userId] = p;
   delete state.characterDrafts[userId];
   return p;
 }
 function equippedIds(p) {
-  return [p.equipped.weapon, ...p.equipped.armor, ...p.equipped.accessories, ...p.equipped.cards].filter(Boolean);
+  return [...W.equipped(p), ...p.equipped.armor, ...p.equipped.accessories, ...p.equipped.cards].filter(Boolean);
 }
 function isAttached(p, itemId) {
   return Object.values(p.inventory).some(i => (i.attachments || []).includes(itemId) || i.magazineId === itemId);
@@ -184,6 +185,8 @@ function validateTemplate(state, raw) {
   if (t.kind === '武器' || t.kind === '技能') {
     if (t.kind === '武器') {
       ok(C.WEAPON_TYPES.includes(t.weaponType), '武器类型无效。');
+      t.handedness ||= 'auto';
+      ok(['auto', 'one', 'two'].includes(t.handedness), '请选择自动分类、单手或双手武器。');
       if (t.weaponType === '其他') t.otherType = C.text(t.otherType, '其他类型', 80);
       t.melee = ![...C.FIREARMS, '弓', '弩', '法杖'].includes(t.weaponType) && t.melee !== false;
       if ([...C.FIREARMS, '弓', '弩'].includes(t.weaponType)) t.ammoType = C.text(t.ammoType, '弹药类型', 80);
@@ -368,19 +371,19 @@ function drop(state, userId, itemId, quantity) {
 function battleFor(state, userId) {
   return Object.values(state.battles).find(b => b.status !== 'ended' && b.actors.some(a => a.userId === userId && !a.deathId && (!a.characterId || a.characterId === state.players[userId]?.id)));
 }
-function equip(state, userId, itemId, remove = false) {
+function equip(state, userId, itemId, remove = false, hand = 'auto') {
   const p = player(state, userId); const item = p.inventory[itemId];
   ok(item && available(state, userId, itemId) >= 1 && !isAttached(p, itemId), '物品不存在、已预留或作为配件装配。');
   const t = item.snapshot;
   const battle = battleFor(state, userId);
   if (battle?.status === 'active') ok(t.kind === '武器', '防具、饰品、配件和卡牌调整需要GM暂停战斗。');
-  return equipCharacter(p, itemId, remove);
+  return equipCharacter(p, itemId, remove, hand);
 }
-function equipCharacter(p, itemId, remove = false) {
+function equipCharacter(p, itemId, remove = false, hand = 'auto') {
   const item = p.inventory[itemId];
   ok(item && !isAttached(p, itemId), '物品不存在或正在装配。');
   const t = item.snapshot;
-  if (t.kind === '武器') p.equipped.weapon = remove ? null : itemId;
+  if (t.kind === '武器') W.set(p, itemId, hand, remove);
   else {
     const slot = { '防具': 'armor', '饰品': 'accessories', '卡牌': 'cards' }[t.kind];
     ok(slot, '该物品不能装备，请使用相应操作。');

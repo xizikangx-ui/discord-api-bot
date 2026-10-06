@@ -19,10 +19,10 @@ function createCharacterPanel({snapshot,tx}) {
   function own(s,uid,cid,actor) {ok(uid===actor,'只能修改自己的角色。');const p=M.player(s,uid);ok(p.id===cid,'角色已经变化，请重新打开。');return p;}
   function home(p) {
     return U.payload('个人角色设置 · '+p.name,'剩余自由点 **'+p.points+'**\n基础时运 '+(p.luck??1)+' → 有效时运 '+M.stats(p).luck+
-      '\n选择性别、编辑个人背景或分配属性点。图片使用 /角色图片 上传。',[
+      '\n年龄：'+(p.age == null ? '未设置' : p.age+'岁')+'\n选择性别、编辑个人背景或分配属性点。图片使用 /角色图片 上传。',[
       U.row(U.select('profile:gender:'+p.userId+':'+p.id,'性别',genders.map(g=>({...g,default:p.gender===g.value})))),
       U.row(U.button('profile:allocate:'+p.userId+':'+p.id,'分配自由属性点',U.D.ButtonStyle.Primary,p.points<1),
-        U.button('profile:bio:'+p.userId+':'+p.id,'背景 / 外貌 / 信念'),U.button('profile:card:'+p.userId+':'+p.id,'查看自己的角色卡'))
+        U.button('profile:bio:'+p.userId+':'+p.id,'背景 / 外貌 / 信念'),U.button('profile:age:'+p.userId+':'+p.id,'修改年龄'),U.button('profile:card:'+p.userId+':'+p.id,'查看自己的角色卡'))
     ]);
   }
   function view(s,f,uid) {
@@ -41,6 +41,12 @@ function createCharacterPanel({snapshot,tx}) {
   async function openModal(i,s) {
     if(i.isModalSubmit?.()||!i.customId?.startsWith('rpg:profile:'))return false;
     const [, ,action,...args]=i.customId.split(':');
+    if (['age', 'draftage'].includes(action)) {
+      const [uid, cid] = args; ok(uid === i.user.id, '只能编辑自己的年龄。');
+      const p = action === 'age' ? own(s, uid, cid, i.user.id) : s.characterDrafts[uid]; ok(p?.id === cid, '角色或草稿已经变化。');
+      await i.showModal(U.modal('profile:' + (action === 'age' ? 'agesave' : 'draftagesave') + ':' + uid + ':' + cid + ':' + (p.ageVersion || 0),
+        '角色年龄', [{ key: 'age', label: '年龄（0至1000000；留空为未设置）', required: false, max: 7, value: p.age ?? '' }])); return true;
+    }
     if(action==='more') {const f=s.forms[args[0]],p=allocation(s,f,i.user.id);await i.showModal(U.modal('profile:moresave:'+f.id,'分配点数',[{key:'amount',label:'点数（最多 '+p.points+'）',value:f.amount||1}]));return true;}
     if(['bio','draftbio'].includes(action)) {
       const [uid,cid]=args;ok(uid===i.user.id,'只能编辑自己的角色。');
@@ -52,15 +58,17 @@ function createCharacterPanel({snapshot,tx}) {
   }
   async function component(i) {
     const [, ,action,...args]=i.customId.split(':'),uid=i.user.id;
-    if(['draftgender','draftbiosave'].includes(action)) {
+    if(['draftgender','draftbiosave','draftagesave'].includes(action)) {
       await tx(i,st=>{ok(args[0]===uid,'只能修改自己的草稿。');const d=st.characterDrafts[uid];ok(d?.id===args[1],'草稿已经变化，请重新建卡。');
         if(action==='draftgender'){ok(genders.some(g=>g.value===i.values[0]),'性别无效。');d.gender=i.values[0];}
+        else if(action==='draftagesave')saveAge(d,args[2],i);
         else saveBio(d,args[2],i);return {draftId:d.id};},'编辑角色草稿');return U.draftView(snapshot(i.guildId).characterDrafts[uid]);
     }
     if(['home','card'].includes(action)) {const p=own(snapshot(i.guildId),args[0],args[1],uid);return action==='home'?home(p):U.characterView(p);}
-    if(['gender','biosave'].includes(action)) {
+    if(['gender','biosave','agesave'].includes(action)) {
       await tx(i,st=>{const p=own(st,args[0],args[1],uid);
         if(action==='gender'){ok(genders.some(g=>g.value===i.values[0]),'性别无效。');p.gender=i.values[0];}
+        else if(action==='agesave')saveAge(p,args[2],i);
         else saveBio(p,args[2],i);return {characterId:p.id};},'修改角色设置');return home(M.player(snapshot(i.guildId),uid));
     }
     if(action==='allocate') {
@@ -80,5 +88,11 @@ function saveBio(p,version,i) {
   ok((p.profileVersion||0)===Number(version),'个人描述已经变化，请重新编辑。');
   p.profile=Object.fromEntries(['background','appearance','belief'].map(key=>[key,C.text(i.fields.getTextInputValue(key),'个人描述',2000,true)]));
   p.profileVersion=(p.profileVersion||0)+1;
+}
+function saveAge(p, version, i) {
+  ok((p.ageVersion || 0) === Number(version), '年龄已经变化，请重新编辑。');
+  const value = i.fields.getTextInputValue('age').trim();
+  p.age = value === '' ? null : C.number(value, '年龄', 0, 1000000);
+  p.ageVersion = (p.ageVersion || 0) + 1;
 }
 module.exports={genders,fingerprint,allocation,commitAllocation,createCharacterPanel};

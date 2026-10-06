@@ -1,5 +1,6 @@
 'use strict';
 const C = require('./constants'), M = require('./model'), B = require('./combat'), F = require('./forms'), U = require('./ui');
+const W = require('./weapons');
 const { requireThat: ok } = C;
 const operations = ['装备','卸下','装配','拆下','使用道具','使用世界树之心-头部','使用世界树之心-身体','使用世界树之心-戒指','使用世界树之泪'];
 function createSelections(context) {
@@ -53,14 +54,16 @@ function createSelections(context) {
         if(live.operation==='丢弃') M.drop(s,uid,live.ref,live.quantity);
         else if(['装配','拆下'].includes(live.operation)) M.attach(s,uid,live.ref,live.part,live.operation==='拆下');
         else if(live.operation.startsWith('使用世界树')) M.useSpecial(s,uid,live.ref,{'使用世界树之心-头部':'head','使用世界树之心-身体':'body','使用世界树之心-戒指':'ring'}[live.operation]);
-        else {const b=M.battleFor(s,uid);if(b?.status==='active'){const a=b.actors.find(a=>a.userId===uid);ok(b.current?.actorId===a?.id&&live.operation==='装备','战斗中请在自己的当前行动面板切换武器。');B.switchWeapon(s,b,b.current.id,live.ref);B.nextOpportunity(s,b);}else M.equip(s,uid,live.ref,live.operation==='卸下');}
+        else {const b=M.battleFor(s,uid);if(b?.status==='active'){const a=b.actors.find(a=>a.userId===uid);ok(b.current?.actorId===a?.id&&live.operation==='装备','战斗中请在自己的当前行动面板切换武器。');B.switchWeapon(s,b,b.current.id,live.ref,live.hand || 'auto');B.nextOpportunity(s,b);}else M.equip(s,uid,live.ref,live.operation==='卸下',live.hand || 'auto');}
       }
       live.done=true;return live.name+' · '+live.operation+'已完成';
     },'下拉物品操作');
     const b=M.battleFor(snapshot(i.guildId),uid);if(b)await publishBattle(i.guildId,b.id);
     return U.payload('已保存',result,[U.row(U.button('choose:home','返回操作菜单'))]);
   }
-  function preview(f) {return U.payload('确认 · '+f.operation,f.name+' ×'+f.quantity+(f.partName?' → '+f.partName:'')+'\n'+(f.operation==='丢弃'?'丢弃不可恢复。':'请确认本次操作。'),[U.row(U.button('choosedo:'+f.id,'确认'+f.operation,f.operation==='丢弃'?U.D.ButtonStyle.Danger:U.D.ButtonStyle.Success),U.button('choose:home','取消'))]);}
+  function preview(f) {return U.payload('确认 · '+f.operation,f.name+' ×'+f.quantity+(f.partName?' → '+f.partName:'')+'\n'+(f.operation==='丢弃'?'丢弃不可恢复。':f.weapon&&f.operation==='装备'?(f.hands===2?'双手武器占用两手，原有武器回到背包。':'单手武器放入所选手位；被替换的武器回到背包。'):'请确认本次操作。'),[
+    ...(f.weapon&&f.operation==='装备'&&f.hands===1?[U.row(U.select('choosehand:'+f.id,'选择主手或副手',[{value:'main',label:'主手',default:(f.hand||'main')==='main'},{value:'off',label:'副手',default:f.hand==='off'}]))]:[]),
+    U.row(U.button('choosedo:'+f.id,'确认'+f.operation,f.operation==='丢弃'?U.D.ButtonStyle.Danger:U.D.ButtonStyle.Success),U.button('choose:home','取消'))]);}
   async function component(i,member) {
     const [action,arg,target,step]=i.customId.split(':').slice(1),s=snapshot(i.guildId),uid=i.user.id;
     if(action==='quote') {context.owner(i,target);offerAccess(s,arg,member,uid);return quote(s,uid,arg);}
@@ -79,7 +82,7 @@ function createSelections(context) {
       ok(['使用','丢弃','发放',...operations].includes(arg),'操作无效。');if(arg==='发放'){needGM(s,member);M.player(s,target);}
       if(step!=='select')return list(s,uid,arg,step,target);
       const ref=i.values[0],options=arg==='发放'?Object.values(s.catalog).filter(t=>t.published).map(t=>({value:t.id})):entries(s,uid,arg);ok(options.some(o=>o.value===ref),'物品已不可用，请重新选择。');
-      const f=await tx(i,st=>{const t=arg==='发放'?st.catalog[ref]:M.player(st,uid).inventory[ref].snapshot;const f={id:C.id('f'),owner:uid,kind:'selection',operation:arg,ref,target,name:t.name,templateVersion:t.version,characterId:M.player(st,arg==='发放'?target:uid).id,quantity:1,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});
+      const f=await tx(i,st=>{const t=arg==='发放'?st.catalog[ref]:M.player(st,uid).inventory[ref].snapshot;const f={id:C.id('f'),owner:uid,kind:'selection',operation:arg,ref,target,name:t.name,templateVersion:t.version,characterId:M.player(st,arg==='发放'?target:uid).id,weapon:t.kind==='武器',hands:t.kind==='武器'?W.hands(t):null,hand:'main',quantity:1,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});
       if(['发放','丢弃'].includes(arg))return U.payload('数量 · '+f.name,'选择物品完成，请填写数量。',[U.row(U.button('chooseamount:'+f.id,'填写数量'),U.button('choose:'+arg+':'+target+':0','返回物品列表'))]);
       if(['装配','拆下'].includes(arg))return parts(s,uid,f);
       if(M.player(s,uid).inventory[f.ref]?.snapshot.kind==='修复道具')return repairTargets(s,uid,f);
@@ -87,6 +90,7 @@ function createSelections(context) {
     }
     const f=F.owned(s,arg,uid);ok(f.kind==='selection'&&!f.done&&f.expiresAt>Date.now(),'操作已过期或完成。');
     if(f.operation==='发放')needGM(s,member);
+    if(action==='choosehand'){ok(f.weapon&&f.operation==='装备'&&f.hands===1&&['main','off'].includes(i.values[0]),'手位选择无效。');await tx(i,st=>{const live=F.owned(st,arg,uid);ok(!live.done&&live.characterId===M.player(st,uid).id,'角色或步骤已变化。');live.hand=i.values[0];});return preview(F.owned(snapshot(i.guildId),arg,uid));}
     if(action==='chooserepair'){if(target!=='select')return repairTargets(s,uid,f,target);const item=M.player(s,uid).inventory[i.values[0]],tool=M.player(s,uid).inventory[f.ref];ok(item&&tool?.snapshot.repairKinds.includes(item.snapshot.kind),'修复目标已变化。');await tx(i,st=>{const live=F.owned(st,arg,uid);live.part=i.values[0];live.partName=M.player(st,uid).inventory[live.part]?.snapshot.name;});return preview(F.owned(snapshot(i.guildId),arg,uid));}
     if(action==='choosepart') {
       if(target!=='select')return parts(s,uid,f,target);

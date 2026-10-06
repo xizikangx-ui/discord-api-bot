@@ -3,6 +3,7 @@ const D = require('discord.js');
 const C = require('./constants');
 const M = require('./model');
 const B = require('./combat');
+const W = require('./weapons');
 const E = D.MessageFlags.Ephemeral;
 const row = (...components) => new D.ActionRowBuilder().addComponents(...components.filter(Boolean));
 const button = (customId, label, style = D.ButtonStyle.Secondary, disabled = false) =>
@@ -44,7 +45,7 @@ function playerRole(state, member) { return state.config.playerRoleIds.some(r =>
 function characterView(p, privateView = false, page = 0) {
   const s = M.stats(p), faction = require('./factions'), color = faction.FACTIONS[p.faction?.id]?.color || 0x3498db;
   const v = payload('角色卡 · ' + p.name, '**Lv.' + p.level + ' · ' + C.title(p.level) + '**\n' + faction.label(p.faction) +
-    '\n性别：' + ({male:'男性',female:'女性'}[p.gender]||'未设置') + ' · 时运 **'+(p.luck??1)+' → '+s.luck+'**' + '\n\n**HP ' + p.hp + '/' + s.maxHP + '**\n' + bar(p.hp, s.maxHP) + '\n**经验 ' + (p.xpCenti / 100).toFixed(2) +
+    '\n性别：' + ({male:'男性',female:'女性'}[p.gender]||'未设置') + ' · 年龄：'+(p.age == null ? '未设置' : p.age+'岁')+' · 时运 **'+(p.luck??1)+' → '+s.luck+'**' + '\n\n**HP ' + p.hp + '/' + s.maxHP + '**\n' + bar(p.hp, s.maxHP) + '\n**经验 ' + (p.xpCenti / 100).toFixed(2) +
     (p.level === 100 ? ' · 满级' : '/' + p.level * 1000) + '**\n' + bar(p.xpCenti / 100, p.level * 1000), [], color);
   const attr = Object.entries(C.ATTRIBUTES).map(([k, label]) => label + ' **' + p.attributes[k] + '**' + (s.attributes[k] !== p.attributes[k] ? ' → **' + s.attributes[k] + '**' : ''));
   v.embeds[0].addFields(field('身体属性', attr.filter((_, n) => [0,1,3,5].includes(n)).join('\n'), true),
@@ -68,9 +69,9 @@ function characterView(p, privateView = false, page = 0) {
 function draftView(d) {
   return payload('确认角色 · 整套重掷剩余' + (3 - d.rerolls), d.name + '\n' +
     Object.entries(C.ATTRIBUTES).map(([k, n]) => n + ' ' + d.attributes[k]).join('　') +
-    '\n性别：'+({male:'男性',female:'女性'}[d.gender]||'请下拉选择')+'\n适应性 ' + d.adaptation + '\n确认后获得2点自由属性点，属性掷骰锁定。', [
+    '\n性别：'+({male:'男性',female:'女性'}[d.gender]||'请下拉选择')+' · 年龄：'+(d.age == null ? '未设置' : d.age+'岁')+'\n适应性 ' + d.adaptation + '\n确认后获得2点自由属性点，属性掷骰锁定。', [
       row(select('profile:draftgender:'+d.userId+':'+d.id,'选择男性或女性',require('./character-panel').genders.map(g=>({...g,default:d.gender===g.value})))),
-      row(button('profile:draftbio:'+d.userId+':'+d.id,'填写背景 / 外貌 / 信念')),
+      row(button('profile:draftbio:'+d.userId+':'+d.id,'填写背景 / 外貌 / 信念'),button('profile:draftage:'+d.userId+':'+d.id,'填写年龄')),
       row(button('char:confirm:' + d.id, '确认角色', D.ButtonStyle.Success,!d.gender), button('char:reroll:' + d.id, '整套重掷', D.ButtonStyle.Secondary, d.rerolls >= 3)),
     ]);
 }
@@ -126,6 +127,12 @@ function itemView(state, userId, viewerId, ref, page = 0) {
   ], r.color);
   result.embeds[0].addFields(field('分类 / 稀有度', t.kind + ' / ' + r.name, true),
     field('数量 / 重量', item.quantity + ' / ' + C.kg(M.itemWeight(item)), true), field('参考价值', t.value, true));
+  if (['武器', '技能'].includes(t.kind)) {
+    const distance = t.rangeMeters ?? (t.range ?? 1) * 50;
+    result.embeds[0].addFields(field('射程 / 攻击距离', '基础 ' + distance + '米 · 有效 ' +
+      C.round2(M.modify(M.stats(p).effects, 'range', distance)) + '米' + (t.melee ? '\n近战仍须同格' : '\n远程按实际米数判定')));
+  }
+  if (t.kind === '武器') result.embeds[0].addFields(field('持握方式', require('./weapons').label(t) + (t.handedness && t.handedness !== 'auto' ? ' · GM手动设置' : ' · 按类型自动分类'), true));
   if (C.CONSUMABLES.includes(t.kind)) result.embeds[0].addFields(field('使用效果', '恢复HP ' + (t.heal || '0') +
     '\n解除：' + ((t.clearConditions || []).map(id => state.conditionTemplates[id]?.name || id).join('、') || '无') +
     (t.duration && t.effects.length ? '\n持续 ' + t.duration.count + (t.duration.kind === 'minutes' ? '分钟' : '次自身行动') : '')));
@@ -172,8 +179,10 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   let body = characterView(p, true).embeds[0].data.description + '\n\n位置 (' + a.x + ',' + a.y + ')　动作点 ' + p.ap +
     '\n' + (turn ? '快速 ' + turn.quick + '／正式 ' + turn.formal + '／剩余移动 ' + turn.move + '米' : '当前不是此角色的行动机会。') +
     '\n吟唱：' + (a.casting ? a.casting.name + ' ' + a.casting.count + '/' + a.casting.required + (a.casting.confirmed ? ' · 已确认' : '') : '无') +
-    (p.inventory[p.equipped.weapon]?.loaded?.current===0?'\n⚠️ 弹夹已空：无弹药，请装填。':'')+
-    (p.inventory[p.equipped.weapon]&&!require('./durability').usable(p.inventory[p.equipped.weapon])?'\n⚠️ 武器耐久为0，无法攻击，请修复。':'')+
+    '\n'+W.describe(p)+
+    W.equipped(p).filter(ref=>p.inventory[ref].loaded?.current===0).map(ref=>'\n⚠️ '+p.inventory[ref].snapshot.name+'：无弹药，请装填。').join('')+
+    W.equipped(p).filter(ref=>!require('./durability').usable(p.inventory[ref])).map(ref=>'\n⚠️ '+p.inventory[ref].snapshot.name+'耐久为0，请修复。').join('')+
+    (!B.abilities(p).length?'\n⚠️ 先装备可用武器才能攻击。':'')+
     '\n装备：' + (M.equippedIds(p).map(ref => p.inventory[ref]?.snapshot.name).join('、').slice(0, 320) || '无') +
     '\n饰品槽位 头' + p.slots.head + ' 身' + p.slots.body + ' 戒' + p.slots.ring + '／卡牌槽位 ' + p.slots.card;
   const statePages = Math.max(1, Math.ceil(p.conditions.length / 3), Math.ceil((p.temporaryEffects || []).length / 3));
@@ -193,7 +202,7 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const enabled = !!turn && b.status === 'active' && !b.pending;
   if (tab === 'move') rows.push(row(button('move:' + prefix, '输入移动位置', D.ButtonStyle.Primary, !enabled || s.overloaded)));
   if (tab === 'quick') rows.push(row(button('attackpick:' + prefix + ':quick:0', '快捷技能／超凡攻击', D.ButtonStyle.Primary, !enabled || !turn.quick),
-    button('reloadpick:' + prefix + ':0', '装填', undefined, !enabled || !turn.quick), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick),
+    button('reloadweaponpick:' + prefix + ':0', '装填（选择武器）', undefined, !enabled || !turn.quick), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick),
     button('itempick:' + prefix + ':0', '使用道具', undefined, !enabled || !turn.quick), button('cast:' + prefix, '确认吟唱', undefined, !enabled || !turn.quick)));
   if (tab === 'formal') rows.push(row(button('attackpick:' + prefix + ':formal:0', '攻击／释放技能', D.ButtonStyle.Primary, !enabled || !turn.formal),
     button('flee:' + prefix, '逃跑', undefined, !enabled || !turn.formal)));

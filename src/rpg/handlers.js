@@ -358,6 +358,29 @@ function createHandlers(context) {
       return pickView('选择武器／技能',abilities.map(x=>({label:x.attack.name,value:x.key})),'attackpick:'+prefix+':'+type,Number(args[5]));
     }
     if(action==='target'&&args[6]==='auto'){const target=B.actorById(b,i.values[0]);const f=await tx(i,st=>{prefixContext(i,st,args,member,true);const f={id:C.id('f'),kind:'fire',owner:uid,battleId:b.id,actorId:a.id,turnId,action:args[4],abilityKey:args[5],targetId:target.id,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});return payload('全自动连射 · '+target.name,'选择连射发数，一次行动只消耗一次行动预算。',[row(button('firecount:'+f.id,'填写连射发数'),button('view:'+prefix+':overview','取消选择'))]);}
+    const W = require('./weapons');
+    function reloadAmmo(weaponId, page = 0) {
+      ok(W.equipped(p).includes(weaponId) && p.inventory[weaponId]?.loaded, '请选择已装备的枪械。');
+      const weapon = p.inventory[weaponId];
+      return pickView('装填 · 选择弹药', Object.values(p.inventory).filter(item => item.snapshot.kind === '弹药' &&
+        item.snapshot.ammoType === weapon.snapshot.ammoType && (!a.userId || M.available(s,a.userId,item.id)>0))
+        .map(item=>({label:item.snapshot.name,value:item.id,description:'可用 '+(a.userId?M.available(s,a.userId,item.id):item.quantity)})),
+        'reloadammopick:'+prefix+':'+weaponId, Number(page)||0);
+    }
+    function reloadClips(weaponId, ammoId, page = 0) {
+      const weapon = p.inventory[weaponId], ammo = p.inventory[ammoId];
+      ok(W.equipped(p).includes(weaponId) && weapon?.loaded && ammo?.snapshot.kind === '弹药' && ammo.snapshot.ammoType === weapon.snapshot.ammoType, '武器或弹药已变化。');
+      return pickView('装填 · 选择弹夹', Object.values(p.inventory).filter(m=>m.snapshot.kind==='弹夹'&&
+        m.snapshot.magazineType===weapon.snapshot.magazineType&&m.snapshot.ammoType===weapon.snapshot.ammoType&&m.snapshot.capacity>=weapon.loaded.capacity&&
+        (!M.isAttached(p,m.id)||weapon.magazineId===m.id)&&(!a.userId||M.available(s,a.userId,m.id)>0)).map(m=>({label:m.snapshot.name,value:m.id})),
+        'reloadclippick:'+prefix+':'+weaponId+':'+ammoId, Number(page)||0);
+    }
+    if(action==='reloadweaponpick') {
+      if(args[4]==='select')return reloadAmmo(i.values[0]);
+      return pickView('装填 · 先选主手或副手武器',W.equipped(p).filter(ref=>p.inventory[ref].loaded).map(ref=>({value:ref,label:p.inventory[ref].snapshot.name,description:(p.equipped.weapon===ref?'主手':'副手')+' · '+p.inventory[ref].loaded.current+'/'+p.inventory[ref].loaded.capacity})), 'reloadweaponpick:'+prefix, Number(args[4])||0);
+    }
+    if(action==='reloadammopick')return args[5]==='select'?reloadClips(args[4],i.values[0]):reloadAmmo(args[4],args[5]);
+    if(action==='reloadclippick'&&args[6]!=='select')return reloadClips(args[4],args[5],args[6]);
     function repairView(toolId,page){const Dur=require('./durability'),tool=p.inventory[toolId];ok(tool?.snapshot.kind==='修复道具','道具已失效。');return pickView('选择要修复的装备',Object.values(p.inventory).filter(item=>tool.snapshot.repairKinds.includes(item.snapshot.kind)&&Dur.current(item)<Dur.maximum(item)&&(!a.userId||M.available(s,a.userId,item.id)>0)).map(item=>({label:item.snapshot.name,value:item.id,description:'耐久 '+Dur.current(item)+'/'+Dur.maximum(item)})),'repairpick:'+prefix+':'+toolId,Number(page)||0);}
     if(action==='repairpick'&&args[5]!=='select')return repairView(args[4],args[5]);
     if (action === 'reloadmagpick') {
@@ -378,6 +401,10 @@ function createHandlers(context) {
         (!a.userId || M.available(s, a.userId, item.id) > 0));
       if (action === 'reloadpick') items = items.filter(item => item.snapshot.ammoType === p.inventory[p.equipped.weapon]?.snapshot.ammoType);
       if (args[4] === 'select') {
+        if(action==='weaponpick'&&i.values[0]!=='none') {
+          const weapon = p.inventory[i.values[0]]; ok(weapon?.snapshot.kind==='武器'&&items.some(item=>item.id===weapon.id),'武器已变化。');
+          if(W.hands(weapon.snapshot)===1)return payload('切换单手武器 · '+weapon.snapshot.name,'选择主手或副手；替换的武器回到背包，本次切换消耗一次快速行动。',[row(select('weaponhand:'+prefix+':'+weapon.id,'装备在哪只手',[{value:'main',label:'主手'},{value:'off',label:'副手'}])),row(button('weaponpick:'+prefix+':0','返回武器列表'),button('view:'+prefix+':overview','取消'))]);
+        }
         if(action==='itempick'&&p.inventory[i.values[0]]?.snapshot.kind==='修复道具')return repairView(i.values[0],0);
         if (action === 'reloadpick') {
           const ammoId = i.values[0], weapon = p.inventory[p.equipped.weapon]; ok(weapon?.loaded && p.inventory[ammoId], '武器或弹药不可用。');
@@ -389,7 +416,7 @@ function createHandlers(context) {
           return v;
         }
       } else return pickView('选择' + kind, [
-        ...(action === 'weaponpick' ? [{ label: '徒手（卸下武器）', value: 'none' }] : []),
+        ...(action === 'weaponpick' ? [{ label: '卸下全部武器（将无法攻击）', value: 'none' }] : []),
         ...items.map(item => ({ label: item.snapshot.name + ' ×' + item.quantity, value: item.id }))
       ], action + ':' + prefix, Number(args[4]));
     }
@@ -399,7 +426,9 @@ function createHandlers(context) {
       else if (action === 'target') return B.attack(st,next,turnId,args[5],i.values[0],args[4],undefined,{mode:args[6]||'semi'});
       else if(action==='firesubmit'){const f=F.owned(st,fireForm.id,uid);ok(!f.done&&f.expiresAt>Date.now(),'射击步骤已完成或过期。');const result=B.attack(st,next,turnId,args[5],args[6],args[4],undefined,{mode:'auto',count:i.fields.getTextInputValue('count')});f.done=true;return result;}
       else if (action === 'reloadmag' || action === 'reloadmagpick') B.reload(st, next, turnId, args[4], i.values[0]);
+      else if (action === 'reloadclippick') B.reload(st, next, turnId, args[5], i.values[0], args[4]);
       else if (action === 'weaponpick') B.switchWeapon(st, next, turnId, i.values[0] === 'none' ? null : i.values[0]);
+      else if (action === 'weaponhand') B.switchWeapon(st, next, turnId, args[4], i.values[0]);
       else if(action==='repairpick')B.useItem(st,next,turnId,args[4],undefined,i.values[0]);
       else if (action === 'itempick') B.useItem(st, next, turnId, i.values[0]);
       else if (action === 'cast') B.confirmCasting(st, next, turnId);

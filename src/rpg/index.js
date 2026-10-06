@@ -2,6 +2,7 @@
 const C = require('./constants'), M = require('./model'), B = require('./combat'), F = require('./forms'), U = require('./ui');
 const { createCharacterPanel } = require('./character-panel');
 const { createPortraits } = require('./portraits');
+const { createBulkIssue } = require('./bulk-issue');
 const { createStore } = require('./store');
 const { commands } = require('./commands');
 const { chapters } = require('./rules');
@@ -246,7 +247,7 @@ function createRpg(deps) {
   async function autocomplete(i) {
     if (!enabled(i.guildId) || !ready.has(i.guildId)) { await i.respond([]); return; }
     const s = snapshot(i.guildId), q = i.options.getFocused().toLowerCase(), sub = i.options.getSubcommand(false);
-    const fromCatalog = i.commandName === 'gm' && ['发放', '修改模板'].includes(sub);
+    const fromCatalog = i.commandName === 'gm' && ['发放', '批量发放', '修改模板'].includes(sub);
     if (fromCatalog && !U.gm(s, i.member)) { await i.respond([]); return; }
     let entries = fromCatalog ? Object.values(s.catalog).filter(t => t.published) : Object.values(s.players[i.user.id]?.inventory || {});
     if (i.commandName === 'gm' && sub === '收购') {
@@ -372,6 +373,7 @@ function createRpg(deps) {
   async function gmSlash(i, member) {
     const s = snapshot(i.guildId); needGM(s, member);
     const o = i.options, sub = o.getSubcommand(), uid = i.user.id, target = o.getUser('成员')?.id;
+    if (sub === '批量发放' || (sub === '发放' && !target)) return bulkIssue.start(i, member);
     if (sub === '恢复存档') {
       await store.recover(i.guildId); ready.add(i.guildId);
       return payload('加密存档已重新读取', '当前版本 ' + snapshot(i.guildId).revision + '。请核对背包、交易及战斗记录后继续。');
@@ -380,7 +382,7 @@ function createRpg(deps) {
     if (sub === '模板库') return catalogView(s, o.getString('类型') || '物品', 0);
     if (sub === '抽取公示') return activities.slash(i, member);
     if (sub === '草稿') {
-      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback','selection','fire','allocation','portrait'].includes(f.kind));
+      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback','selection','fire','allocation','portrait','bulkissue'].includes(f.kind));
       if (ref) return formView(s, ref, uid);
       return pickView('选择持久草稿', forms.map(f => ({ value: f.id, label: f.data?.name || f.data?.title || f.kind, description: f.id })), 'drafts', 0);
     }
@@ -500,6 +502,7 @@ function createRpg(deps) {
     return gmUI.view(snapshot(i.guildId), battle(snapshot(i.guildId), ref));
   }
   const characterPanel=createCharacterPanel({snapshot,tx});
+  const bulkIssue=createBulkIssue({snapshot,tx,needGM});
   const portraits=createPortraits({...deps,snapshot,tx,needGM,pickView});
   const activities = createActivities({ snapshot, tx, store, textChannel, client, needGM, logFailure });
   const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
@@ -528,13 +531,14 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
+      if (i.customId && (await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       const privateSource = !!i.message?.flags?.has(E);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
       else await i.deferReply(publicResult ? {} : { flags: E });
       const member = await i.guild.members.fetch({ user: i.user.id, force: true });
       const result = i.isChatInputCommand?.() ? await slash(i, member) :
+        i.customId.startsWith('rpg:bulkgive:') ? await bulkIssue.component(i,member) :
         i.customId.startsWith('rpg:profile:') ? await characterPanel.component(i,member) :
         i.customId.startsWith('rpg:portrait:') ? await portraits.component(i,member) :
         i.customId.startsWith('rpg:map:') ? await exploration.component(i, member) :
@@ -543,7 +547,7 @@ function createRpg(deps) {
         i.customId.startsWith('rpg:text:') ? await texts.component(i,member) :
         i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
         i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) :
-        /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
+        /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|hand:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
       const response = await portraits.decorate(i.guildId,result || payload('已完成', '操作已保存。'));
       if(!publicResult){response.attachments ||= [];response.files ||= [];}
       await i.editReply(publicResult ? response : navigation.wrap(i, response));

@@ -14,7 +14,7 @@ const refField = (key, label, source, limit = 10, predicate) => ({ key, label, t
 function defaults(kind, itemKind = '杂物') {
   if (kind === 'item') return { kind: itemKind, name: '', description: '', rarity: 'white', weightKg: 0, value: 0,
     durabilityMax:100, armorWeakening:{type:'physical',amount:0}, weakeningResistance:{physical:0,magical:0,mental:0},repairKinds:['武器','防具'],repairAmount:10,repairMaxLoss:0, quality: '标准', origin: '未知', title: '', appearance: '', supernatural: false, traitIds: ['neutral'], effects: [], boxes: [],
-    weaponType: '剑', otherType: '', melee: true, ammoType: '', magazineType: '', capacity: 1, current: 0,
+    weaponType: '剑', handedness: 'auto', otherType: '', melee: true, ammoType: '', magazineType: '', capacity: 1, current: 0,
     ammoIds: [], magazineIds: [], fireModes: ['semi'], hit: 10, rangeMeters: 50, primary: 'physical', damage: { physical: itemKind==='弹药'?'0':'1d6', magical: '', mental: '' }, conditions: [],
     armorType: '胸甲', defenses: { physical: 0, magical: 0, mental: 0 }, accessoryType: 'body',
     uniqueText: '', skillIds: [], preinstalled: [], compatible: [], attachmentSlot: '瞄具',
@@ -63,6 +63,9 @@ function fields(form) {
   const list = [...common, enumField('rarity', '六色稀有度', C.RARITIES.map(r => ({ value: r.id, label: r.name }))),
     field('weightKg', '重量kg（两位小数）', 'number'), field('value', '参考价值', 'number'),
     { ...enumField('boxes', '可从哪些箱型抽出', C.BOXES), type: 'multi', limit: 12 }];
+  if (['武器', '技能'].includes(d.kind)) list.push(field('rangeMeters', '射程 / 攻击距离（米）', 'number'));
+  if (d.kind === '武器') list.push(enumField('handedness', '单手 / 双手（可手动调整）', [
+    { value: 'auto', label: '按武器类型自动分类' }, { value: 'one', label: '单手武器' }, { value: 'two', label: '双手武器' }]));
   if(['武器','防具'].includes(d.kind))list.push(field('durabilityMax','最大耐久','number'));
   if(d.kind==='修复道具')list.push({...enumField('repairKinds','可修复类型',['武器','防具']),type:'multi',limit:2},field('repairAmount','每次修复耐久点数','number'),field('repairMaxLoss','每次修复削减耐久上限（0不削减）','number'));
   if (d.kind === '钥匙') list.push(field('keyCharges', '初始钥匙次数', 'number'));
@@ -77,7 +80,7 @@ function fields(form) {
   if(d.kind==='防具')list.push(...Object.entries(C.DAMAGE_TYPES).map(([k,n])=>field('weakeningResistance.'+k,n+'抗削弱点数','number')));
   if (d.kind === '武器' && d.weaponType === '其他') list.push(field('melee', '其他类型是否近战（否则远程）', 'bool'));
   if (d.kind === '武器' || d.kind === '技能') {
-    list.push(field('hit', '固定命中', 'number'), field('rangeMeters', '攻击距离（米）', 'number'),
+    list.push(field('hit', '固定命中', 'number'),
       field('damage.physical', '物理伤害骰式（留空无）'), field('damage.magical', '魔法伤害骰式（留空无）'),
       field('damage.mental', '精神伤害骰式（留空无）'),
       enumField('primary', '主伤害分量', Object.entries(C.DAMAGE_TYPES).map(([value, label]) => ({ value, label }))),
@@ -107,6 +110,7 @@ function create(state, owner, kind, itemKind, existingId) {
   if (kind === 'item' && old) {
     if(['武器','弹夹'].includes(old.kind)){data.ammoIds=old.ammoIds || (old.initialAmmo?.id ? [old.initialAmmo.id] : Object.values(state.catalog).filter(t=>t.kind==='弹药'&&t.ammoType===old.ammoType).slice(0,1).map(t=>t.id));data.magazineIds=old.magazineIds || (old.initialMagazine?.id?[old.initialMagazine.id]:[]);}
     data.rangeMeters ??= (old.range ?? 1)*50;
+    data.handedness ||= 'auto';
     data.durabilityMax ??=100;data.armorWeakening||={type:'physical',amount:0};data.weakeningResistance||={physical:0,magical:0,mental:0};
     data.fireModes ||= ['semi'];
     data.duration ||= { kind: 'actions', count: 3 };
@@ -138,6 +142,7 @@ function view(state, form, preview = false) {
   const defs = fields(form), pages = Math.ceil(defs.length / 20), page = Math.max(0, Math.min(form.page, pages - 1));
   const selected = defs[form.field] || defs[0];
   const body = '草稿 ' + form.id + ' · ' + form.kind + (form.data.kind ? '／' + form.data.kind : '') +
+    (form.data.kind === '武器' ? '\n持握分类：' + require('./weapons').label(form.data) + '（可在第一页下拉手动调整）' : '') +
     '\n退出后用 /gm 草稿 继续。' + (form.existingId ? '\n修改模板 ' + form.existingId + '，已发放实例保持原版本。' : '') +
     '\n\n' + defs.slice(page * 20, page * 20 + 20).map((d, n) => (page * 20 + n === form.field ? '▶ ' : '') +
       '**' + d.label + '**：' + display(get(form.data, d.key), d, state).slice(0, 120)).join('\n') +

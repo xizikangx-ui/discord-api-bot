@@ -1,6 +1,7 @@
 'use strict';
 const { randomInt } = require('node:crypto');
 const Dur=require('./durability');
+const W=require('./weapons');
 const C = require('./constants');
 const M = require('./model');
 const { requireThat: ok, number: num, clone, id } = C;
@@ -178,7 +179,7 @@ function addNPC(state, battle, templateId, team, frozenTemplate = null) {
     for (let n = 0; n < (stateful ? entry.quantity : 1); n++) {
     const item = M.makeItem(entry.template, stateful ? 1 : entry.quantity);
     for (const part of M.bundleItems(item)) { p.inventory[part.id] = part; delete part.bundle; }
-    if (item.snapshot.kind === '武器') p.equipped.weapon = item.id;
+    if (item.snapshot.kind === '武器') W.set(p, item.id);
     if (item.snapshot.kind === '防具') {
       const occupied = p.equipped.armor.flatMap(i => C.ARMOR_COVERAGE[p.inventory[i].snapshot.armorType]);
       ok(!C.ARMOR_COVERAGE[item.snapshot.armorType].some(k => occupied.includes(k)), 'NPC防具槽位冲突。');
@@ -359,11 +360,10 @@ function move(state, b, turnId, x, y) {
   turn.moveSpent = C.round2((turn.moveSpent || 0) + cost);
   record(b, actor.name + '移动至(' + actor.x + ',' + actor.y + ')。');
 }
-const UNARMED = { id: 'unarmed', name: '徒手', kind: '武器', weaponType: '其他', melee: true, supernatural: false,
-  hit: 10, damage: { physical: '0' }, primary: 'physical', range: 0, conditions: [] };
 function abilities(p) {
-  const result = [{ key: 'unarmed', attack: UNARMED }];
-  if (p.equipped.weapon && p.inventory[p.equipped.weapon] && Dur.usable(p.inventory[p.equipped.weapon])) result.push({ key: p.equipped.weapon, attack: p.inventory[p.equipped.weapon].snapshot });
+  const weapons = W.equipped(p).filter(ref => Dur.usable(p.inventory[ref]));
+  if (!weapons.length) return [];
+  const result = weapons.map(ref => ({ key: ref, attack: p.inventory[ref].snapshot }));
   for (const item of Object.values(p.inventory)) if (item.snapshot.kind === '技能') result.push({ key: item.id, attack: item.snapshot });
   for (const ref of p.equipped.cards) {
     const item = p.inventory[ref];
@@ -374,6 +374,7 @@ function abilities(p) {
 function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng = randomInt, firing = {}) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending, '已有攻击等待防守。');
+  ok(W.equipped(p).some(ref => Dur.usable(p.inventory[ref])), '必须先装备可用武器才能攻击或释放攻击技能。');
   const ability = abilities(p).find(a => a.key === abilityKey);
   ok(ability, '武器／技能当前不可用。');
   const t = ability.attack; const target = actorById(b, targetId); const targetP = actorCharacter(state, target);
@@ -473,10 +474,12 @@ function confirmCasting(state, b, turnId) {
   turn.quick--; actor.casting.confirmed = true;
   record(b, actor.name + '确认吟唱完成。');
 }
-function reload(state, b, turnId, ammunitionId, magazineId) {
+function reload(state, b, turnId, ammunitionId, magazineId, weaponId) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');
-  const weapon = p.inventory[p.equipped.weapon]; const ammo = p.inventory[ammunitionId];
+  weaponId ||= W.equipped(p).find(ref => p.inventory[ref].loaded);
+  ok(W.equipped(p).includes(weaponId), '只能装填已装备武器。');
+  const weapon = p.inventory[weaponId]; const ammo = p.inventory[ammunitionId];
   ok(weapon?.loaded && ammo?.snapshot.kind === '弹药' && ammo.snapshot.ammoType === weapon.snapshot.ammoType, '武器和弹药不兼容。');
   if (magazineId) {
     const magazine = p.inventory[magazineId];
@@ -498,14 +501,14 @@ function reload(state, b, turnId, ammunitionId, magazineId) {
   M.syncHP(p);
   record(b, actor.name + '装填' + quantity + '发弹药。');
 }
-function switchWeapon(state, b, turnId, itemId) {
+function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');
   if (itemId) {
     ok(p.inventory[itemId]?.snapshot.kind === '武器', '武器不可用。');
     if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '武器已被交易预留。');
   }
-  p.equipped.weapon = itemId || null; turn.quick--; M.syncHP(p);
+  W.set(p, itemId, hand); turn.quick--; M.syncHP(p);
 }
 function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget) {
   const { actor, p, turn } = current(state, b, turnId);
@@ -544,5 +547,5 @@ function endBattle(state, b) {
 }
 module.exports = { actorCharacter, actorById, record, validateCondition, applyCondition, beginConditions, endConditions,
   createBattle, join, withdraw, validateNPC, addNPC, position, setTerrain, liveActors, order, advance,
-  nextOpportunity, start, current, finish, pass, movementCost, move, UNARMED, abilities, attack, defend,
+  nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, defend,
   confirmCasting, reload, switchWeapon, useItem, flee, pause, endBattle };
