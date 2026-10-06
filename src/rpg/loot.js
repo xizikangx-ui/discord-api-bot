@@ -21,9 +21,21 @@ function setRates(state, box, values) {
   C.requireThat(DEFAULT_SAFE_RATES[box], '只能单独配置四种保险箱。');
   state.config.safeRates ||= {}; state.config.safeRates[box] = validateRates(values);
 }
-function rarity(state, box, rng = randomInt) {
-  const values = rates(state, box);
-  if (!values) return C.rarity(rng);
+function adjustedRates(state, box, luck = 1) {
+  const base = rates(state, box) || COLORS.map(id => C.RARITIES.find(r => r.id === id).weight / 10);
+  const k = Math.abs(Math.max(-9, Math.min(11, Math.floor(luck))) - 1);
+  const boost = .5 * Math.min(k,4) + .25 * Math.min(Math.max(k-4,0),4) + .1 * Math.min(Math.max(k-8,0),2);
+  const recipients = COLORS.map((_,i)=>i).filter(i=>base[i]>0 && (luck>1 ? i>=3 : luck<1 ? i<3 : false));
+  const donors = COLORS.map((_,i)=>i).filter(i=>!recipients.includes(i));
+  const sum = donors.reduce((s,i)=>s+base[i],0), delta = recipients.length ? Math.min(boost,sum/recipients.length) : 0;
+  const raw = base.map((v,i)=>100*(recipients.includes(i) ? v+delta : sum ? v*(sum-recipients.length*delta)/sum : v));
+  const weights = raw.map(v=>Math.max(0,Math.floor(v+1e-9)));
+  const order = COLORS.map((_,i)=>i).filter(i=>base[i]>0).sort((a,b)=>(raw[b]-weights[b])-(raw[a]-weights[a])||a-b);
+  for (let n=10000-weights.reduce((a,b)=>a+b,0),i=0;n>0;n--,i++) weights[order[i%order.length]]++;
+  return weights.map(v=>v/100);
+}
+function rarity(state, box, rng = randomInt, luck = 1, frozenRates) {
+  const values = frozenRates || adjustedRates(state, box, luck);
   let draw = rng(0, 10000);
   for (let n = 0; n < values.length; n++) {
     draw -= Math.round(values[n] * 100);
@@ -32,22 +44,21 @@ function rarity(state, box, rng = randomInt) {
   throw new Error('保险箱概率配置无效。');
 }
 // The same generator is used by personal tickets and free, shared map containers.
-function generate(state, box, rng = randomInt) {
+function generate(state, box, rng = randomInt, luck = 1) {
   const M = require('./model');
   C.requireThat(box === 'card' || C.BOXES.includes(box), '箱型无效。');
-  const batch = { id: C.id('z'), items: [], rates: rates(state, box), createdAt: Date.now() };
+  const batch = { id: C.id('z'), items: [], luck, rates: adjustedRates(state, box, luck), createdAt: Date.now() };
   const size = box === 'card' ? 1 : rng(1, 7);
   for (let n = 0; n < size; n++) {
-    const r = rarity(state, box, rng);
+    const r = rarity(state, box, rng, luck, batch.rates);
     let pool = Object.values(state.catalog).filter(t => t.published && t.rarity === r.id &&
       (box === 'card' ? t.kind === '卡牌' : (t.boxes || []).includes(box)));
     if (!pool.length && box === 'card') pool = [{ id: 'blank_' + r.id, version: 1, kind: '卡牌', name: r.name + '色空白卡牌',
       rarity: r.id, weight: 0, value: 0, effects: [], traitIds: [], uniqueText: '等待GM定义能力。', description: '同色占位卡牌。' }];
     C.requireThat(pool.length, '该箱型的' + r.name + '色掉落池未配置。');
     const item = M.makeItem(pool[rng(0, pool.length)]);
-    if (box !== 'card') item.snapshot.value = rng(r.min, r.max + 1);
     batch.items.push(item);
   }
   return batch;
 }
-module.exports = { DEFAULT_SAFE_RATES, COLORS, validateRates, rates, setRates, rarity, generate };
+module.exports = { DEFAULT_SAFE_RATES, COLORS, validateRates, rates, setRates, adjustedRates, rarity, generate };

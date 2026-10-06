@@ -19,6 +19,11 @@ function commands() {
       [{ name: '普通', value: 'normal' }, { name: '优势', value: 'advantage' }, { name: '劣势', value: 'disadvantage' }]),
     str(cmd('建卡', '生成或继续待确认角色卡'), '名字', '角色名', false),
     user(cmd('角色卡', '公开查看角色属性、等级和生命'), false),
+    cmd('角色设置', '个人角色面板：性别、背景、外貌、信念与自由点分配'),
+    ...['角色图片','npc图片'].map(name => cmd(name, name==='角色图片'?'预览并上传或清除自己的角色头像和立绘':'GM选择NPC更新头像及立绘')
+      .addAttachmentOption(o=>o.setName('头像').setDescription('右上头像，PNG/JPEG/WebP，最多4 MiB'))
+      .addAttachmentOption(o=>o.setName('立绘').setDescription('底部大图，PNG/JPEG/WebP，最多4 MiB'))
+      .addStringOption(o=>o.setName('清除').setDescription('清除位置；不能与上传同时使用').addChoices({name:'头像',value:'avatar'},{name:'立绘',value:'illustration'},{name:'两者',value:'both'}))),
     int(str(cmd('分配属性点', '为自己的角色分配自由属性点'), '属性', '选择属性', true,
       Object.entries(C.ATTRIBUTES).map(([value, name]) => ({ name, value }))), '点数', '增加的点数', false, 1, 100000),
     cmd('抽卡', '消耗一次抽卡次数；超重时保留待领取结果'),
@@ -37,7 +42,7 @@ function commands() {
     str(cmd('录入物品', 'GM分步录入物品、装备、卡牌或技能'), '类型', '模板种类', false, C.ITEM_KINDS),
     cmd('录入词条', 'GM录入结构化词条或展示文字'),
     cmd('录入异常', 'GM录入异常、各级效果与恶化规则'),
-    str(cmd('规则', '跑团规则、公式及示例'), '章节', '速查章节', false, ['总览', '世界背景', '势力', '建卡', '升级', '负重', '装备', '交易', '抽取', '食物药品', '鉴定', '开团', '地图', '击杀与死亡', '保险箱', '战斗', '异常', '指令']),
+    str(cmd('规则', '跑团规则、公式及示例'), '章节', '速查章节', false, ['总览', '世界背景', '势力', '建卡', '升级', '负重', '装备', '交易', '抽取', '食物药品', '鉴定', '开团', '地图', '击杀与死亡', '保险箱', '战斗', '异常', '指令', '角色设置', '时运', '物价']),
   ];
   const check = cmd('鉴定', 'GM发布或管理玩家鉴定');
   check.addSubcommand(s => {
@@ -57,6 +62,7 @@ function commands() {
   gm.addSubcommand(s => int(str(user(s.setName('次数').setDescription('发放抽卡或指定箱型次数')), '类型', '抽卡或箱型', true, ['抽卡', ...C.BOXES]), '数量', '发放次数', true, 1, 100000));
   gm.addSubcommand(s => int(int(item(user(s.setName('收购').setDescription('GM私有选物报价面板，或填写完整参数快捷收购')), '物品', false), '价格', '快捷收购总价，面板中可填写', false, 0, C.MAX_MONEY), '数量', '收购数量', false, 1, 100000));
   gm.addSubcommand(s => user(s.setName('销卡').setDescription('确认后清空角色与财产，保留审计')));
+  gm.addSubcommand(s => int(user(s.setName('时运').setDescription('设置玩家基础时运，不能使用自由点')), '数值', '基础时运（-9至11）', true, -9, 11));
   gm.addSubcommand(s => s.setName('npc').setDescription('创建或继续NPC模板草稿'));
   gm.addSubcommand(s => s.setName('草稿').setDescription('下拉选择自己的持久录入草稿'));
   gm.addSubcommand(s => item(s.setName('修改模板').setDescription('选择模板发布新版本；已发放实例不变'), '物品', false));

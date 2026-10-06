@@ -44,7 +44,7 @@ function playerRole(state, member) { return state.config.playerRoleIds.some(r =>
 function characterView(p, privateView = false, page = 0) {
   const s = M.stats(p), faction = require('./factions'), color = faction.FACTIONS[p.faction?.id]?.color || 0x3498db;
   const v = payload('角色卡 · ' + p.name, '**Lv.' + p.level + ' · ' + C.title(p.level) + '**\n' + faction.label(p.faction) +
-    '\n\n**HP ' + p.hp + '/' + s.maxHP + '**\n' + bar(p.hp, s.maxHP) + '\n**经验 ' + (p.xpCenti / 100).toFixed(2) +
+    '\n性别：' + ({male:'男性',female:'女性'}[p.gender]||'未设置') + ' · 时运 **'+(p.luck??1)+' → '+s.luck+'**' + '\n\n**HP ' + p.hp + '/' + s.maxHP + '**\n' + bar(p.hp, s.maxHP) + '\n**经验 ' + (p.xpCenti / 100).toFixed(2) +
     (p.level === 100 ? ' · 满级' : '/' + p.level * 1000) + '**\n' + bar(p.xpCenti / 100, p.level * 1000), [], color);
   const attr = Object.entries(C.ATTRIBUTES).map(([k, label]) => label + ' **' + p.attributes[k] + '**' + (s.attributes[k] !== p.attributes[k] ? ' → **' + s.attributes[k] + '**' : ''));
   v.embeds[0].addFields(field('身体属性', attr.filter((_, n) => [0,1,3,5].includes(n)).join('\n'), true),
@@ -56,16 +56,22 @@ function characterView(p, privateView = false, page = 0) {
     field('持续效果 · 第' + (page + 1) + '页', temporaryText(p, page)));
   if (privateView) v.embeds[0].addFields(field('私人资产', '余额 **' + p.balance + '** · 抽卡次数 **' + p.tickets.card + '**\n' +
     Object.entries(p.tickets.boxes).map(([k,n]) => k + ' ' + n).join(' / ') || '暂无'));
-  const pages = Math.max(1, Math.ceil(p.conditions.length / 8), Math.ceil((p.temporaryEffects || []).length / 3));
-  if (!privateView && pages > 1) v.components = [row(button('cardpage:' + p.userId + ':' + p.id + ':' + Math.max(0,page-1), '上一页状态', undefined, page <= 0),
-    button('cardpage:' + p.userId + ':' + p.id + ':' + Math.min(pages-1,page+1), '下一页状态', undefined, page >= pages-1))];
-  v.embeds[0].setFooter({ text: '角色 ' + p.id + ' · ' + (privateView ? '本人及GM可见' : '公开属性') }); return v;
+  const profilePages = [['background','个人背景'],['appearance','个人外貌描述'],['belief','个人信念']].flatMap(([key,label])=>p.profile?.[key] ? Array.from({length:Math.ceil(p.profile[key].length/1000)},(_,n)=>({label,text:p.profile[key].slice(n*1000,(n+1)*1000)})) : []);
+  if(page>0&&profilePages[page-1])v.embeds[0].addFields(field(profilePages[page-1].label,profilePages[page-1].text));
+  const pages = Math.max(1+profilePages.length, Math.ceil(p.conditions.length / 8), Math.ceil((p.temporaryEffects || []).length / 3));
+  if (p.userId && !privateView && pages > 1) v.components = [row(button('cardpage:' + p.userId + ':' + p.id + ':' + Math.max(0,page-1), '上一页 / 状态', undefined, page <= 0),
+    button('cardpage:' + p.userId + ':' + p.id + ':' + Math.min(pages-1,page+1), '下一页 / 个人描述', undefined, page >= pages-1))];
+  if(p.userId)v.components.push(row(button('profile:home:'+p.userId+':'+p.id,'角色设置 / 分配自由点')));
+  v.rpgPortraits = p.portraits || {};
+  v.embeds[0].setFooter({ text: '角色 ' + p.id + ' · '+(page+1)+'/'+pages+' · ' + (privateView ? '本人及GM可见' : '公开属性') }); return v;
 }
 function draftView(d) {
   return payload('确认角色 · 整套重掷剩余' + (3 - d.rerolls), d.name + '\n' +
     Object.entries(C.ATTRIBUTES).map(([k, n]) => n + ' ' + d.attributes[k]).join('　') +
-    '\n适应性 ' + d.adaptation + '\n确认后获得2点自由属性点，属性掷骰锁定。', [
-      row(button('char:confirm:' + d.id, '确认角色', D.ButtonStyle.Success), button('char:reroll:' + d.id, '整套重掷', D.ButtonStyle.Secondary, d.rerolls >= 3)),
+    '\n性别：'+({male:'男性',female:'女性'}[d.gender]||'请下拉选择')+'\n适应性 ' + d.adaptation + '\n确认后获得2点自由属性点，属性掷骰锁定。', [
+      row(select('profile:draftgender:'+d.userId+':'+d.id,'选择男性或女性',require('./character-panel').genders.map(g=>({...g,default:d.gender===g.value})))),
+      row(button('profile:draftbio:'+d.userId+':'+d.id,'填写背景 / 外貌 / 信念')),
+      row(button('char:confirm:' + d.id, '确认角色', D.ButtonStyle.Success,!d.gender), button('char:reroll:' + d.id, '整套重掷', D.ButtonStyle.Secondary, d.rerolls >= 3)),
     ]);
 }
 function inventoryView(state, userId, viewerId, page = 0) {
@@ -96,7 +102,7 @@ function itemView(state, userId, viewerId, ref, page = 0) {
   const t = item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity) || C.RARITIES.at(-1);
   const sections = [t.kind === '钥匙' ? '剩余开门次数：' + item.keyCharges : '', t.description || '暂无描述', effectsText(t.effects),
     t.uniqueText || '', t.appearance || ''].filter(Boolean);
-  if (['武器','技能'].includes(t.kind)) sections.push('固定命中 ' + t.hit + ' · 射程 ' + t.range + '格\n伤害：' +
+  if (['武器','技能'].includes(t.kind)) sections.push('固定命中 ' + t.hit + ' · 攻击距离 ' + (t.rangeMeters??t.range*50) + '米 · 有效 '+C.round2(M.modify(M.stats(p).effects,'range',t.rangeMeters??t.range*50))+'米'+(t.melee?'（近战同格）':'')+'\n伤害：' +
     Object.entries(t.damage || {}).filter(([, v]) => v).map(([k, v]) => C.DAMAGE_TYPES[k] + ' ' + v).join('／') +
     '\n' + (t.kind === '武器' ? '类型 ' + t.weaponType + (t.melee ? ' · 近战' : ' · 远程') : '行动 ' + t.action + ' · 吟唱 ' + t.casting) +
     (item.loaded ? '\n载弹 ' + item.loaded.current + '/' + item.loaded.capacity : ''));
@@ -199,7 +205,9 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
     button('pass:' + prefix + ':formal', '放弃正式行动', undefined, !enabled || !turn.formal),
     button('finish:' + prefix, '结束本次行动', D.ButtonStyle.Success, !enabled)));
   rows.push(row(button('view:' + prefix + ':' + tab + ':' + statusPage, '刷新'), button('battle:' + b.id, '查看战场')));
+  if(a.userId===viewer)rows[rows.length-1].addComponents(button('profile:home:'+a.userId+':'+p.id,'角色设置 / 自由点'));
   const v = payload('个人行动面板 · ' + a.name, body, rows);
+  v.rpgPortraits = p.portraits || {};
   v.embeds[0].addFields(...characterView(p, true, statusPage).embeds[0].data.fields);
   return v;
 }

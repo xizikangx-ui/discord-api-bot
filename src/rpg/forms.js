@@ -15,7 +15,7 @@ function defaults(kind, itemKind = '杂物') {
   if (kind === 'item') return { kind: itemKind, name: '', description: '', rarity: 'white', weightKg: 0, value: 0,
     durabilityMax:100, armorWeakening:{type:'physical',amount:0}, weakeningResistance:{physical:0,magical:0,mental:0},repairKinds:['武器','防具'],repairAmount:10,repairMaxLoss:0, quality: '标准', origin: '未知', title: '', appearance: '', supernatural: false, traitIds: ['neutral'], effects: [], boxes: [],
     weaponType: '剑', otherType: '', melee: true, ammoType: '', magazineType: '', capacity: 1, current: 0,
-    ammoIds: [], magazineIds: [], fireModes: ['semi'], hit: 10, range: 1, primary: 'physical', damage: { physical: itemKind==='弹药'?'0':'1d6', magical: '', mental: '' }, conditions: [],
+    ammoIds: [], magazineIds: [], fireModes: ['semi'], hit: 10, rangeMeters: 50, primary: 'physical', damage: { physical: itemKind==='弹药'?'0':'1d6', magical: '', mental: '' }, conditions: [],
     armorType: '胸甲', defenses: { physical: 0, magical: 0, mental: 0 }, accessoryType: 'body',
     uniqueText: '', skillIds: [], preinstalled: [], compatible: [], attachmentSlot: '瞄具',
     special: 'heart', keyCharges: 1, heal: '0', clearConditions: [], duration: { kind: 'actions', count: 3 }, action: 'formal', casting: 0 };
@@ -77,7 +77,7 @@ function fields(form) {
   if(d.kind==='防具')list.push(...Object.entries(C.DAMAGE_TYPES).map(([k,n])=>field('weakeningResistance.'+k,n+'抗削弱点数','number')));
   if (d.kind === '武器' && d.weaponType === '其他') list.push(field('melee', '其他类型是否近战（否则远程）', 'bool'));
   if (d.kind === '武器' || d.kind === '技能') {
-    list.push(field('hit', '固定命中', 'number'), field('range', '射程格数', 'number'),
+    list.push(field('hit', '固定命中', 'number'), field('rangeMeters', '攻击距离（米）', 'number'),
       field('damage.physical', '物理伤害骰式（留空无）'), field('damage.magical', '魔法伤害骰式（留空无）'),
       field('damage.mental', '精神伤害骰式（留空无）'),
       enumField('primary', '主伤害分量', Object.entries(C.DAMAGE_TYPES).map(([value, label]) => ({ value, label }))),
@@ -106,6 +106,7 @@ function create(state, owner, kind, itemKind, existingId) {
   const data = old ? C.clone(old) : defaults(kind, itemKind);
   if (kind === 'item' && old) {
     if(['武器','弹夹'].includes(old.kind)){data.ammoIds=old.ammoIds || (old.initialAmmo?.id ? [old.initialAmmo.id] : Object.values(state.catalog).filter(t=>t.kind==='弹药'&&t.ammoType===old.ammoType).slice(0,1).map(t=>t.id));data.magazineIds=old.magazineIds || (old.initialMagazine?.id?[old.initialMagazine.id]:[]);}
+    data.rangeMeters ??= (old.range ?? 1)*50;
     data.durabilityMax ??=100;data.armorWeakening||={type:'physical',amount:0};data.weakeningResistance||={physical:0,magical:0,mental:0};
     data.fireModes ||= ['semi'];
     data.duration ||= { kind: 'actions', count: 3 };
@@ -141,7 +142,7 @@ function view(state, form, preview = false) {
     '\n\n' + defs.slice(page * 20, page * 20 + 20).map((d, n) => (page * 20 + n === form.field ? '▶ ' : '') +
       '**' + d.label + '**：' + display(get(form.data, d.key), d, state).slice(0, 120)).join('\n') +
     (preview ? '\n\n请逐页核对后发布。' : '');
-  return U.payload(preview ? '发布预览' : 'GM分步录入 · 第' + (page + 1) + '/' + pages + '页', body, [
+  const result = U.payload(preview ? '发布预览' : 'GM分步录入 · 第' + (page + 1) + '/' + pages + '页', body, [
     U.row(U.select('formfield:' + form.id, '选择要填写的字段', defs.slice(page * 20, page * 20 + 20).map((d, n) =>
       ({ label: d.label, value: String(page * 20 + n), default: page * 20 + n === form.field })))),
     U.row(U.button('formpage:' + form.id + ':' + (page - 1), '上一页', undefined, page === 0),
@@ -151,6 +152,8 @@ function view(state, form, preview = false) {
     U.row(U.button('formpublish:' + form.id, form.kind === 'rolepanel' ? '发布领取面板' : '发布模板', U.D.ButtonStyle.Success),
       U.button('formexit:' + form.id, '保存并退出'), U.button('formdelete:' + form.id, '删除草稿', U.D.ButtonStyle.Danger))
   ]);
+  if(form.kind==='npc')result.rpgPortraits=form.data.portraits || {};
+  return result;
 }
 function options(state, def) {
   if (def.type === 'conditions') return Object.values(state.conditionTemplates).filter(t => t.published).flatMap(t =>
@@ -190,13 +193,15 @@ function effectsView(state, form) {
   const def = fields(form)[form.field], effects = get(form.data, def.key) || [], conditional = def.type === 'conditionEffects';
   const page=Math.max(0,Math.min(form.effectPage||0,Math.max(0,Math.ceil(effects.length/25)-1)));
   const targets = conditional ? C.CONDITION_TARGETS : C.EFFECT_TARGETS;
+  const targetPage = Math.max(0, Math.min(form.targetPage || 0, Math.ceil(targets.length / 25) - 1));
   return U.payload(def.label, display(effects, def, state) + '\n\n' + (conditional ? '填写固定值或骰式，系统按扣除处理。' :
     '运算：' + (form.effectOp === 'percent' ? '百分比修正' : '固定加减') + '。负数表示减益。'), [
-    U.row(U.select('formtarget:' + form.id, '新增效果：选择目标', targets.map(value => ({ value, label: C.targetLabel(value) })))),
+    U.row(U.select('formtarget:' + form.id, '新增效果：选择目标', targets.slice(targetPage*25,targetPage*25+25).map(value => ({ value, label: C.targetLabel(value) })))),
+    ...(targets.length > 25 ? [U.row(U.button('formtargetpage:'+form.id+':'+(targetPage-1),'上一页目标',undefined,!targetPage),U.button('formtargetpage:'+form.id+':'+(targetPage+1),'下一页目标',undefined,(targetPage+1)*25>=targets.length))] : []),
     ...(effects.length ? [U.row(U.select('formremoveeffect:' + form.id, '删除某项效果', effects.slice(page*25,page*25+25).map((e, n) =>
       ({ label: C.targetLabel(e.target) + ' ' + (e.amount ?? e.value), value: String(page*25+n) }))))] : []),
-    ...(effects.length>25?[U.row(U.button('formeffectpage:'+form.id+':'+(page-1),'上一页效果',undefined,!page),U.button('formeffectpage:'+form.id+':'+(page+1),'下一页效果',undefined,(page+1)*25>=effects.length))]:[]),
-    U.row(...(!conditional ? [U.button('formop:' + form.id, '切换固定／百分比')] : []), U.button('formclear:' + form.id, '清空效果'), U.button('formback:' + form.id, '返回草稿'))
+
+    U.row(...(!conditional ? [U.button('formop:' + form.id, '切换固定／百分比')] : []), U.button('formclear:' + form.id, '清空效果'), U.button('formback:' + form.id, '返回草稿'), ...(effects.length>25 ? [U.button('formeffectpage:'+form.id+':'+(page-1),'上一页效果',undefined,!page),U.button('formeffectpage:'+form.id+':'+(page+1),'下一页效果',undefined,(page+1)*25>=effects.length)] : []))
   ]);
 }
 function publish(state, form) {
@@ -212,7 +217,10 @@ function publish(state, form) {
       }
       result = B.validateCondition(data);
     }
-    if (form.kind === 'npc') result = B.validateNPC(state, data);
+    if (form.kind === 'npc') {
+      if (form.existingId) data.portraits = C.clone(state.npcTemplates[form.existingId]?.portraits || {});
+      result = B.validateNPC(state, data);
+    }
     if (form.kind === 'mapcategory') result = { name: C.text(data.name, '大类名称', 80), description: C.text(data.description || '', '描述', 2000, true) };
     if (form.kind === 'room') result = require('./exploration').validateRoom(state, data);
     if (form.kind === 'rolepanel') {

@@ -6,12 +6,12 @@ const ATTRIBUTES = { strength: '力量', constitution: '体质', mind: '心智',
   intelligence: '智力', agility: '敏捷', knowledge: '学识' };
 const DAMAGE_TYPES = { physical: '物理', magical: '魔法', mental: '精神' };
 const RARITIES = [
-  { id: 'red', name: '红', weight: 5, min: 1500000, max: 23000000, color: 0xed4245 },
-  { id: 'gold', name: '金', weight: 10, min: 30000, max: 100000, color: 0xf1c40f },
-  { id: 'purple', name: '紫', weight: 85, min: 5000, max: 15000, color: 0x9b59b6 },
-  { id: 'blue', name: '蓝', weight: 200, min: 1000, max: 5000, color: 0x3498db },
-  { id: 'green', name: '绿', weight: 250, min: 400, max: 1000, color: 0x2ecc71 },
-  { id: 'white', name: '白', weight: 450, min: 1, max: 200, color: 0xecf0f1 },
+  { id: 'red', name: '红', weight: 5, min: 30000, max: 300000, color: 0xed4245 },
+  { id: 'gold', name: '金', weight: 10, min: 1500, max: 6000, color: 0xf1c40f },
+  { id: 'purple', name: '紫', weight: 85, min: 500, max: 1500, color: 0x9b59b6 },
+  { id: 'blue', name: '蓝', weight: 200, min: 100, max: 500, color: 0x3498db },
+  { id: 'green', name: '绿', weight: 250, min: 20, max: 100, color: 0x2ecc71 },
+  { id: 'white', name: '白', weight: 450, min: 1, max: 20, color: 0xecf0f1 },
 ];
 const BOXES = ['大衣', '外套', '书柜', '武器箱', '医疗包', '旅行包', '饭盒', '高级旅行包',
   '小型保险', '保险箱', '军需保险箱', '武库保险箱'];
@@ -77,13 +77,13 @@ function title(level) {
   return level < 100 ? '半神' : '神';
 }
 function targetLabel(target) {
-  if (target.startsWith('attr:')) return ATTRIBUTES[target.slice(5)];
+  if (target.startsWith('attr:')) return target === 'attr:luck' ? '时运' : ATTRIBUTES[target.slice(5)];
   const labels = { hp: '生命值', hpMax: '生命上限', ap: '当前动作点', apGain: '动作点增长',
-    move: '移动米数', hit: '命中', dodge: '闪避修正', 'resist:physical': '物理异常抗性', 'resist:magical': '魔法异常抗性',
+    range: '攻击距离（米）', move: '移动米数', hit: '命中', dodge: '闪避修正', 'resist:physical': '物理异常抗性', 'resist:magical': '魔法异常抗性',
     'resist:mental': '精神异常抗性' };
   return labels[target] || (target.startsWith('attack:') ? '伤害：' : '防御：') + (DAMAGE_TYPES[target.split(':')[1]] || target);
 }
-const EFFECT_TARGETS = [...Object.keys(ATTRIBUTES).map(k => 'attr:' + k), 'hpMax', 'move', 'hit', 'dodge', 'apGain',
+const EFFECT_TARGETS = [...Object.keys(ATTRIBUTES).map(k => 'attr:' + k), 'attr:luck', 'range', 'hpMax', 'move', 'hit', 'dodge', 'apGain',
   ...Object.keys(DAMAGE_TYPES).flatMap(k => ['attack:' + k, 'defense:' + k, 'resist:' + k])];
 const CONDITION_TARGETS = [...EFFECT_TARGETS, 'hp', 'ap'];
 function kg(value) { return (value / 100).toFixed(2) + 'kg'; }
@@ -125,7 +125,7 @@ function seedCatalog() {
       const key = 'seed_' + b + '_' + r.id;
       catalog[key] = { id: key, version: 1, published: true, kind: '杂物',
         name: props[b][n], rarity: r.id, weight: [20, 50, 100, 150, 100, 50][n],
-        value: r.min, boxes: [box], effects: [], traitIds: [], description: descriptions[b][n] };
+        value: require('./upgrade').seedPrice(key), boxes: [box], effects: [], traitIds: [], description: descriptions[b][n] };
     });
   });
   for (const [special, name] of [['heart', '世界树之心'], ['tear', '世界树之泪']]) {
@@ -136,7 +136,7 @@ function seedCatalog() {
   return catalog;
 }
 function newState(guildId) {
-  return { kind: 'tabletop-rpg', schema: 1, upgrade: 4, guildId, revision: 0,
+  return { kind: 'tabletop-rpg', schema: 1, upgrade: 5, guildId, revision: 0,
     config: { gmRoleIds: [], playerRoleIds: [], announcementChannelId: null },
     players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(), checks: {}, sessions: {}, lootPublications: {},
     traits: { neutral: { id: 'neutral', version: 1, published: true, name: '无附加效果', description: '只展示，不修改数值。', effects: [] } }, conditionTemplates: {},

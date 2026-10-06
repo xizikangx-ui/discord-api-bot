@@ -1,5 +1,7 @@
 'use strict';
 const C = require('./constants'), M = require('./model'), B = require('./combat'), F = require('./forms'), U = require('./ui');
+const { createCharacterPanel } = require('./character-panel');
+const { createPortraits } = require('./portraits');
 const { createStore } = require('./store');
 const { commands } = require('./commands');
 const { chapters } = require('./rules');
@@ -262,6 +264,8 @@ function createRpg(deps) {
     const o = i.options, target = () => o.getUser('成员')?.id || uid;
     if (name === '地图配置') { needGM(s, member); return exploration.config(s); }
     if (name === '地图') return exploration.home(s, member);
+    if(name==='角色设置')return characterPanel.home(M.player(s,uid));
+    if(['角色图片','npc图片'].includes(name))return portraits.slash(i,member);
     if (name === '势力') return factions.home(s, uid);
     if (name === '开团' || name === '鉴定') return activities.slash(i, member);
     if (name === '跑团配置面板') { needConfig(member); return configView(s); }
@@ -376,7 +380,7 @@ function createRpg(deps) {
     if (sub === '模板库') return catalogView(s, o.getString('类型') || '物品', 0);
     if (sub === '抽取公示') return activities.slash(i, member);
     if (sub === '草稿') {
-      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback','selection','fire'].includes(f.kind));
+      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback','selection','fire','allocation','portrait'].includes(f.kind));
       if (ref) return formView(s, ref, uid);
       return pickView('选择持久草稿', forms.map(f => ({ value: f.id, label: f.data?.name || f.data?.title || f.kind, description: f.id })), 'drafts', 0);
     }
@@ -405,6 +409,7 @@ function createRpg(deps) {
     const result = await tx(i, st => {
       needGM(st, member);
       const p = M.player(st, target), amount = o.getInteger('数量') || 1;
+      if(sub==='时运'){p.luck=num(o.getInteger('数值'),'基础时运',-9,11);return {luck:p.luck};}
       if (sub === '经验') return M.grantXP(st, target, amount);
       if (sub === '属性点') { p.points = num(p.points + amount, '累计自由点', 0, 1000000); return { points: p.points }; }
       if (sub === '发放') return M.issue(st, target, o.getString('物品'), amount).map(item => ({ id: item.id, name: item.snapshot.name }));
@@ -417,7 +422,7 @@ function createRpg(deps) {
       throw new Error('GM操作未识别。');
     });
     return payload('GM' + sub + '已保存', '目标 <@' + target + '>\n' + (sub === '经验' ? '实得经验 ' + result.credited + '，等级 ' + result.before + '→' + result.level + '，获得自由点 ' + result.points :
-      sub === '发放' ? result.map(item => item.name + ' · ' + item.id).join('\n') : sub === '次数' ? result.type + ' +' + result.amount : '自由点余额 ' + result.points));
+      sub === '时运' ? '基础时运 '+result.luck : sub === '发放' ? result.map(item => item.name + ' · ' + item.id).join('\n') : sub === '次数' ? result.type + ' +' + result.amount : '自由点余额 ' + result.points));
   }
   function catalogView(s, type, page) {
     const source = { '物品': 'catalog', '词条': 'traits', '异常': 'conditionTemplates', 'NPC': 'npcTemplates' }[type] || 'catalog';
@@ -494,6 +499,8 @@ function createRpg(deps) {
     }
     return gmUI.view(snapshot(i.guildId), battle(snapshot(i.guildId), ref));
   }
+  const characterPanel=createCharacterPanel({snapshot,tx});
+  const portraits=createPortraits({...deps,snapshot,tx,needGM,pickView});
   const activities = createActivities({ snapshot, tx, store, textChannel, client, needGM, logFailure });
   const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
   const buyback = createBuyback({ snapshot, tx, needGM, announceOffer });
@@ -521,13 +528,15 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
+      if (i.customId && (await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       const privateSource = !!i.message?.flags?.has(E);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
       else await i.deferReply(publicResult ? {} : { flags: E });
       const member = await i.guild.members.fetch({ user: i.user.id, force: true });
       const result = i.isChatInputCommand?.() ? await slash(i, member) :
+        i.customId.startsWith('rpg:profile:') ? await characterPanel.component(i,member) :
+        i.customId.startsWith('rpg:portrait:') ? await portraits.component(i,member) :
         i.customId.startsWith('rpg:map:') ? await exploration.component(i, member) :
         i.customId.startsWith('rpg:activity:') ? await activities.component(i, member) :
         i.customId.startsWith('rpg:buyback:') ? await buyback.component(i, member) :
@@ -535,7 +544,8 @@ function createRpg(deps) {
         i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
         i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) :
         /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
-      const response = result || payload('已完成', '操作已保存。');
+      const response = await portraits.decorate(i.guildId,result || payload('已完成', '操作已保存。'));
+      if(!publicResult){response.attachments ||= [];response.files ||= [];}
       await i.editReply(publicResult ? response : navigation.wrap(i, response));
     } catch (error) {
       navigation.invalidate(i);
@@ -548,6 +558,6 @@ function createRpg(deps) {
     }
     return true;
   }
-  return { start, handle, stop: () => clearInterval(timer), store, activities, exploration, tickGuild };
+  return { start, handle, stop: () => clearInterval(timer), store, activities, exploration, tickGuild, portraits };
 }
 module.exports = { createRpg, commands, dangerBits };

@@ -90,7 +90,7 @@ function harness() {
       commandName, customId, values, fields: { getTextInputValue: k => fields[k] },
       isChatInputCommand: () => !!commandName, isAutocomplete: () => false, isModalSubmit: () => !!fields,
       options: { getString: k => options[k] ?? null, getInteger: k => options[k] ?? null, getNumber: k => options[k] ?? null,
-        getUser: k => options[k] ? { id: options[k] } : null, getSubcommand: () => options.sub },
+        getAttachment: k => options[k] ?? null, getUser: k => options[k] ? { id: options[k] } : null, getSubcommand: () => options.sub },
       deferReply: async options => { data.deferred = true; data.deferOptions = options; },
       deferUpdate: async () => { data.deferred = true; data.updatedSource = true; },
       editReply: async value => { data.result = value; (data.edits ||= []).push(value); },
@@ -140,6 +140,7 @@ test('character whole rerolls include adaptation, confirm locks, allocates and t
   for (let i = 0; i < 3; i++) M.rollCharacter(s, '1', '', true, (min, max) => max - 1);
   assert.equal(s.characterDrafts['1'].adaptation, 10);
   assert.throws(() => M.rollCharacter(s, '1', '', true));
+  assert.throws(()=>M.confirmCharacter(s,'1'),/性别|男性/); s.characterDrafts['1'].gender='male';
   const p = M.confirmCharacter(s, '1'); assert.equal(p.points, 2);
   assert.throws(() => M.rollCharacter(s, '1', ''));
   M.allocate(s, '1', 'constitution', 2); assert.equal(p.hp, 24);
@@ -454,7 +455,7 @@ test('NPC versioned loadout, GM operation, no combat charge, ending freezes hist
   B.move(s, b, b.current.id, a.x - 1, a.y); assert.equal(a.character.balance, 0); assert.equal(s.players['1'].balance, 0);
   B.pause(b); M.equipCharacter(a.character, a.character.equipped.weapon, true); B.pause(b, true);
   B.finish(s, b, b.current.id, minRng); B.endBattle(s, b);
-  const oldName = s.players['1'].name; M.deleteCharacter(s, '1'); M.rollCharacter(s, '1', '新角色', false, minRng); M.confirmCharacter(s, '1');
+  const oldName = s.players['1'].name; M.deleteCharacter(s, '1'); M.rollCharacter(s, '1', '新角色', false, minRng); s.characterDrafts['1'].gender='male'; M.confirmCharacter(s, '1');
   assert.equal(B.actorCharacter(s, b.actors[0]).name, oldName); validateMessage(U.battleView(s, b));
 });
 test('dead current actor is skipped on resume, terrain boundaries are checked after centimeter rounding', () => {
@@ -563,6 +564,7 @@ test('stale character reroll cannot consume another reroll or confirm an unseen 
     const stale = h.interaction('1', null, {}, 'rpg:char:confirm:' + old.id); await rpg.handle(stale); assert.match(stale.result.content, /已经变化/);
     const current = rpg.store.snapshot(C.DEFAULT_GUILD_ID).characterDrafts['1'];
     assert.equal(current.rerolls, 1);
+    const gender=h.interaction('1',null,{},'rpg:profile:draftgender:1:'+current.id,['male']);await rpg.handle(gender);
     const confirm = h.interaction('1', null, {}, 'rpg:char:confirm:' + current.id); await rpg.handle(confirm); validateMessage(confirm.result);
   } finally { rpg.stop(); }
 });
@@ -998,7 +1000,7 @@ test('upgrade cards and commands meet full Discord limits with long real IDs and
   validateMessage(U.characterView(p)); validateMessage(U.inventoryView(s, '1', '1234567890123456789'));
   validateMessage(AU.checkView(A.createCheck(s, 'GM', 'channel', { name: '鉴定', description: '字'.repeat(2000), rule: 'd20', threshold: 10 })));
   validateMessage(AU.sessionView(A.createSession(s, 'GM', 'channel', { name: '开团', description: '字'.repeat(2000), startsAt: Date.now() + 100000 })));
-  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 24); assert.equal(new Set(all.map(c => c.name)).size, all.length);
+  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 27); assert.equal(new Set(all.map(c => c.name)).size, all.length);
   function validOptions(options) {
     let optional = false;
     for (const o of options || []) { if (o.type > 2) { if (!o.required) optional = true; else assert.equal(optional, false, o.name); }
@@ -1021,7 +1023,7 @@ test('restart preserves minute deadlines, action duration and published template
     return { deadline: p.temporaryEffects[0].expiresAt, oldRef: old.id };
   });
   const restore = createStore(h.deps); await restore.load(C.DEFAULT_GUILD_ID); const saved = restore.snapshot(C.DEFAULT_GUILD_ID);
-  assert.equal(saved.upgrade, 4); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
+  assert.equal(saved.upgrade, 5); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
   assert.equal(saved.players['1'].temporaryEffects[1].skipTurnId, 'use-turn');
   assert.equal(saved.players['1'].temporaryEffects[1].remaining, 2);
   assert.equal(saved.catalog[data.oldRef].description, C.seedCatalog()[data.oldRef].description);
@@ -1217,10 +1219,10 @@ test('container draws 1 to 6 independently weighted items, allows duplicates and
   const six = M.openLoot(s, '1', '饭盒', (min, max) => { if (first) { first = false; return 6; } return min; });
   assert.equal(six.items.length, 6); assert.equal(new Set(six.items.map(i => i.id)).size, 6);
   assert.equal(new Set(six.items.map(i => i.templateId)).size, 1); assert.equal(p.tickets.boxes['饭盒'], 1);
-  let n = 0; const weights = [0, 5, 15, 100, 300, 550];
+  let n = 0; const weights = [9950, 9850, 9000, 7000, 4500, 0];
   const mixed = M.openLoot(s, '1', '饭盒', (min, max) => {
     if (min === 1 && max === 7) return 6;
-    if (min === 0 && max === 1000) return weights[n++]; return min;
+    if (min === 0 && max === 10000) return weights[n++]; return min;
   });
   assert.deepEqual(mixed.items.map(i => i.snapshot.rarity), ['red', 'gold', 'purple', 'blue', 'green', 'white']);
   p.tickets.card = 1; const card = M.openLoot(s, '1', 'card', minRng); assert.equal(card.items.length, 1); assert.equal(p.tickets.card, 0);
@@ -1303,7 +1305,7 @@ test('missing drop pool fails without partial inventory or charged ticket', () =
   let n = 0;
   assert.throws(() => M.openLoot(s, '1', '饭盒', (min, max) => {
     if (min === 1 && max === 7) return 2;
-    if (min === 0 && max === 1000) return n++ === 0 ? 550 : 5; return min;
+    if (min === 0 && max === 10000) return n++ === 0 ? 0 : 9850; return min;
   }), /掉落池/);
   assert.equal(Object.keys(p.inventory).length, 0); assert.equal(p.tickets.boxes['饭盒'], 1); assert.equal(p.pendingLoot['饭盒'], undefined);
 });
@@ -1528,7 +1530,7 @@ test('player death cancels offers, removes exploration and turn, freezes history
   const {s,m}=mapFixture();X.join(s,m,'1');const p=s.players['1'];p.balance=100;p.tickets.card=10;M.issue(s,'1',Object.keys(s.catalog)[0]);
   const offer=M.createOffer(s,'1','2','trade'),b=B.createBattle(s,'f','GM','死亡');const a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s).id,'enemy');B.start(s,b,null,minRng);
   p.hp=0;const d=DT.settle(s,b,a,n.id);assert.ok(d.snapshot.inventory);assert.equal(s.players['1'],undefined);assert.equal(s.offers[offer.id].status,'cancelled');assert.equal(m.participants['1'],undefined);assert.ok(a.finalCharacter);assert.ok(!b.current || b.current.actorId!==a.id);
-  M.rollCharacter(s,'1','新卡',false,minRng);const fresh=M.confirmCharacter(s,'1');assert.notEqual(fresh.id,d.characterId);assert.equal(fresh.balance,0);assert.equal(fresh.tickets.card,0);assert.equal(Object.keys(fresh.inventory).length,0);assert.equal(M.battleFor(s,'1'),undefined);
+  M.rollCharacter(s,'1','新卡',false,minRng);s.characterDrafts['1'].gender='female';const fresh=M.confirmCharacter(s,'1');assert.notEqual(fresh.id,d.characterId);assert.equal(fresh.balance,0);assert.equal(fresh.tickets.card,0);assert.equal(Object.keys(fresh.inventory).length,0);assert.equal(M.battleFor(s,'1'),undefined);
   assert.equal(B.actorCharacter(s,a).id,d.characterId);assert.equal(DT.settle(s,b,a),null);
 });
 test('HP transaction reconciliation clears new noncombat deaths but preserves historical zero characters', async () => {
@@ -1617,7 +1619,7 @@ test('simultaneous corpse claims transfer each bundle at most once and recreated
 test('upgrade 4 only initializes new fields and never awards historical kills or deletes zero-HP saved players', () => {
   const s=state(),b=B.createBattle(s,'c','GM','历史');const a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s).id,'enemy');s.upgrade=3;s.players['1'].hp=0;n.character.hp=0;
   delete s.explorations;delete s.mapCategories;delete s.roomTemplates;delete s.deaths;delete s.corpses;delete n.humanoid;delete n.baseXP;delete a.characterId;
-  const old=JSON.stringify(s.players),report=A.migrate(s);assert.ok(report.maps);assert.equal(s.upgrade,4);assert.equal(JSON.stringify(s.players),old);assert.equal(n.baseXP,0);assert.equal(n.humanoid,false);assert.equal(Object.keys(s.deaths).length,0);assert.equal(A.migrate(s),null);
+  const old=JSON.stringify(s.players),report=A.migrate(s);assert.ok(report.maps);assert.equal(s.upgrade,5);assert.equal(JSON.stringify(s.players),old);assert.equal(n.baseXP,0);assert.equal(n.humanoid,false);assert.equal(Object.keys(s.deaths).length,0);assert.equal(A.migrate(s),null);
 });
 test('fatal condition preserves original caster identity after actor removal and never rewards a replacement card', () => {
   for (const replacement of [false, true]) {
@@ -1843,4 +1845,81 @@ test('repair maximum loss is per instance, defaults to zero, clamps current and 
 });
 test('reserved repair tools reject use and combat repairs consume exactly one quick action',()=>{
   const s=state(),w=M.issue(s,'1',weapon(s).id)[0];w.durability=10;const t=M.publishTemplate(s,{kind:'修复道具',name:'工具',rarity:'white',weightKg:0,repairKinds:['武器','防具'],repairAmount:20}),tool=M.issue(s,'1',t.id,2)[0];const offer=M.createOffer(s,'1','2','trade');M.updateOffer(s,offer.id,'1',[{id:tool.id,quantity:2}],0);const {b}=fight(s);assert.throws(()=>B.useItem(s,b,b.current.id,tool.id,minRng,w.id),/预留/);assert.equal(w.durability,10);assert.equal(b.current.quick,1);M.cancelOffer(s,offer.id,'1');const result=B.useItem(s,b,b.current.id,tool.id,minRng,w.id);assert.equal(result.repaired,20);assert.equal(b.current.quick,0);assert.equal(tool.quantity,1);assert.throws(()=>B.useItem(s,b,b.current.id,tool.id,minRng,w.id),/快速/);
+});
+
+test('luck combines signed flat and percent effects, clamps and cannot consume free points',()=>{
+  const s=state(),p=s.players['1'];assert.equal(M.stats(p).luck,1);p.temporaryEffects=[{duration:{kind:'actions'},modifiers:[{target:'attr:luck',op:'add',value:2},{target:'attr:luck',op:'percent',value:50}]}];assert.equal(M.stats(p).luck,4);p.luck=-9;assert.equal(M.stats(p).luck,-9);p.luck=11;assert.equal(M.stats(p).luck,11);assert.throws(()=>M.allocate(s,'1','luck',1),/属性无效/);assert.throws(()=>M.allocate(s,'1','adaptation',1),/属性无效/);assert.equal(p.points,2);
+});
+test('luck tiers preserve exact integer probability totals, zeros and saturation',()=>{
+  const s=state();assert.deepEqual(L.adjustedRates(s,'card',1),[45,25,20,8.5,1,.5]);assert.deepEqual(L.adjustedRates(s,'card',0),[45.5,25.5,20.5,7.23,.85,.42]);assert.deepEqual(L.adjustedRates(s,'card',2),[44.25,24.58,19.67,9,1.5,1]);assert.deepEqual(L.adjustedRates(s,'card',5),[42,23.33,18.67,10.5,3,2.5]);
+  for(let luck=-9;luck<=11;luck++)for(const box of ['card',...C.BOXES]){const v=L.adjustedRates(s,box,luck);assert.equal(v.reduce((n,x)=>n+Math.round(x*100),0),10000);assert.ok(v.every(x=>x>=0));}
+  L.setRates(s,'保险箱',[99,0,0,1,0,0]);assert.deepEqual(L.adjustedRates(s,'保险箱',-9),[100,0,0,0,0,0]);assert.deepEqual(L.adjustedRates(s,'保险箱',11),[95.8,0,0,4.2,0,0]);L.setRates(s,'保险箱',[0,0,0,0,0,100]);assert.deepEqual(L.adjustedRates(s,'保险箱',11),[0,0,0,0,0,100]);
+});
+test('pending personal loot freezes luck rates and exact template prices even after luck changes',()=>{
+  const s=state(),p=s.players['1'];p.tickets.boxes.饭盒=2;p.luck=5;p.inventory.heavy={id:'heavy',quantity:1,snapshot:{weight:99999}};const first=M.openLoot(s,'1','饭盒',minRng);assert.ok(first.pending);assert.equal(first.luck,5);assert.deepEqual(first.rates,L.adjustedRates(s,'饭盒',5));assert.equal(first.item.snapshot.value,s.catalog[first.item.templateId].value);p.luck=-9;const again=M.openLoot(s,'1','饭盒',()=>{throw Error('reroll');});assert.deepEqual(again,first);delete p.inventory.heavy;const claimed=M.openLoot(s,'1','饭盒',()=>{throw Error('reroll');});assert.equal(claimed.luck,5);assert.equal(p.tickets.boxes.饭盒,1);
+});
+test('economy upgrade zeros only balances, migrates live values and ranges once and retains history',()=>{
+  const s=state(),p=s.players['1'];s.upgrade=4;p.balance=888;p.tickets.card=4;const t=weapon(s,{rarity:'purple',value:90000,range:3}),item=M.issue(s,'1',t.id)[0];p.pendingLoot.饭盒={id:'pending',items:[M.makeItem(s.catalog.seed_6_white)]};s.offers.a={status:'ready',price:20000};s.offers.b={status:'completed',price:20000};s.events.push({result:C.clone(item)});s.lootPublications.old={result:C.clone(item)};const inv=Object.keys(p.inventory),history=JSON.stringify(s.events),report=A.migrate(s);assert.equal(report.balancesReset,3);assert.equal(p.balance,0);assert.deepEqual(Object.keys(p.inventory),inv);assert.equal(p.tickets.card,4);assert.equal(item.snapshot.value,1000);assert.equal(item.snapshot.rangeMeters,150);assert.equal(p.pendingLoot.饭盒.items[0].snapshot.value,12);assert.equal(s.offers.a.status,'cancelled');assert.equal(s.offers.b.price,20000);assert.equal(JSON.stringify(s.events),history);assert.equal(s.lootPublications.old.result.snapshot.value,90000);p.balance=42;assert.equal(A.migrate(s),null);assert.equal(p.balance,42);
+});
+test('all 72 modern items have individual values in the new bands and system placeholders stay zero',()=>{
+  const s=state(),items=Object.values(s.catalog).filter(t=>t.id.startsWith('seed_'));assert.equal(items.length,72);for(const t of items){const r=C.RARITIES.find(r=>r.id===t.rarity);assert.ok(t.value>=r.min&&t.value<=r.max);}assert.ok(new Set(items.filter(t=>t.rarity==='white').map(t=>t.value)).size>5);assert.equal(s.catalog.special_heart.value,0);
+});
+test('new cards require gender and preserve all three personal descriptions across rerolls',()=>{
+  const s=C.newState('x'),d=M.rollCharacter(s,'1','本人',false,minRng);assert.throws(()=>M.confirmCharacter(s,'1'),/男性/);d.gender='female';d.profile={background:'来自废墟',appearance:'灰色外套',belief:'守护同伴'};const next=M.rollCharacter(s,'1','',true,minRng);assert.equal(next.gender,'female');assert.deepEqual(next.profile,d.profile);const p=M.confirmCharacter(s,'1');assert.equal(p.gender,'female');assert.equal(p.luck,1);assert.equal(p.profile.belief,'守护同伴');assert.deepEqual(p.attributes,next.attributes);assert.deepEqual(p.portraits,{});
+});
+test('long personal descriptions paginate completely without exposing assets and obey Discord limits',()=>{
+  const s=state(),p=s.players['1'];p.profile={background:'背'.repeat(2000),appearance:'貌'.repeat(2000),belief:'信'.repeat(2000)};p.gender='male';p.balance=987654321;
+  let serialized='',content='';for(let n=0;n<7;n++){const r=U.characterView(p,false,n);validateMessage(r);serialized+=JSON.stringify(r.embeds[0].toJSON());content+=r.embeds[0].data.fields.filter(f=>['个人背景','个人外貌描述','个人信念'].includes(f.name)).map(f=>f.value).join('');}
+  assert.equal((content.match(/背/g)||[]).length,2000);assert.equal((content.match(/貌/g)||[]).length,2000);assert.equal((content.match(/信/g)||[]).length,2000);assert.match(serialized,/男性/);assert.doesNotMatch(serialized,/987654321/);
+});
+test('allocation rejects changed points, live combat, another owner and repeated confirmations',()=>{
+  const CP=require('../src/rpg/character-panel'),s=state(),p=s.players['1'];const form=()=>({id:C.id('f'),kind:'allocation',owner:'1',characterId:p.id,fingerprint:CP.fingerprint(p),attribute:'strength',amount:1,expiresAt:Date.now()+10000});let f=form();s.forms[f.id]=f;assert.throws(()=>CP.commitAllocation(s,f.id,'2'),/失效/);assert.equal(CP.commitAllocation(s,f.id,'1').remaining,1);assert.throws(()=>CP.commitAllocation(s,f.id,'1'),/失效/);f=form();s.forms[f.id]=f;p.points++;assert.throws(()=>CP.commitAllocation(s,f.id,'1'),/已经变化/);f=form();s.forms[f.id]=f;const b=B.createBattle(s,'channel','GM','加点');B.join(s,b,'1');B.start(s,b,null,minRng);assert.throws(()=>CP.commitAllocation(s,f.id,'1'),/暂停/);b.status='paused';CP.commitAllocation(s,f.id,'1');
+});
+test('private allocation dropdown previews, confirms and prevents a duplicate deduction',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{const home=h.interaction('1','角色设置');await rpg.handle(home);const panel=await click(h,rpg,'1',home,'分配自由属性点'),attr=await click(h,rpg,'1',panel,'选择要增加的属性',['constitution']),amount=await click(h,rpg,'1',attr,'选择点数（1至25）',['2']);assert.match(bodyOf(amount.result),/5 → \*\*7/);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].points,2);const confirmed=await click(h,rpg,'1',amount,'确认分配');assert.match(confirmed.result.content,/已保存/);const stale=await click(h,rpg,'1',amount,'确认分配');assert.match(stale.result.content,/失效/);const p=rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'];assert.equal(p.points,0);assert.equal(p.attributes.constitution,7);}finally{rpg.stop();}
+});
+test('role settings validate ownership, gender and bio modals, and cancel does not allocate',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{const p=rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'];const wrong=h.interaction('2',null,{},'rpg:profile:home:1:'+p.id);await rpg.handle(wrong);assert.match(wrong.result.content,/自己的/);const home=h.interaction('1','角色设置');await rpg.handle(home);const sex=await click(h,rpg,'1',home,'性别',['female']),opened=await click(h,rpg,'1',sex,'背景 / 外貌 / 信念'),saved=await submit(h,rpg,'1',opened,{background:'出生在IX区',appearance:'穿着大衣',belief:'追寻真相'});assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].profile.belief,'追寻真相');const panel=await click(h,rpg,'1',saved,'分配自由属性点');await click(h,rpg,'1',panel,'取消 / 返回');assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].points,2);}finally{rpg.stop();}
+});
+test('allocation supports a paginated-size dropdown, larger amount modal and all remaining points',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{await rpg.store.transact(C.DEFAULT_GUILD_ID,'points-70','GM',s=>{s.players['1'].points=70;});const home=h.interaction('1','角色设置');await rpg.handle(home);const panel=await click(h,rpg,'1',home,'分配自由属性点');assert.equal(jsonComponents(panel.result).find(c=>c.placeholder==='选择点数（1至25）').options.length,25);const attr=await click(h,rpg,'1',panel,'选择要增加的属性',['agility']),opened=await click(h,rpg,'1',attr,'填写更多点数'),value=await submit(h,rpg,'1',opened,{amount:'40'});assert.match(bodyOf(value.result),/消耗 40点/);const all=await click(h,rpg,'1',value,'全部分配');await click(h,rpg,'1',all,'确认分配');const p=rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'];assert.equal(p.points,0);assert.equal(p.attributes.agility,76);}finally{rpg.stop();}
+});
+test('GM luck changes only base luck with GM authorization and no GM character required',async()=>{
+  const h=harness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{const denied=h.interaction('1','gm',{sub:'时运',成员:'1',数值:5});await rpg.handle(denied);assert.match(denied.result.content,/GM/);const i=h.interaction('GM','gm',{sub:'时运',成员:'1',数值:5});await rpg.handle(i);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].luck,5);assert.match(bodyOf(i.result),/基础时运 5/);}finally{rpg.stop();}
+});
+test('range metres applies flat then percentage and rejects out of range before consuming resources',()=>{
+  const {s,b}=fight(),p=s.players['1'],t=weapon(s,{weaponType:'法杖',rangeMeters:40,damage:{physical:'1'},effects:[{target:'range',op:'add',value:10},{target:'range',op:'percent',value:20}]}),w=M.issue(s,'1',t.id)[0];p.equipped.weapon=w.id;b.actors[1].x=b.actors[0].x+60;b.actors[1].y=b.actors[0].y;B.attack(s,b,b.current.id,w.id,b.actors[1].id,'formal',minRng);assert.equal(w.durability,99);const f=fight(),t2=weapon(f.s,{weaponType:'法杖',rangeMeters:59.99,damage:{physical:'1'}}),w2=M.issue(f.s,'1',t2.id)[0];f.s.players['1'].equipped.weapon=w2.id;f.b.actors[1].x=f.b.actors[0].x+60;f.b.actors[1].y=f.b.actors[0].y;const before=JSON.stringify(f.s);assert.throws(()=>B.attack(f.s,f.b,f.b.current.id,w2.id,f.b.actors[1].id,'formal',minRng),/射程/);assert.equal(JSON.stringify(f.s),before);
+});
+test('new luck and range effect choices remain valid under Discord component limits',()=>{
+  const s=state(),f=F.create(s,'GM','item','武器');f.field=F.fields(f).findIndex(d=>d.key==='effects');const v=F.effectsView(s,f);validateMessage(v);const opts=jsonComponents(v).flatMap(c=>c.options||[]);assert.ok(opts.some(o=>o.label==='时运'));assert.ok(opts.some(o=>o.label==='攻击距离（米）'));const c=F.create(s,'GM','condition');c.field=F.fields(c).findIndex(d=>d.type==='conditionEffects');validateMessage(F.effectsView(s,c));
+});
+const PNG=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0ioAAAAASUVORK5CYII=','base64');
+function imageHarness(){const h=harness();h.fileBodies.set('memory:picture',PNG);h.deps.fetcher=async url=>({ok:h.fileBodies.has(url),arrayBuffer:async()=>Buffer.from(h.fileBodies.get(url)),json:async()=>JSON.parse(h.fileBodies.get(url))});return h;}
+test('portrait validation checks binary format and size rather than file extension',()=>{const P=require('../src/rpg/portraits');assert.equal(P.format(PNG),'png');assert.throws(()=>P.format(Buffer.alloc(100)),/实际格式/);assert.throws(()=>P.format(Buffer.alloc(P.LIMIT+1)),/4 MiB/);});
+test('player dual portraits are encrypted, previewed, saved and readable after restart',async()=>{
+  const h=imageHarness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{const i=h.interaction('1','角色图片',{头像:{size:PNG.length,url:'memory:picture'},立绘:{size:PNG.length,url:'memory:picture'}});await rpg.handle(i);validateMessage(i.result);assert.equal(i.result.files.length,2);assert.match(i.result.embeds[0].data.thumbnail.url,/attachment:/);assert.deepEqual(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].portraits,{});const media=h.sent.filter(m=>m.content.startsWith('discord-api-bot-rpg-image:'));assert.equal(media.length,2);assert.ok(!Buffer.from(media[0].lastPayload.files[0].attachment).toString().includes(PNG.toString('base64')));await click(h,rpg,'1',i,'确认保存图片');const refs=rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].portraits;assert.ok(refs.avatar.messageId&&refs.illustration.messageId);const restored=createRpg(h.deps);await restored.start();try{const card=h.interaction('1','角色卡');await restored.handle(card);assert.equal(card.result.files.length,2);assert.ok(card.result.embeds[0].data.image.url);assert.ok(!('rpgPortraits'in card.result));}finally{restored.stop();}}finally{rpg.stop();}
+});
+test('portrait cancellation and upload failure preserve old images, clear removes only selected slot',async()=>{
+  const h=imageHarness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{const i=h.interaction('1','角色图片',{头像:{size:PNG.length,url:'memory:picture'},立绘:{size:PNG.length,url:'memory:picture'}});await rpg.handle(i);await click(h,rpg,'1',i,'确认保存图片');const before=C.clone(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].portraits);const cancel=h.interaction('1','角色图片',{清除:'both'});await rpg.handle(cancel);await click(h,rpg,'1',cancel,'取消');assert.deepEqual(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].portraits,before);const failed=h.interaction('1','角色图片',{头像:{size:10,url:'missing'}});await rpg.handle(failed);assert.match(failed.result.content,/下载失败/);assert.deepEqual(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].portraits,before);const clear=h.interaction('1','角色图片',{清除:'avatar'});await rpg.handle(clear);await click(h,rpg,'1',clear,'确认保存图片');const after=rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].portraits;assert.equal(after.avatar,undefined);assert.deepEqual(after.illustration,before.illustration);}finally{rpg.stop();}
+});
+test('missing encrypted portrait falls back to text character card',async()=>{
+  const h=imageHarness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{await rpg.store.transact(C.DEFAULT_GUILD_ID,'missing-image','GM',s=>{s.players['1'].portraits.avatar={id:'missing',messageId:'missing',ext:'png',hash:'x'};});const card=h.interaction('1','角色卡');await rpg.handle(card);assert.match(card.result.content,/图片暂时/);assert.ok(card.result.embeds.length);assert.equal(card.result.files.length,0);}finally{rpg.stop();}
+});
+test('NPC image picker requires GM, updates version and preserves existing battle images',async()=>{
+  const h=imageHarness(),rpg=createRpg(h.deps);await setupUpgrade(h,rpg);try{const data=await rpg.store.transact(C.DEFAULT_GUILD_ID,'npc-images','GM',s=>{const n=npcTemplate(s),b=B.createBattle(s,'npc','GM','快照'),a=B.addNPC(s,b,n.id,'enemy');return {n:n.id,b:b.id,a:a.id,version:n.version};});const denied=h.interaction('1','npc图片',{头像:{size:PNG.length,url:'memory:picture'}});await rpg.handle(denied);assert.match(denied.result.content,/GM/);const i=h.interaction('GM','npc图片',{头像:{size:PNG.length,url:'memory:picture'}});await rpg.handle(i);const id=jsonComponents(i.result).find(c=>c.options).custom_id,choose=h.interaction('GM',null,{},id,[data.n]);choose.message={flags:new D.MessageFlagsBitField(D.MessageFlags.Ephemeral)};await rpg.handle(choose);await click(h,rpg,'GM',choose,'确认保存图片');const s=rpg.store.snapshot(C.DEFAULT_GUILD_ID);assert.equal(s.npcTemplates[data.n].version,data.version+1);assert.ok(s.npcTemplates[data.n].portraits.avatar);assert.deepEqual(B.actorById(s.battles[data.b],data.a).character.portraits,{});const a=B.addNPC(s,s.battles[data.b],data.n,'enemy');assert.deepEqual(a.character.portraits,s.npcTemplates[data.n].portraits);}finally{rpg.stop();}
+});
+
+test('map batch uses first opener luck and retains probabilities after transferring to another player',()=>{
+  const {s,m}=mapFixture();for(const u of ['1','2']){X.join(s,m,u);X.move(s,m,u,'1,0');X.move(s,m,u,'2,0');}const p=s.players['1'];p.luck=11;p.attributes.strength=0;p.attributes.constitution=0;s.players['2'].luck=-9;
+  const c=m.cells['2,0'].room.containers[0],first=X.open(s,m,'1',c.id,minRng);assert.equal(first.result.luck,11);assert.deepEqual(first.result.rates,L.adjustedRates(s,c.box,11));assert.ok(first.result.pending);m.status='paused';X.transfer(s,m,'2,0',c.id,'2');m.status='active';const claim=X.open(s,m,'2',c.id,()=>{throw Error('reroll');});assert.equal(claim.result.luck,11);assert.deepEqual(claim.result.rates,first.result.rates);assert.deepEqual(claim.result.items,first.result.items);assert.equal(claim.result.pending,false);
+});
+test('upgrade failure preserves canonical balances and successful recovery persists the reset only once',async()=>{
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);await store.transact(C.DEFAULT_GUILD_ID,'pre-upgrade','GM',s=>{Object.assign(s.players,state().players);s.players['1'].balance=333;s.upgrade=4;});const upgraded=createStore(h.deps);h.fail('before');await assert.rejects(upgraded.load(C.DEFAULT_GUILD_ID));const fresh=createStore(h.deps);await fresh.load(C.DEFAULT_GUILD_ID);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,0);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).economyMigration.version,1);await fresh.transact(C.DEFAULT_GUILD_ID,'new-money','GM',s=>{s.players['1'].balance=10;});const again=createStore(h.deps);await again.load(C.DEFAULT_GUILD_ID);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,10);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).events.filter(e=>e.id==='rpg-upgrade-5').length,1);
+});
+test('NPC image edits are preserved when a previously opened statistics draft publishes later',()=>{
+  const s=state(),t=npcTemplate(s),f=F.create(s,'GM','npc',null,t.id);s.npcTemplates[t.id].portraits={avatar:{id:'image'}};s.npcTemplates[t.id].version++;f.data.name='改名字';const result=F.publish(s,f);assert.deepEqual(result.portraits,{avatar:{id:'image'}});
+});
+test('effect targets can paginate independently of existing effects without exceeding five rows',()=>{
+  const s=state(),f=F.create(s,'GM','item');f.field=F.fields(f).findIndex(d=>d.key==='effects');const original=C.EFFECT_TARGETS.length;
+  try{for(let n=0;n<10;n++)C.EFFECT_TARGETS.push('extra:'+n);f.data.effects=Array.from({length:30},()=>({target:'attr:strength',value:1}));f.targetPage=1;f.effectPage=1;const v=F.effectsView(s,f);validateMessage(v);assert.ok(jsonComponents(v).some(c=>c.label==='上一页目标'));assert.equal(jsonComponents(v).find(c=>c.placeholder==='删除某项效果').options.length,5);}finally{C.EFFECT_TARGETS.splice(original);}
 });

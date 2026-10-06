@@ -10,7 +10,7 @@ function player(state, userId) {
   return p;
 }
 function newCharacter(name, attributes, adaptation = 1) {
-  return { id: id('c'), name, attributes, adaptation, level: 1, xpCenti: 0, points: 2,
+  return { id: id('c'), name, attributes, adaptation, luck: 1, gender: null, profile: {}, portraits: {}, allocationVersion: 0, profileVersion: 0, level: 1, xpCenti: 0, points: 2,
     hp: attributes.constitution * 3, balance: 0, inventory: {}, conditions: [], temporaryEffects: [], ap: 0,
     equipped: { weapon: null, armor: [], accessories: [], cards: [] },
     slots: { head: 1, body: 3, ring: 1, card: 5 }, tickets: { card: 0, boxes: {} }, pendingLoot: {},
@@ -23,14 +23,16 @@ function rollCharacter(state, userId, name, reroll = false, rng = randomInt) {
   else if (draft) return draft;
   const attributes = Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, rng(1, 7)]));
   draft = { id: id('d'), userId, name: C.text(name || '未命名角色', '角色名', 50), attributes,
-    adaptation: rng(1, 11), rerolls: reroll ? draft.rerolls + 1 : 0, at: Date.now() };
+    gender: draft?.gender || null, profile: clone(draft?.profile || {}), adaptation: rng(1, 11), rerolls: reroll ? draft.rerolls + 1 : 0, at: Date.now() };
   state.characterDrafts[userId] = draft;
   return draft;
 }
 function confirmCharacter(state, userId) {
   ok(!state.players[userId] && state.characterDrafts[userId], '角色已确认，或没有待确认角色。');
   const d = state.characterDrafts[userId];
+  ok(['male','female'].includes(d.gender), '请先下拉选择男性或女性。');
   const p = newCharacter(d.name, clone(d.attributes), d.adaptation);
+  p.gender = d.gender; p.profile = clone(d.profile || {});
   p.userId = userId; p.initialRolls = clone(d);
   state.players[userId] = p;
   delete state.characterDrafts[userId];
@@ -91,7 +93,8 @@ function stats(p, extraEffects = []) {
   const burdened = carried > limit / 2;
   const overloaded = carried > limit;
   const move = overloaded ? 0 : C.round2(modify(effects, 'move', Math.max(0, attributes.agility - (burdened ? 2 : 0)) * 3));
-  return { attributes, defenses, maxHP, carried, limit, burdened, overloaded, move, effects,
+  const luck = Math.max(-9, Math.min(11, Math.floor(signedModifier(effects, 'attr:luck', p.luck ?? 1))));
+  return { luck, attributes, defenses, maxHP, carried, limit, burdened, overloaded, move, effects,
     apGain: modify(effects, 'apGain', attributes.agility * 5),
     hit: modify(effects, 'hit', 0),
     resist: Object.fromEntries(Object.keys(C.DAMAGE_TYPES).map(k => [k, signedModifier(effects, 'resist:' + k)])) };
@@ -115,10 +118,10 @@ function allocate(state, userId, attribute, amount) {
   const p = player(state, userId);
   ok(battleFor(state, userId)?.status !== 'active', '加点前请GM暂停战斗。');
   ok(C.ATTRIBUTES[attribute], '属性无效。');
-  amount = num(amount, '属性点', 1, 100000);
+  amount = num(amount, '属性点', 1, 1000000);
   ok(p.points >= amount, '自由属性点不足。');
   const full = p.hp === stats(p).maxHP;
-  p.points -= amount; p.attributes[attribute] += amount;
+  p.points -= amount; p.attributes[attribute] += amount; p.allocationVersion = (p.allocationVersion || 0) + 1;
   if (full) p.hp = stats(p).maxHP;
   return p;
 }
@@ -200,7 +203,8 @@ function validateTemplate(state, raw) {
       if (t.casting > 0) t.action = 'formal';
     }
     t.hit = num(t.hit, '固定命中', 0, 1000000);
-    t.range = num(t.range ?? 1, '射程格数', 0, 10000);
+    t.rangeMeters = num(t.rangeMeters ?? (t.range ?? 1) * 50, '攻击距离（米）', 0, 500000, false);
+    t.range = t.rangeMeters / 50;
     t.damage ||= {};
     const types = Object.keys(t.damage).filter(k => t.damage[k] !== '');
     ok(types.length && types.every(k => C.DAMAGE_TYPES[k]), '至少填写一种伤害。');
@@ -342,9 +346,9 @@ function openLoot(state, userId, box = 'card', rng = randomInt) {
   ok(count > 0, '没有对应次数，请找GM发放。');
   let batch = p.pendingLoot[box];
   if (batch && !batch.items) batch = { id: batch.id, items: [batch] };
-  if (!batch) batch = require('./loot').generate(state, box, rng);
+  if (!batch) batch = require('./loot').generate(state, box, rng, stats(p).luck);
   p.pendingLoot[box] = batch;
-  const result = { batchId: batch.id, box, items: clone(batch.items), item: clone(batch.items[0]), pending: true };
+  const result = { batchId: batch.id, box, luck: batch.luck ?? null, rates: clone(batch.rates ?? null), items: clone(batch.items), item: clone(batch.items[0]), pending: true };
   if (weight(p) + batch.items.reduce((sum, item) => sum + itemWeight(item), 0) > stats(p).limit) {
     return result;
   }

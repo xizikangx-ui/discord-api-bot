@@ -106,7 +106,9 @@ function createHandlers(context) {
       } else if (action === 'formclear') {
         ok(['effects', 'conditionEffects', 'multi', 'refs', 'conditions'].includes(def.type), '该字段不能清空。');
         F.set(draft.data, def.key, []);
-      } else if (action === 'formop') draft.effectOp = draft.effectOp === 'add' ? 'percent' : 'add';
+      } else if (action === 'formtargetpage') draft.targetPage = num(args[1], '目标页', 0, Math.ceil((def.type==='conditionEffects'?C.CONDITION_TARGETS:C.EFFECT_TARGETS).length/25)-1);
+      else if (action === 'formeffectpage') draft.effectPage = num(args[1], '效果页', 0, Math.max(0,Math.ceil((F.get(draft.data,def.key)||[]).length/25)-1));
+      else if (action === 'formop') draft.effectOp = draft.effectOp === 'add' ? 'percent' : 'add';
       else if (action === 'formremoveeffect') {
         ok(['effects', 'conditionEffects'].includes(def.type), '字段已变化。');
         const effects = F.get(draft.data, def.key); const n = num(i.values[0], '效果编号', 0, effects.length - 1); effects.splice(n, 1);
@@ -133,7 +135,7 @@ function createHandlers(context) {
     if (action === 'formdelete') return payload('已删除草稿', formId);
     const next = snapshot(i.guildId), draft = F.owned(next, formId, i.user.id);
     if (['formchoicepage', 'formchoice'].includes(action)) return F.choiceView(next, draft);
-    if (['formop', 'formremoveeffect', 'formeffectvalue','formeffectpage'].includes(action)) return F.effectsView(next, draft);
+    if (['formop', 'formremoveeffect', 'formeffectvalue','formeffectpage','formtargetpage'].includes(action)) return F.effectsView(next, draft);
     return F.view(next, draft);
   }
   async function component(i, member) {
@@ -337,8 +339,9 @@ function createHandlers(context) {
       return U.personalView(next, battle(next, b.id), B.actorById(battle(next, b.id), a.id), uid, 'status');
     }
     function targetsView(ability,type,mode='semi'){
+      const distance=ability.attack.melee?'近战同格':'有效攻击距离 '+C.round2(M.modify(M.stats(p).effects,'range',ability.attack.rangeMeters??ability.attack.range*50))+'米';
       const targets=b.actors.filter(t=>t.id!==a.id&&!t.retreated&&!t.deathId&&B.actorCharacter(s,t).hp>0);ok(targets.length,'没有有效攻击目标。');
-      return payload('选择目标 · '+ability.attack.name,'固定命中 '+ability.attack.hit+' · 射程 '+ability.attack.range+'格'+(C.FIREARMS.includes(ability.attack.weaponType)?' · '+(mode==='auto'?'全自动':'半自动'):''),[
+      return payload('选择目标 · '+ability.attack.name,'固定命中 '+ability.attack.hit+' · '+distance+(C.FIREARMS.includes(ability.attack.weaponType)?' · '+(mode==='auto'?'全自动':'半自动'):''),[
         row(select('target:'+prefix+':'+type+':'+ability.key+':'+mode,'攻击目标',targets.map(t=>({label:t.name,value:t.id})))),
         row(button('attackpick:'+prefix+':'+type+':0','返回武器选择'),button('view:'+prefix+':overview','取消选择'))]);
     }

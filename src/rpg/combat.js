@@ -171,6 +171,7 @@ function addNPC(state, battle, templateId, team, frozenTemplate = null) {
   ok(battle.actors.length < 20, '当前战斗最多20名参战者。');
   ok(['ally', 'enemy'].includes(team), '阵营无效。');
   const p = M.newCharacter(template.name, clone(template.attributes));
+  p.portraits = clone(template.portraits || {}); p.luck = template.luck ?? 1;
   p.points = 0; p.hpMaxOverride = template.hpMax; p.hp = template.hpMax;
   for (const entry of template.loadout || template.itemIds.map(ref => ({ template: state.catalog[ref], quantity: 1 }))) {
     const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能', '钥匙'].includes(entry.template.kind);
@@ -381,7 +382,7 @@ function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng =
   if (t.kind === '技能') ok(action === (t.action || 'formal'), '技能须使用指定的行动类型。');
   else if (action === 'quick') ok(t.supernatural, '普通武器攻击需要正式行动。');
   if (t.melee) ok(Math.floor(actor.x / 50) === Math.floor(target.x / 50) && Math.floor(actor.y / 50) === Math.floor(target.y / 50), '近战必须同格。');
-  else ok(Math.hypot(actor.x - target.x, actor.y - target.y) <= t.range * 50 + 0.000001, '目标超出有效射程。');
+  else ok(Math.hypot(actor.x - target.x, actor.y - target.y) <= M.modify(M.stats(p).effects, 'range', t.rangeMeters ?? t.range * 50) + 0.000001, '目标超出有效射程。');
   if (t.kind === '技能' && t.casting) {
     if (!actor.casting) {
       turn[action]--; actor.casting = { key: abilityKey, name: t.name, required: t.casting, count: 1, confirmed: false };

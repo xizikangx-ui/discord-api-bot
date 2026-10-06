@@ -146,9 +146,9 @@ function currentRoom(state, m, uid) {
 function open(state, m, uid, ref, rng = randomInt) {
   const { p, r, cell } = currentRoom(state, m, uid), c = r.containers.find(c => c.id === ref);
   ok(c && c.status !== 'claimed', '容器已经领取。');
-  if (!c.batch) { c.batch = L.generate(state, c.box, rng); c.owner = { userId: uid, characterId: p.id }; c.status = 'pending'; }
+  if (!c.batch) { c.batch = L.generate(state, c.box, rng, M.stats(p).luck); c.owner = { userId: uid, characterId: p.id }; c.status = 'pending'; }
   ok(c.owner.userId === uid && c.owner.characterId === p.id, '原批次已绑定开启者，需GM转交。');
-  const result = { batchId: c.batch.id, box: c.box, items: clone(c.batch.items), item: clone(c.batch.items[0]), pending: true, free: true };
+  const result = { batchId: c.batch.id, box: c.box, luck: c.batch.luck ?? null, rates: clone(c.batch.rates ?? null), items: clone(c.batch.items), item: clone(c.batch.items[0]), pending: true, free: true };
   if (M.weight(p) + c.batch.items.reduce((n, i) => n + M.itemWeight(i), 0) <= M.stats(p).limit) {
     for (const item of c.batch.items) M.receive(p, clone(item)); c.status = 'claimed'; result.pending = false;
   }

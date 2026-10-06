@@ -31,7 +31,7 @@ function migrateLegacy(state) {
   state.upgrade = 3;
   return report;
 }
-function migrate(state) {
+function migrateMaps(state) {
   if (state.upgrade >= 4) return null;
   const old = migrateLegacy(state);
   state.mapCategories ||= {}; state.roomTemplates ||= {}; state.explorations ||= {}; state.deaths ||= {}; state.corpses ||= {};
@@ -43,6 +43,10 @@ function migrate(state) {
   }
   state.upgrade = 4;
   return { ...(old || {}), previous: old, maps: true, deaths: true, historicalRewards: 0 };
+}
+function migrate(state) {
+  const maps = migrateMaps(state), roles = require('./upgrade').migrate(state);
+  return maps || roles ? { ...(maps || {}), ...(roles || {}) } : null;
 }
 function parseBeijing(value, now = Date.now()) {
   const m = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/);
