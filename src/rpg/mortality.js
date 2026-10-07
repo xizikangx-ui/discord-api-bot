@@ -1,7 +1,7 @@
 'use strict';
 const C = require('./constants'), M = require('./model');
 const { requireThat: ok, clone } = C;
-function record(b, message, details) { const entry = { at: Date.now(), message, details }; b.recent.push(entry); b.recent = b.recent.slice(-30); (b.history ||= []).push(clone(entry)); }
+function record(b, message, details) { const entry = {id:C.id('e'), at: Date.now(), message, details };require('./battle-events').capture(b,entry); b.recent.push(entry); b.recent = b.recent.slice(-30); (b.history ||= []).push(clone(entry)); }
 function character(state, a) { return a.finalCharacter || (a.userId ? state.players[a.userId] : a.character); }
 function reward(state, b, death, uid) {
   ok(death.kind === 'npc' && death.team === 'enemy' && !death.rewarded, '该死亡记录不能重复发放经验。');
@@ -44,13 +44,14 @@ function settle(state, b, a, sourceReference = null) {
   }
   b.queue = (b.queue || []).filter(q => q.actorId !== a.id);
   if (b.current?.actorId === a.id) { b.current = null; delete a.casting; }
-  if (b.pending?.attackerId === a.id || b.pending?.targetId === a.id) b.pending = null;
+  if(b.pending?.kind==='aoe'){for(const hit of b.pending.hits)if(!hit.result&&hit.targetId===a.id)hit.result={skipped:true,reason:'目标死亡'};if(!require('./aoe').hits(b).length)b.pending=null;}
+  else if (b.pending?.attackerId === a.id || b.pending?.targetId === a.id) b.pending = null;
   if (a.userId) {
     for (const offer of Object.values(state.offers)) if (['editing', 'ready'].includes(offer.status) && [offer.creatorId, offer.targetId].includes(a.userId)) offer.status = 'cancelled';
-    for (const map of Object.values(state.explorations || {})) if (map.participants?.[a.userId]?.characterId === p.id) delete map.participants[a.userId];
+    for (const map of Object.values(state.explorations || {})) if (map.participants?.[a.userId]?.characterId === p.id) {delete map.participants[a.userId];require('./map-links').releaseEmpty(state,map);}
     delete state.players[a.userId]; delete state.characterDrafts[a.userId];
   } else if (a.team === 'enemy' && killerUserId && state.players[killerUserId]?.id === killerCharacterId && state.players[killerUserId].hp > 0) reward(state, b, d, killerUserId);
-  record(b, a.name + (a.userId ? '死亡，角色及资产已清空，可重新建卡。' : '死亡。'), { deathId: d.id });
+  record(b, a.name + (a.userId ? '死亡，角色及资产已清空，可重新建卡。' : '死亡。'), { deathId: d.id,actorId:a.id });
   return d;
 }
 // Catch non-attack HP changes at the transaction boundary; historical zero HP is untouched.

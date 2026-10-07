@@ -39,11 +39,12 @@ function commands() {
       ['装备', '卸下', '装配', '拆下', '使用道具', '使用世界树之心-头部', '使用世界树之心-身体', '使用世界树之心-戒指', '使用世界树之泪']), '物品', false), '配件', false),
     user(cmd('交易', '与另一位玩家交换物品及游戏币')),
     int(user(cmd('转账', '向另一位玩家转账，发送方确认后到账')), '金额', '转账金额', true, 1, C.MAX_MONEY),
-    str(cmd('录入物品', 'GM分步录入物品、装备、卡牌或技能'), '类型', '模板种类', false, C.ITEM_KINDS),
+    str(cmd('录入物品', 'GM分步录入实物、装备或卡牌'), '类型', '模板种类', false, C.ITEM_KINDS.filter(k=>k!=='技能')),
     cmd('录入词条', 'GM录入结构化词条或展示文字'),
     cmd('录入异常', 'GM录入异常、各级效果与恶化规则'),
-    str(cmd('规则', '跑团规则、公式及示例'), '章节', '速查章节', false, ['总览', '世界背景', '势力', '建卡', '升级', '负重', '装备', '交易', '抽取', '食物药品', '鉴定', '开团', '地图', '击杀与死亡', '保险箱', '战斗', '异常', '指令', '角色设置', '时运', '物价']),
+    cmd('规则','跑团规则、公式及示例').addStringOption(o=>o.setName('章节').setDescription('输入关键词搜索所有速查章节').setAutocomplete(true)),
   ];
+  list.push(cmd('录入技能','GM分步录入独立战斗技能'),cmd('技能','私密查看本人已学战斗技能'));
   list.push(cmd('录入鉴定技能', 'GM仅填写技能名称与初始等级，预览后发布'), cmd('鉴定技能', '查看自己的鉴定技能等级和经验'));
   const check = cmd('鉴定', 'GM发布或管理玩家鉴定');
   check.addSubcommand(s => {
@@ -71,10 +72,11 @@ function commands() {
   gm.addSubcommand(s => int(int(item(user(s.setName('收购').setDescription('GM私有选物报价面板，或填写完整参数快捷收购')), '物品', false), '价格', '快捷收购总价，面板中可填写', false, 0, C.MAX_MONEY), '数量', '收购数量', false, 1, 100000));
   gm.addSubcommand(s => user(s.setName('销卡').setDescription('确认后清空角色与财产，保留审计')));
   gm.addSubcommand(s => int(user(s.setName('时运').setDescription('设置玩家基础时运，不能使用自由点')), '数值', '基础时运（-9至11）', true, -9, 11));
+  gm.addSubcommand(s=>s.setName('技能').setDescription('战斗技能库、授予及移除'));
   gm.addSubcommand(s => s.setName('npc').setDescription('创建或继续NPC模板草稿'));
   gm.addSubcommand(s => s.setName('草稿').setDescription('下拉选择自己的持久录入草稿'));
   gm.addSubcommand(s => item(s.setName('修改模板').setDescription('选择模板发布新版本；已发放实例不变'), '物品', false));
-  gm.addSubcommand(s => str(s.setName('模板库').setDescription('查看物品、词条、异常、NPC和鉴定技能模板'), '类型', '模板分类', false, ['物品', '词条', '异常', 'NPC', '鉴定技能']));
+  gm.addSubcommand(s => str(s.setName('模板库').setDescription('查看物品、词条、异常、NPC和鉴定技能模板'), '类型', '模板分类', false, ['物品', '词条', '异常', 'NPC', '鉴定技能','战斗技能']));
   gm.addSubcommand(s => s.setName('恢复存档').setDescription('重新读取加密存档，核对不明确写入结果'));
   gm.addSubcommand(s => s.setName('文本编辑').setDescription('下拉编辑背景、势力、部门与规则正文'));
   gm.addSubcommand(s => s.setName('抽取公示').setDescription('查看与补发已存抽取结果，不重新抽取'));

@@ -50,6 +50,14 @@ function battleOperation(state,b,turnId,op){const B=require('./combat'),M=requir
   let value;
   if(op.type==='fill'){const m=p.inventory[op.magazine];ok(m?.snapshot.kind==='弹夹','弹夹已变化。');const available=actor.userId?M.available(state,actor.userId,op.ammo):p.inventory[op.ammo]?.quantity;const count=op.quantity??Math.min(m.loaded.capacity-m.loaded.current,available||0);value=fill(p,op.magazine,op.ammo,count);}
   else {ok(W.equipped(p).includes(op.weapon),'只能操作已装备的武器。');value=swap(p,op.weapon,op.type==='extract'?null:op.magazine);}
-  turn.quick--;M.syncHP(p);B.record(b,actor.name+'进行弹药操作：'+({fill:'向弹夹填弹',extract:'抽出弹夹',swap:'更换弹夹'}[op.type])+(op.type==='fill'?' '+value+'发':''));return value;
+  turn.quick--;M.syncHP(p);B.record(b,actor.name+'进行弹药操作：'+({fill:'向弹夹填弹',extract:'抽出弹夹',swap:'更换弹夹'}[op.type])+(op.type==='fill'?' '+value+'发':''),{actorId:actor.id,portrait:p.portraits?.avatar,weapon:op.weapon&&p.inventory[op.weapon]?.snapshot.name,magazine:op.magazine&&p.inventory[op.magazine]?.snapshot.name});return value;
 }
-module.exports={usesMagazine,ammoCompatible,magazineCompatible,normalize,empty,round,attached,fill,swap,battleOperation,migrate};
+function primeNPC(p){normalize(p);const W=require('./weapons'),results=[];
+  for(const ref of W.equipped(p)){const w=p.inventory[ref];if(!usesMagazine(w.snapshot))continue;
+    let mag=p.inventory[w.magazineId];if(!mag){mag=Object.values(p.inventory).find(m=>m.snapshot.kind==='弹夹'&&!attached(p,m.id)&&magazineCompatible(w.snapshot,m.snapshot)&&m.loaded.rounds.every(r=>ammoCompatible(w.snapshot,r.template||{})));if(mag)swap(p,w.id,mag.id);}
+    if(!mag){results.push({name:w.snapshot.name,current:0,capacity:w.snapshot.capacity});continue;}
+    if(mag.loaded.current<mag.loaded.capacity){swap(p,w.id,null);for(const a of [...Object.values(p.inventory)]){if(mag.loaded.current>=mag.loaded.capacity)break;if(a.snapshot.kind==='弹药'&&ammoCompatible(w.snapshot,a.snapshot)&&ammoCompatible(mag.snapshot,a.snapshot))fill(p,mag.id,a.id);}swap(p,w.id,mag.id);}
+    results.push({name:w.snapshot.name,current:w.loaded.current,capacity:w.loaded.capacity});
+  }return results;
+}
+module.exports={usesMagazine,ammoCompatible,magazineCompatible,normalize,empty,round,attached,fill,swap,battleOperation,migrate,primeNPC};

@@ -48,10 +48,10 @@ function createHandlers(context) {
     return false;
   }
   function defenseView(s, b, pendingId, member, uid) {
-    ok(b.pending?.id === pendingId, '攻击已结算。');
-    const target = B.actorById(b, b.pending.targetId);
+    const hits=require('./aoe').hits(b);ok(hits.length,'攻击已结算。');
+    let hit=hits.find(h=>h.id===pendingId);if(!hit&&b.pending.id===pendingId){const allowed=hits.filter(h=>{const t=B.actorById(b,h.targetId);return t.userId===uid||!t.userId&&U.gm(s,member);});ok(allowed.length,'只有受击玩家本人或负责NPC的GM可以防守。');if(allowed.length>1)return payload('选择待防守目标','所有目标可同时响应，互不等待。',[row(select('defensepick:'+b.id,'选择目标',allowed.map(h=>({label:B.actorById(b,h.targetId).name,value:h.id}))))]);hit=allowed[0];}
+    ok(hit,'攻击已经结算。');const target=B.actorById(b,hit.targetId);
     if (target.userId) ok(target.userId === uid, '防守由被攻击玩家本人选择。'); else needGM(s, member);
-    const hit = b.pending;
     return payload('免费防守反应 · ' + target.name, hit.attackName + '，固定命中 ' + hit.hit +
       '\n伤害分量：' + Object.entries(hit.damage).map(([k, v]) => C.DAMAGE_TYPES[k] + ' ' + v).join('、') +
       '\n截止 <t:' + Math.floor(hit.expiresAt / 1000) + ':R>；60秒未响应默认纯防御。\n闪避：2d20取低＋有效敏捷及修正，严格大于命中成功；同时防守且闪避失败时防御减半。', [
@@ -244,15 +244,16 @@ function createHandlers(context) {
       });
       const next = snapshot(i.guildId); return U.offerView(next, offerAccess(next, args[0], member, uid), uid);
     }
+    if(action==='zoom'){const b=battle(s,args[0]),v=U.battleView(s,b);v.components=[row(button('battle:'+b.id,'返回战场'))];v.rpgMap.zoom=true;return v;}
     if (action === 'catalog') { needGM(s, member); return catalogView(s, args[0], Number(args[1])); }
     if (action === 'templateedit') {
       needGM(s, member);
-      const source = args[0], ref = i.values[0], kind = { catalog: 'item', traits: 'trait', conditionTemplates: 'condition', npcTemplates: 'npc', checkSkillTemplates:'checkskill' }[source];
+      const source = args[0], ref = i.values[0], kind = { catalog: 'item', traits: 'trait', conditionTemplates: 'condition', npcTemplates: 'npc', checkSkillTemplates:'checkskill',skillTemplates:'skill' }[source];
       ok(kind, '模板类型无效。');
       const f = await tx(i, st => { needGM(st, member); return F.create(st, uid, kind, null, ref); });
       return F.view(snapshot(i.guildId), f);
     }
-    if (['battle', 'join', 'withdraw', 'start', 'personal', 'control', 'gmcontrol', 'gmstart', 'defense', 'defend'].includes(action)) {
+    if (['battle', 'join', 'withdraw', 'start', 'personal', 'control', 'gmcontrol', 'gmstart', 'defense', 'defensepick', 'defend'].includes(action)) {
       const b = battle(s, args[0]);
       if (action === 'battle') return U.battleView(s, b);
       if (action === 'control') { needGM(s, member); return context.gmUI.view(s, b); }
@@ -262,6 +263,7 @@ function createHandlers(context) {
         ok(a, '未参加战斗，可查看公共战场。');
         return U.personalView(s, b, a, uid);
       }
+      if(action==='defensepick')return defenseView(s,b,i.values[0],member,uid);
       if (action === 'defense') return defenseView(s, b, args[1], member, uid);
       if (action === 'defend') {
         owner(i, args[2]); defenseView(s, b, args[1], member, uid);
@@ -339,6 +341,7 @@ function createHandlers(context) {
       return U.personalView(next, battle(next, b.id), B.actorById(battle(next, b.id), a.id), uid, 'status');
     }
     function targetsView(ability,type,mode='semi'){
+      if(require('./aoe').validate(ability.attack.aoe).mode!=='single')return context.aoePanel.open(i,s,b,a,ability.key,type,mode);
       const distance=ability.attack.melee?'近战同格':'有效攻击距离 '+C.round2(M.modify(M.stats(p).effects,'range',ability.attack.rangeMeters??ability.attack.range*50))+'米';
       const targets=b.actors.filter(t=>t.id!==a.id&&!t.retreated&&!t.deathId&&B.actorCharacter(s,t).hp>0);ok(targets.length,'没有有效攻击目标。');
       return payload('选择目标 · '+ability.attack.name,'固定命中 '+ability.attack.hit+' · '+distance+(C.FIREARMS.includes(ability.attack.weaponType)?' · '+(mode==='auto'?'全自动':'半自动'):''),[

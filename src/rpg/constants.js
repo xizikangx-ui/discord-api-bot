@@ -138,7 +138,7 @@ function seedCatalog() {
 function newState(guildId) {
   return { kind: 'tabletop-rpg', schema: 1, upgrade: 5, guildId, revision: 0,
     config: { gmRoleIds: [], playerRoleIds: [], announcementChannelId: null },
-    players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(), checkSkillTemplates: {}, checks: {}, sessions: {}, lootPublications: {},
+    players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(), skillTemplates: {}, checkSkillTemplates: {}, checks: {}, sessions: {}, lootPublications: {},
     traits: { neutral: { id: 'neutral', version: 1, published: true, name: '无附加效果', description: '只展示，不修改数值。', effects: [] } }, conditionTemplates: {},
     mapCategories: {}, roomTemplates: {}, explorations: {}, deaths: {}, corpses: {}, npcTemplates: {}, battles: {}, offers: {}, rolePanels: {}, receipts: {}, events: [] };
 }

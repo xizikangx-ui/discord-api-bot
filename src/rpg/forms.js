@@ -13,6 +13,7 @@ const enumField = (key, label, values) => field(key, label, 'choice', values);
 const refField = (key, label, source, limit = 10, predicate) => ({ key, label, type: 'refs', source, limit, predicate });
 function defaults(kind, itemKind = '杂物') {
   if (kind === 'checkskill') return { name: '', level: 1 };
+  if (kind === 'skill') return {...defaults('item','技能'),requiresWeapon:false,melee:false,weaponType:'',aoe:{mode:'single',radius:0,allowAlly:false,allowSelf:false}};
   if (kind === 'item') return { kind: itemKind, name: '', description: '', rarity: 'white', weightKg: 0, value: 0,
     durabilityMax:100, armorWeakening:{type:'physical',amount:0}, weakeningResistance:{physical:0,magical:0,mental:0},repairKinds:['武器','防具'],repairAmount:10,repairMaxLoss:0, quality: '标准', origin: '未知', title: '', appearance: '', supernatural: false, traitIds: ['neutral'], effects: [], boxes: [],
     weaponType: '剑', handedness: 'auto', otherType: '', melee: true, ammoType: '', magazineType: '', capacity: 1, current: 0,
@@ -34,6 +35,8 @@ function fields(form) {
   const kind = form.kind, d = form.data;
   const common = [field('name', '名称'), field('description', '描述', 'long')];
   if (kind === 'checkskill') return [field('name', '技能名称'), field('level', '初始等级', 'number')];
+  const aoeFields=[enumField('aoe.mode','目标模式',[{value:'single',label:'单体'},{value:'selective',label:'选择性圆形AOE'},{value:'all',label:'无差别圆形AOE'}]),field('aoe.radius','AOE半径（米）','number'),field('aoe.allowAlly','选择性AOE允许友军','bool'),field('aoe.allowSelf','选择性AOE允许自身','bool')];
+  if(kind==='skill')return [...common,field('hit','固定命中','number'),field('damage.physical','物理伤害骰式'),field('damage.magical','魔法伤害骰式'),field('damage.mental','精神伤害骰式'),field('rangeMeters','攻击距离（米）','number'),enumField('primary','主伤害类型',Object.entries(C.DAMAGE_TYPES).map(([value,label])=>({value,label}))),enumField('action','行动类型',[{value:'formal',label:'正式'},{value:'quick',label:'快速'}]),field('casting','吟唱次数（0瞬发）','number'),field('requiresWeapon','是否要求可用武器','bool'),field('conditions','附带异常','conditions'),...aoeFields];
   if (kind === 'trait') return [...common, field('effects', '结构化数值效果', 'effects')];
   if (kind === 'condition') {
     const list = [...common, enumField('type', '异常类型', Object.entries(C.DAMAGE_TYPES).map(([value, label]) => ({ value, label }))),
@@ -57,7 +60,7 @@ function fields(form) {
     {key:'randomSupplies',label:'随机散落物资 · 0—6件概率',type:'randomRoom',source:'catalog',max:6,limit:25,predicate:t=>t.kind!=='技能'},
     {key:'randomNpcs',label:'随机NPC · 0—10个概率',type:'randomRoom',source:'npcTemplates',max:10,limit:25}];
   if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
-    field('hpMax', '生命上限', 'number'), refField('itemIds', '随身物品及技能（装备另设槽位）', 'catalog', 25),
+    field('hpMax', '生命上限', 'number'), refField('itemIds', '随身实物（装备另设槽位）', 'catalog', 25,t=>t.kind!=='技能'),refField('skillIds','NPC战斗技能','skillTemplates',25),
     {key:'quantities',label:'初始物品数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'itemIds',max:100}];
   if (kind === 'rolepanel') return [field('title', '面板标题'), field('description', '面板说明', 'long'),
     field('roleIds', '领取身份组', 'roles'), field('exclusive', '互斥单选', 'bool'), field('allowCancel', '允许取消领取', 'bool'),
@@ -66,6 +69,7 @@ function fields(form) {
     field('weightKg', '重量kg（两位小数）', 'number'), field('value', '参考价值', 'number'),
     { ...enumField('boxes', '可从哪些箱型抽出', C.BOXES), type: 'multi', limit: 12 }];
   if (['武器', '技能'].includes(d.kind)) list.push(field('rangeMeters', '射程 / 攻击距离（米）', 'number'));
+  if(d.kind==='武器')list.push(...aoeFields);
   if (d.kind === '武器') list.push(enumField('handedness', '单手 / 双手（可手动调整）', [
     { value: 'auto', label: '按武器类型自动分类' }, { value: 'one', label: '单手武器' }, { value: 'two', label: '双手武器' }]));
   if(['武器','防具'].includes(d.kind))list.push(field('durabilityMax','最大耐久','number'));
@@ -92,7 +96,7 @@ function fields(form) {
   if (d.kind === '防具') list.push(enumField('armorType', '覆盖部位', Object.keys(C.ARMOR_COVERAGE)),
     ...Object.entries(C.DAMAGE_TYPES).map(([k, n]) => field('defenses.' + k, n + '防御', 'number')));
   if (d.kind === '饰品') list.push(enumField('accessoryType', '饰品位置', Object.entries(C.ACCESSORY_NAMES).map(([value, label]) => ({ value, label }))));
-  if (d.kind === '卡牌') list.push(field('uniqueText', '独特效果说明', 'long'), refField('skillIds', '关联技能', 'catalog', 10, t => t.kind === '技能'));
+  if (d.kind === '卡牌') list.push(field('uniqueText', '独特效果说明', 'long'), refField('skillIds', '关联战斗技能', 'skillTemplates', 10));
   if(d.kind==='弹药')list.push(field('damage.physical','物理附加伤害（固定值或骰式）'),field('damage.magical','魔法附加伤害（留空无）'),field('damage.mental','精神附加伤害（留空无）'),field('conditions','赋予异常及等级','conditions'));
   if(d.kind==='弹夹')list.push(refField('ammoIds','选择兼容弹药（可多选）','catalog',25,t=>t.kind==='弹药'));
   if (d.kind === '弹夹') list.push(field('capacity', '装弹量', 'number'));
@@ -105,7 +109,7 @@ function fields(form) {
   return list;
 }
 function create(state, owner, kind, itemKind, existingId) {
-  const source = { item: 'catalog', trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels', checkskill: 'checkSkillTemplates' }[kind];
+  const source = { skill: 'skillTemplates', item: 'catalog', trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels', checkskill: 'checkSkillTemplates' }[kind];
   if (kind === 'checkskill') state.checkSkillTemplates ||= {};
   const old = existingId ? state[source][existingId] : null;
   if (existingId) ok(old, '模板不存在。');
@@ -216,9 +220,10 @@ function effectsView(state, form) {
 function publish(state, form) {
   const data = C.clone(form.data);
   let result;
-  if (form.kind === 'item') result = M.publishTemplate(state, data, form.existingId);
+  if (form.kind === 'skill') result = require('./skills').publish(state,data,form.existingId);
+  else if (form.kind === 'item') result = M.publishTemplate(state, data, form.existingId);
   else {
-    const source = { trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels', checkskill: 'checkSkillTemplates' }[form.kind];
+    const source = { skill: 'skillTemplates', trait: 'traits', condition: 'conditionTemplates', npc: 'npcTemplates', mapcategory: 'mapCategories', room: 'roomTemplates', rolepanel: 'rolePanels', checkskill: 'checkSkillTemplates' }[form.kind];
     if (form.kind === 'checkskill') {
       state.checkSkillTemplates ||= {};
       result = { name: C.text(data.name, '技能名称', 80), level: C.number(data.level, '初始等级', 0, 1000000) };

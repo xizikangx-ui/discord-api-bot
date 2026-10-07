@@ -4,8 +4,10 @@ function create(template, catalog, virtual = false) {
   const p=M.newCharacter(template.name || 'NPC',C.clone(template.attributes));
   p.portraits=C.clone(template.portraits||{});p.luck=template.luck??1;p.points=0;p.hpMaxOverride=template.hpMax;p.hp=template.hpMax;
   const loadout=template.loadout || (template.itemIds||[]).filter(ref=>catalog[ref]?.published).map(ref=>({template:catalog[ref],quantity:template.quantities?.[ref]||template.itemQuantities?.[ref]||1}));
+  p.learnedSkills={};for(const skill of template.skillSnapshots||[])require('./skills').grant(p,skill);
   const legacy=template.equipmentPreset===undefined;
   for(const entry of loadout) {
+    if(entry.template.kind==='技能'){require('./skills').grant(p,{...entry.template,requiresWeapon:entry.template.requiresWeapon??true});continue;}
     const stateful=['武器','防具','饰品','卡牌','配件','弹夹','技能','钥匙'].includes(entry.template.kind);
     for(let n=0;n<(stateful?entry.quantity:1);n++) {
       const item=M.makeItem(entry.template,stateful?1:entry.quantity);

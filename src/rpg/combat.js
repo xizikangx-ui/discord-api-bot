@@ -12,7 +12,8 @@ function actorById(battle, actorId) {
   ok(actor, '参战者已不存在。'); return actor;
 }
 function record(battle, message, details) {
-  const entry = { at: Date.now(), message, ...(details ? { details } : {}) };
+  const entry = { id:id('e'), at: Date.now(), message, ...(details ? { details:JSON.parse(JSON.stringify(details)) } : {}) };
+  require('./battle-events').capture(battle,entry);
   battle.recent.push(entry);
   battle.history ||= [];
   battle.history.push(clone(entry));
@@ -159,6 +160,7 @@ function validateNPC(state, raw) {
   t.attributes = Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, num(t.attributes?.[k] ?? 1, C.ATTRIBUTES[k], 0, 100000)]));
   t.hpMax = num(t.hpMax || t.attributes.constitution * 3 || 1, 'HP上限', 1, 10000000);
   t.humanoid = !!t.humanoid; t.baseXP = num(t.baseXP ?? 0, '基础击杀经验', 0, 1000000000);
+  t.skillIds||=[];t.skillSnapshots=t.skillIds.map(ref=>{const skill=state.skillTemplates?.[ref];ok(skill?.published,'NPC战斗技能尚未发布。');return clone(skill);});
   t.itemIds ||= [];
   for (const ref of t.itemIds) ok(state.catalog[ref]?.published, 'NPC装备或技能未发布。');
   t.itemQuantities = require('./room-settings').quantities(t.quantities || t.itemQuantities,t.itemIds,100);
@@ -278,7 +280,7 @@ function nextOpportunity(state, b, rng = randomInt) {
 }
 function start(state, b, surpriseTeam, rng = randomInt) {
   ok(b.status === 'recruiting' && b.actors.length, '请先招募至少一名参战者。');
-  for (const a of b.actors) { actorCharacter(state, a).ap = 0; a.retreated = false; }
+  for (const a of b.actors) {if(!a.userId&&!a.initialAmmoLoaded){a.initialAmmoLoaded=true;const loaded=require('./ammunition').primeNPC(actorCharacter(state,a));if(loaded.length)record(b,a.name+'开战前补弹：'+loaded.map(e=>e.name+' '+e.current+'/'+e.capacity+'发').join('、'));}actorCharacter(state, a).ap = 0; a.retreated = false; }
   b.status = 'active'; b.startedAt = Date.now();
   if (surpriseTeam) {
     ok(['ally', 'enemy'].includes(surpriseTeam), '偷袭阵营无效。');
@@ -340,85 +342,66 @@ function move(state, b, turnId, x, y) {
   ok(cost <= turn.move + 0.000001, '移动预算不足，需要' + cost + '米。');
   actor.x = C.round2(to.x); actor.y = C.round2(to.y); turn.move = C.round2(turn.move - cost);
   turn.moveSpent = C.round2((turn.moveSpent || 0) + cost);
-  record(b, actor.name + '移动至(' + actor.x + ',' + actor.y + ')。');
+  record(b, actor.name + '移动至(' + actor.x + ',' + actor.y + ')。',{actorId:actor.id,turnId,position:{x:actor.x,y:actor.y},remaining:turn.move});
 }
 function abilities(p) {
   require('./ammunition').normalize(p);
   const weapons = W.equipped(p).filter(ref => Dur.usable(p.inventory[ref]));
-  if (!weapons.length) return [];
+  const hasWeapon=weapons.length>0;
   const result = weapons.map(ref => ({ key: ref, attack: p.inventory[ref].snapshot }));
-  for (const item of Object.values(p.inventory)) if (item.snapshot.kind === '技能') result.push({ key: item.id, attack: item.snapshot });
+  for (const item of Object.values(p.inventory)) if (item.snapshot.kind === '技能'&&hasWeapon) result.push({key:item.id,attack:{...item.snapshot,requiresWeapon:item.snapshot.requiresWeapon??true}});
+  for(const e of Object.values(p.learnedSkills||{}))if(!e.snapshot.requiresWeapon||hasWeapon)result.push({key:e.id,attack:e.snapshot});
   for (const ref of p.equipped.cards) {
     const item = p.inventory[ref];
-    for (const [n, skill] of (item?.snapshot.skills || []).entries()) result.push({ key: ref + '~' + n, attack: skill });
+    for (const [n, skill] of (item?.snapshot.skills || []).entries()) if(!skill.requiresWeapon||hasWeapon)result.push({ key: ref + '~' + n, attack: skill });
   }
   return result;
 }
 function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng = randomInt, firing = {}) {
-  const { actor, p, turn } = current(state, b, turnId);
-  ok(!b.pending, '已有攻击等待防守。');
-  ok(W.equipped(p).some(ref => Dur.usable(p.inventory[ref])), '必须先装备可用武器才能攻击或释放攻击技能。');
-  const ability = abilities(p).find(a => a.key === abilityKey);
-  ok(ability, '武器／技能当前不可用。');
-  const t = ability.attack; const target = actorById(b, targetId); const targetP = actorCharacter(state, target);
-  ok(actor.id !== target.id && targetP.hp > 0 && !target.retreated, '目标不可用。');
-  ok(['quick', 'formal'].includes(action) && turn[action] > 0, '该行动次数已用完。');
-  if (t.kind === '技能') ok(action === (t.action || 'formal'), '技能须使用指定的行动类型。');
-  else if (action === 'quick') ok(t.supernatural, '普通武器攻击需要正式行动。');
-  if (t.melee) ok(Math.floor(actor.x / 50) === Math.floor(target.x / 50) && Math.floor(actor.y / 50) === Math.floor(target.y / 50), '近战必须同格。');
-  else ok(Math.hypot(actor.x - target.x, actor.y - target.y) <= M.modify(M.stats(p).effects, 'range', t.rangeMeters ?? t.range * 50) + 0.000001, '目标超出有效射程。');
-  if (t.kind === '技能' && t.casting) {
-    if (!actor.casting) {
-      turn[action]--; actor.casting = { key: abilityKey, name: t.name, required: t.casting, count: 1, confirmed: false };
-      record(b, actor.name + '开始吟唱' + t.name + '。');
-      return { casting: true };
-    }
-    ok(actor.casting.key === abilityKey && actor.casting.confirmed, '请先完成并用快速行动确认吟唱。');
-    actor.casting = null;
-  }
-  const weapon = p.inventory[abilityKey];
-  const firearm=C.FIREARMS.includes(t.weaponType),magazineWeapon=require('./ammunition').usesMagazine(t),mode=firing.mode || 'semi';
-  ok(['semi','auto'].includes(mode), '射击模式无效。');
-  const count=mode==='auto'?num(firing.count,'连射发数',1,10000):1;
+  const {actor,p,turn}=current(state,b,turnId),A=require('./aoe'),AM=require('./ammunition');
+  ok(!b.pending,'已有攻击等待防守。');
+  const ability=abilities(p).find(a=>a.key===abilityKey);ok(ability,'武器／技能当前不可用。');const t=ability.attack;
+  ok(t.kind==='技能'&&!t.requiresWeapon || W.equipped(p).some(ref=>Dur.usable(p.inventory[ref])),'必须先装备可用武器才能攻击或释放此技能。');
+  ok(['quick','formal'].includes(action)&&turn[action]>0,'该行动次数已用完。');
+  if(t.kind==='技能')ok(action===(t.action||'formal'),'技能须使用指定的行动类型。');else if(action==='quick')ok(t.supernatural,'普通武器攻击需要正式行动。');
+  let area=null,targets;
+  if(A.validate(t.aoe).mode!=='single') {ok(firing.aoe,'范围攻击需要先预览中心与名单。');area=A.preview(state,b,actor,t,firing.aoe.center,A.validate(t.aoe).mode==='selective'?firing.aoe.targets:undefined);targets=area.targets.map(ref=>actorById(b,ref));ok(targets.length,'范围内没有目标。');}
+  else {const target=actorById(b,targetId);ok(actor.id!==target.id&&actorCharacter(state,target).hp>0&&!target.retreated,'目标不可用。');
+    if(t.melee)ok(Math.floor(actor.x/50)===Math.floor(target.x/50)&&Math.floor(actor.y/50)===Math.floor(target.y/50),'近战必须同格。');
+    else ok(Math.hypot(actor.x-target.x,actor.y-target.y)<=M.modify(M.stats(p).effects,'range',t.rangeMeters??t.range*50)+.000001,'目标超出有效射程。');targets=[target];}
+  if(t.kind==='技能'&&t.casting){if(!actor.casting){turn[action]--;actor.casting={key:abilityKey,name:t.name,required:t.casting,count:1,confirmed:false};record(b,actor.name+'开始吟唱'+t.name+'。',{actorId:actor.id,portrait:p.portraits?.avatar,ability:t.name});return {casting:true};}
+    ok(actor.casting.key===abilityKey&&actor.casting.confirmed,'请先完成并用快速行动确认吟唱。');}
+  const weapon=p.inventory[abilityKey],firearm=C.FIREARMS.includes(t.weaponType),magazineWeapon=AM.usesMagazine(t),mode=firing.mode||'semi';
+  ok(['semi','auto'].includes(mode),'射击模式无效。');const count=mode==='auto'?num(firing.count,'连射发数',1,10000):1;
   ok(mode==='semi'||firearm,'只有枪械可以全自动射击。');
   if(magazineWeapon){ok((t.fireModes||['semi']).includes(mode),'这把枪械不支持所选射击模式。');ok(weapon?.loaded?.current>=count,'无弹药或剩余弹药不足，请装填或减少连射发数。');}
   if(weapon&&t.kind==='武器')ok(Dur.current(weapon)>=count,'武器耐久不足，请修复或减少连射发数。');
-  const shots=[],damage={},rolls={},conditions=clone(t.conditions||[]);const targetStats=M.stats(targetP);
-  for(let n=0;n<count;n++){
-    let round={};
-    if(magazineWeapon){round=weapon.loaded.rounds?.shift() || {};weapon.loaded.current--;}
-    else if(t.weaponType==='弓'){
-      const ammo=Object.values(p.inventory).find(i=>i.snapshot.kind==='弹药'&&i.snapshot.ammoType===t.ammoType&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0));
-      ok(ammo,'缺少对应箭矢。');round={effects:clone(ammo.snapshot.effects||[]),damage:clone(ammo.snapshot.damage||{}),conditions:clone(ammo.snapshot.conditions||[])};
-      ammo.quantity--;if(!ammo.quantity)delete p.inventory[ammo.id];
+  const rounds=[];
+  for(let n=0;n<count;n++){let round={};if(magazineWeapon){round=weapon.loaded.rounds?.shift()||{};weapon.loaded.current--;}
+    else if(t.weaponType==='弓'){const ammo=Object.values(p.inventory).find(i=>i.snapshot.kind==='弹药'&&AM.ammoCompatible(t,i.snapshot)&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0));ok(ammo,'缺少对应箭矢。');round=AM.round(ammo.snapshot);ammo.quantity--;if(!ammo.quantity)delete p.inventory[ammo.id];}rounds.push(round);}
+  if(magazineWeapon)p.ammoVersion=(p.ammoVersion||0)+1;turn[action]--;if(t.kind==='技能'&&t.casting)actor.casting=null;
+  const empty=magazineWeapon&&weapon.loaded.current===0,groupId=id('h'),expiresAt=Date.now()+60000;
+  const pendingHits=targets.map(target=>{const targetP=actorCharacter(state,target),targetStats=M.stats(targetP),shots=[],damage={},rolls={},conditions=clone(t.conditions||[]);
+    for(const round of rounds){const stats=M.stats(p,round.effects||[]),part={},shotRolls={};
+      for(const type of Object.keys(C.DAMAGE_TYPES)){const expr=t.damage[type],extra=round.damage?.[type];if(!expr&&!extra)continue;const roll=expr?C.dice(expr,'normal',rng):null,bonus=extra?C.dice(extra,'normal',rng):null;
+        shotRolls[type]={...(roll||{total:0}),...(bonus?{ammunition:bonus}:{})};let base=Math.max(0,(roll?.total||0)+(bonus?.total||0));if(t.melee&&type===t.primary)base+=stats.attributes.strength;base=M.modify(stats.effects,'attack:'+type,base);if(type!=='physical')base*=1+stats.attributes.intelligence*.1;part[type]=Math.max(0,base);damage[type]=(damage[type]||0)+part[type];}
+      for(const ref of round.conditions||[]){const previous=conditions.find(c=>c.id===ref.id);if(!previous)conditions.push(clone(ref));else if(C.SEVERITIES.indexOf(ref.severity)>C.SEVERITIES.indexOf(previous.severity))Object.assign(previous,clone(ref));}
+      shots.push({damage:part,rolls:shotRolls,hit:M.modify(stats.effects,'hit',t.hit)});if(shots.length===1)Object.assign(rolls,shotRolls);
     }
-    const stats=M.stats(p,round.effects||[]),part={},shotRolls={};
-    for(const type of Object.keys(C.DAMAGE_TYPES)){
-      const expr=t.damage[type],extra=round.damage?.[type];if(!expr&&!extra)continue;
-      const roll=expr?C.dice(expr,'normal',rng):null,bonus=extra?C.dice(extra,'normal',rng):null;
-      shotRolls[type]={...(roll||{total:0}),...(bonus?{ammunition:bonus}: {})};
-      let base=Math.max(0,(roll?.total||0)+(bonus?.total||0));
-      if(t.melee&&type===t.primary)base+=stats.attributes.strength;
-      base=M.modify(stats.effects,'attack:'+type,base);if(type!=='physical')base*=1+stats.attributes.intelligence*.1;
-      part[type]=Math.max(0,base);damage[type]=(damage[type]||0)+part[type];
-    }
-    for(const ref of round.conditions||[]){const previous=conditions.find(c=>c.id===ref.id);if(!previous)conditions.push(clone(ref));else if(C.SEVERITIES.indexOf(ref.severity)>C.SEVERITIES.indexOf(previous.severity))Object.assign(previous,clone(ref));}
-    shots.push({damage:part,rolls:shotRolls,hit:M.modify(stats.effects,'hit',t.hit)});if(!n)Object.assign(rolls,shotRolls);
-  }
-  if(magazineWeapon)p.ammoVersion=(p.ammoVersion||0)+1;
-  turn[action]--;if(weapon&&t.kind==='武器')Dur.drain(weapon,count);
-  const empty=magazineWeapon&&weapon.loaded.current===0;
-  const pending={id:id('h'),turnId,attackerId:actor.id,targetId,attackName:t.name,hit:shots[0]?.hit??t.hit,damage,rolls,shots,conditions,
-    armorWeakening:clone(t.armorWeakening||{type:'physical',amount:0}),fireMode:mode,shotCount:count,ammoRemaining:magazineWeapon?weapon.loaded.current:null,ammoEmpty:empty,
-    defenses:clone(targetStats.defenses),agility:M.signedModifier(targetStats.effects,'dodge',targetStats.attributes.agility),expiresAt:Date.now()+60000};
-  b.pending = pending;
-  record(b, actor.name + '使用' + t.name + '攻击' + target.name + (firearm?'，'+(mode==='auto'?'全自动连射':'半自动')+count+'发':'')+'，等待防守。'+(empty?' ⚠️ 弹夹已空：无弹药，请装填。':''), {hit:pending.hit,damage,shots,ammoEmpty:empty});
-  return pending;
+    return {id:area?id('h'):groupId,groupId,turnId,attackerId:actor.id,attackerCharacterId:p.id,targetId:target.id,targetCharacterId:targetP.id,attackName:t.name,hit:shots[0]?.hit??t.hit,damage,rolls,shots,conditions,armorWeakening:clone(t.armorWeakening||{type:'physical',amount:0}),fireMode:mode,shotCount:count,ammoRemaining:magazineWeapon?weapon.loaded.current:null,ammoEmpty:empty,defenses:clone(targetStats.defenses),agility:M.signedModifier(targetStats.effects,'dodge',targetStats.attributes.agility),expiresAt};
+  });
+  if(weapon&&t.kind==='武器')Dur.drain(weapon,count);
+  b.pending=area?{kind:'aoe',id:groupId,attackerId:actor.id,turnId,area:clone(area),hits:pendingHits,expiresAt}:pendingHits[0];
+  record(b,actor.name+'使用'+t.name+(firearm?'，'+(mode==='auto'?'全自动连射':'半自动')+count+'发':'')+'攻击'+targets.map(a=>a.name).join('、')+'，等待防守。'+(empty?' ⚠️ 弹夹已空：无弹药，请装填。':''),{actorId:actor.id,portrait:p.portraits?.avatar,groupId,children:area?pendingHits.map(h=>({id:h.id,targetId:h.targetId,name:actorById(b,h.targetId).name,shots:clone(h.shots)})):null,targetIds:targets.map(a=>a.id),ability:t.name,hit:pendingHits[0].hit,damage:pendingHits[0].damage,shots:pendingHits[0].shots,ammoEmpty:empty,ammoRemaining:magazineWeapon?weapon.loaded.current:null,shotCount:count,mode,area});
+  return b.pending;
 }
 function defend(state, b, pendingId, choice, rng = randomInt) {
-  ok(['active', 'paused'].includes(b.status) && b.pending?.id === pendingId, '攻防已结算，请刷新。');
+  const hit=require('./aoe').hit(b,pendingId);
+  ok(['active','paused'].includes(b.status)&&hit,'攻防已结算，请刷新。');
   ok(['defend', 'dodge', 'both', 'none'].includes(choice), '防守方式无效。');
-  const hit = b.pending; const target = actorById(b, hit.targetId); const p = actorCharacter(state, target);
+  const group=b.pending, target = actorById(b, hit.targetId); const p = actorCharacter(state, target);
+  ok(!target.deathId&&(!hit.targetCharacterId||p.id===hit.targetCharacterId),'该目标角色已变化。');
+  const hpBefore=p.hp;
   const defaulted = hit.expiresAt <= Date.now();
   if (defaulted) choice = 'defend';
   let dodge = null;
@@ -436,27 +419,31 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
       saves.push(applyCondition(state, p, ref, rng, { actorId: attacker.id, userId: attacker.userId || null, characterId: origin.id }));
     }
   }
+  M.syncHP(p);
   record(b, target.name + (dodge?.success ? '成功闪避。' : '受到' + total + '伤害，剩余' + p.hp + 'HP。'),
-    { choice, dodge, breakdown, saves,armorDamage });
+    {actorId:target.id,portrait:p.portraits?.avatar,attackerId:hit.attackerId,ability:hit.attackName,choice,dodge,breakdown,saves,armorDamage,hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,shots:hit.shots,rolls:hit.rolls,total,hitId:hit.id});
   if(armorDamage.length)record(b,'护甲削弱：'+armorDamage.map(d=>d.name+'耐久 -'+d.lost+'（剩余'+d.durability+'）').join('、'));
   M.syncHP(p);
-  b.pending = null;
+  hit.result={target:target.name,total,dodge,breakdown,saves,armorDamage,hp:p.hp,defaulted};
+  require('./battle-events').settle(b,hit);
+  if(group.kind!=='aoe'||!require('./aoe').hits(b).length)b.pending=null;
   if (p.hp <= 0) require('./mortality').settle(state, b, target, hit.attackerId);
   const result = { target: target.name, total, dodge, breakdown, saves, armorDamage,hp: p.hp, defaulted };
-  if (b.status === 'active' && b.current) {
+  if (b.status === 'active' && b.current && !b.pending) {
     const active = actorById(b, b.current.actorId);
     if (actorCharacter(state, active).hp <= 0) {
       endConditions(actorCharacter(state, active), b, active, rng);
       b.current = null; nextOpportunity(state, b, rng);
     }
   }
+  if(b.status==='active'&&!b.pending&&!b.current)nextOpportunity(state,b,rng);
   return result;
 }
 function confirmCasting(state, b, turnId) {
   const { actor, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0 && actor.casting && actor.casting.count >= actor.casting.required, '吟唱未完成或快速行动已用完。');
   turn.quick--; actor.casting.confirmed = true;
-  record(b, actor.name + '确认吟唱完成。');
+  record(b, actor.name + '确认吟唱完成。',{actorId:actor.id,portrait:actorCharacter(state,actor).portraits?.avatar});
 }
 function reload() { throw new Error('旧直接装填已停用，请使用弹夹管理：先填弹夹，再更换弹夹。'); }
 function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
@@ -466,7 +453,7 @@ function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
     ok(p.inventory[itemId]?.snapshot.kind === '武器', '武器不可用。');
     if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '武器已被交易预留。');
   }
-  W.set(p, itemId, hand); turn.quick--; M.syncHP(p);
+  W.set(p, itemId, hand); turn.quick--; M.syncHP(p);record(b,actor.name+'切换武器：'+(itemId?p.inventory[itemId].snapshot.name:'卸下武器'),{actorId:actor.id,portrait:p.portraits?.avatar});
 }
 function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget) {
   const { actor, p, turn } = current(state, b, turnId);
@@ -474,10 +461,10 @@ function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget) {
   const item = p.inventory[itemId];
   ok([...C.CONSUMABLES,'修复道具'].includes(item?.snapshot.kind), '该道具没有已录入的使用效果。');
   if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '道具已预留。');
-  if(p.inventory[itemId]?.snapshot.kind==='修复道具'){if(actor.userId)ok(M.available(state,actor.userId,repairTarget)>0,'装备已被预留。');const result=Dur.repair(p,itemId,repairTarget);turn.quick--;M.syncHP(p);turn.move=Math.max(0,C.round2(M.stats(p).move-(turn.moveSpent||0)));record(b,actor.name+'使用'+result.name+'修复'+result.target+' '+result.repaired+'点耐久。',result);return result;}
+  if(p.inventory[itemId]?.snapshot.kind==='修复道具'){if(actor.userId)ok(M.available(state,actor.userId,repairTarget)>0,'装备已被预留。');const result=Dur.repair(p,itemId,repairTarget);turn.quick--;M.syncHP(p);turn.move=Math.max(0,C.round2(M.stats(p).move-(turn.moveSpent||0)));record(b,actor.name+'使用'+result.name+'修复'+result.target+' '+result.repaired+'点耐久。',{...result,actorId:actor.id,portrait:p.portraits?.avatar});return result;}
   const result = M.consume(p, itemId, rng, turnId);
   turn.move = Math.max(0, C.round2(M.stats(p).move - (turn.moveSpent || 0)));
-  turn.quick--; record(b, actor.name + '使用' + result.name + '，恢复' + result.healed + 'HP。', result);
+  turn.quick--; record(b, actor.name + '使用' + result.name + '，恢复' + result.healed + 'HP。', {...result,hp:p.hp,maxHP:M.stats(p).maxHP,actorId:actor.id,portrait:p.portraits?.avatar});
   return result;
 }
 function flee(state, b, turnId, rng = randomInt) {

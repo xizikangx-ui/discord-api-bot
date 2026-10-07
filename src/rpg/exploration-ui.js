@@ -4,6 +4,7 @@ const L = require('./loot'), DTH = require('./mortality');
 const Team=require('./team-movement');
 const { requireThat: ok, clone } = C;
 const { row, button, select, payload, modal, D } = U;
+const place=(m,ref)=>m.mapType==='region'?('第'+(X.xy(ref)[1]+1)+'行 · 第'+(X.xy(ref)[0]+1)+'列'):location(ref);
 const location = ref => { const [x,y] = X.xy(ref); return (y+1) + 'F · 第' + (x+1) + '格'; };
 const labels = { draft: '草稿', active: '探索中', paused: '已暂停', ended: '已结束' };
 function grid(m, full = false) {
@@ -25,15 +26,16 @@ function board(m) {
       button('map:personal:' + m.id, '探索操作', D.ButtonStyle.Primary), button('map:manage:' + m.id, 'GM管理'))
   ], 0x2e8b57);
   const visible=Object.keys(m.revealed).length,total=Object.values(m.cells).filter(c=>c.type!=='wall').length;
+  if(m.excursion)v.embeds[0].addFields(U.field('建筑内队伍','队伍已经进入内部地图；退出建筑后会返回原位置。'));
   v.embeds[0].addFields(U.field('🧭 探索进度',U.bar(visible,total)+' '+visible+'/'+total,true),U.field('👥 队伍',Object.keys(m.participants).slice(0,15).map(uid=>'<@'+uid+'>').join(' ')||'等待报名',true),U.field('📍 最近事件',m.lastEvent||'全员确认后一起移动，迷雾由全队共享。'));
-  v.embeds[0].setFooter({ text: m.id + ' · 全队共享迷雾 · 只有进入过的格子公开' }); return require('./map-image').attach(v,require('./map-image').exploration(m),'exploration-'+m.id+'.png');
+  v.embeds[0].setFooter({ text: m.id + ' · 全队共享迷雾 · 只有进入过的格子公开' }); return require('./map-image').prepare(v,{kind:'exploration',m});
 }
 function moveCard(m,r,page=0){const status={pending:'等待全员确认',completed:'全队已移动',rejected:'队员拒绝，已取消',expired:'确认超时',cancelled:'状态变化，已取消'};
   const waiting=r.members.filter(uid=>!r.yes.includes(uid));page=Math.max(0,Math.min(Number(page)||0,Math.max(0,Math.ceil(waiting.length/20)-1)));
-  const v=payload('全队移动确认 · '+m.name,'**'+status[r.status]+'**\n'+location(r.from)+' → '+location(r.to)+'\n'+U.bar(r.yes.length,r.members.length)+' **'+r.yes.length+'/'+r.members.length+'** 人同意\n'+
+  const v=payload((r.kind==='enter'?'全队进入建筑':r.kind==='exit'?'全队离开建筑':'全队移动确认')+' · '+m.name,'**'+status[r.status]+'**\n'+place(m,r.from)+' → '+(r.destinationName?r.destinationName+' · ':'')+(r.kind==='enter'?location(r.to):place(m,r.to))+'\n'+U.bar(r.yes.length,r.members.length)+' **'+r.yes.length+'/'+r.members.length+'** 人同意\n'+
     (r.status==='pending'?'截止 <t:'+Math.floor(r.expiresAt/1000)+':R>\n尚未确认：'+(waiting.slice(page*20,page*20+20).map(uid=>'<@'+uid+'>').join(' ')||'无'):r.reason||'全队位置已保存。'),[
     ...(r.status==='pending'?[row(button('map:movevote:'+m.id+':'+r.id+':yes','同意移动',D.ButtonStyle.Success),button('map:movevote:'+m.id+':'+r.id+':no','拒绝移动',D.ButtonStyle.Danger),button('map:movecancel:'+m.id+':'+r.id,'发起者 / GM取消'))]:[]),
-    row(button('map:moveinfo:'+m.id+':'+r.id+':'+(page-1),'上一页名单',undefined,!page),button('map:moveinfo:'+m.id+':'+r.id+':'+(page+1),'下一页名单',undefined,(page+1)*20>=waiting.length),button('map:personal:'+m.id,'返回探索操作'))
+    row(button('map:moveinfo:'+m.id+':'+r.id+':'+(page-1),'上一页名单',undefined,!page),button('map:moveinfo:'+m.id+':'+r.id+':'+(page+1),'下一页名单',undefined,(page+1)*20>=waiting.length),button('map:personal:'+(r.resultMapId||m.id),'返回探索操作'))
   ],r.status==='pending'?0xf1c40f:r.status==='completed'?0x2ecc71:0x95a5a6);
   v.embeds[0].setFooter({text:r.id+' · 拒绝或三分钟超时不移动 · 不公开未探索房间内容'});return v;
 }
@@ -49,7 +51,7 @@ function corpseView(state, corpse, page = 0) {
       button('map:corpse:' + corpse.id + ':' + (page + 1), '下一页', undefined, (page + 1) * 15 >= items.length), button('map:corpse:' + corpse.id + ':' + page, '刷新'))
   ], 0xe67e22);
 }
-function createExploration({ snapshot, store, tx: transact, textChannel, client, needGM, activities, publishBattle, gmUI, logFailure }) {
+function createExploration({ snapshot, store, tx: transact, textChannel, client, needGM, activities, publishBattle, gmUI, logFailure,render=async(g,v)=>v }) {
   const jobs = new Map();
   const tx = (i, fn, label) => transact(i, st => { if (i.rpgMapGM) needGM(st, i.rpgMapMember || i.member); return fn(st); }, label);
   function map(s, ref) { const m = s.explorations[ref]; ok(m, '地图不存在。'); return m; }
@@ -72,7 +74,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   function home(s, member) {
     const gm = U.gm(s, member), entries = Object.values(s.explorations).filter(m => gm || ['active', 'paused'].includes(m.status));
     return picker('探索地图', entries.map(m => ({ label: m.name + ' · ' + labels[m.status], value: m.id })), 'list', 0,
-      gm ? [button('map:createcategory:0', '创建地图', D.ButtonStyle.Primary), back()] : []);
+      gm ? [button('map:createtype', '创建地图', D.ButtonStyle.Primary), back()] : []);
   }
   function manage(s, m) {
     const v=payload('GM地图 · ' + m.name, labels[m.status] + '\n完整布局仅GM可见 · 蓝色为队伍 · 青色房间 · 紫色楼梯\n已探索' + Object.keys(m.revealed).length + '格 · 房间内容请在格子详情核对。', [
@@ -85,26 +87,28 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       ...(m.moveRequestId?[row(button('map:moveinfo:'+m.id+':'+m.moveRequestId+':0','查看移动申请'),button('map:moverepost:'+m.id+':'+m.moveRequestId,'核对后补发确认'))]:[]),
       row(button('map:manage:' + m.id, '刷新'), button('map:repost:' + m.id, '核对后补发地图', undefined, m.status === 'draft'), button('map:home', '返回地图列表'), button('map:celldraft:' + m.id, '继续格子草稿', undefined, !Object.keys(m.cellDrafts || {}).length))
     ]);
-    return require('./map-image').attach(v,require('./map-image').exploration(m,true),'gm-map-'+m.id+'.png');
+    return require('./map-image').prepare(v,{kind:'exploration',m,full:true});
   }
   function personal(s, m, uid, tab='move', page=0) {
     const part=m.participants[uid],p=s.players[uid];ok(part&&p?.id===part.characterId,'先参加探索。');
     const c=m.cells[part.cell],r=c?.room,stats=M.stats(p),tabs={move:'全队移动',room:'房间交互',team:'探索队伍',map:'地图楼层'};
     ok(tabs[tab],'探索分页无效。');const components=[row(select('map:personaltab:'+m.id,'探索操作分页',Object.entries(tabs).map(([value,label])=>({value,label,default:tab===value}))))];
-    let body='**'+m.name+'** · '+labels[m.status]+'\n📍 '+location(part.cell)+'\n'+(r?'**'+r.snapshot.name+'**\n'+r.snapshot.description.slice(0,1800):X.TYPES[c?.type])+'\n'+
+    let body='**'+m.name+'** · '+labels[m.status]+'\n📍 '+place(m,part.cell)+'\n'+(r?'**'+r.snapshot.name+'**\n'+r.snapshot.description.slice(0,1800):(c?.description||X.cellTypes(m)[c?.type]))+'\n'+
       (r?'遭遇 '+({pending:(r.autoStart??r.snapshot.autoStart)?'等待自动开战':'等待GM确认',battle:'战斗中',resolved:'可探索物资'}[r.encounter])+'\n':'')+'负重 '+C.kg(stats.carried)+' / '+C.kg(stats.limit)+' '+U.bar(stats.carried,stats.limit);
     if(tab==='move'){
-      const directions=X.neighbors(m,part.cell).map(to=>{const [x,y]=X.xy(to),[ox,oy]=X.xy(part.cell);return button('map:move:'+m.id+':'+to,x<ox?'← 向左':x>ox?'向右 →':y>oy?'↑ 上楼':'↓ 下楼',D.ButtonStyle.Primary,m.status!=='active'||!!M.battleFor(s,uid));});
+      const directions=X.neighbors(m,part.cell).map(to=>{const [x,y]=X.xy(to),[ox,oy]=X.xy(part.cell);return button('map:move:'+m.id+':'+to,x<ox?'← 向左':x>ox?'向右 →':y>oy?(m.mapType==='region'?'↓ 向下':'↑ 上楼'):(m.mapType==='region'?'↑ 向上':'↓ 下楼'),D.ButtonStyle.Primary,m.status!=='active'||!!M.battleFor(s,uid));});
       if(directions.length)components.push(row(...directions));body+='\n全队必须在同一格，全部同意后才移动。';
+      if(c?.type==='building'&&c.buildingMapId)components.push(row(button('map:portal:'+m.id+':enter','全队进入建筑',D.ButtonStyle.Success)));
+      if(m.parentContext&&part.cell===m.entrance)components.push(row(button('map:portal:'+m.id+':exit','全队离开建筑',D.ButtonStyle.Success)));
       const request=m.moves?.[m.moveRequestId];if(request)components.push(row(button('map:moveinfo:'+m.id+':'+request.id+':0','当前 / 最近移动申请')));
     }
     if(tab==='room'){components.push(row(button('map:containers:'+m.id+':0','房间容器（免费）',D.ButtonStyle.Primary,!r||r.encounter!=='resolved'||!r.containers.some(c=>c.status!=='claimed')),button('map:supplies:'+m.id+':0','散落物资',undefined,!r||r.encounter!=='resolved'||!r.supplies.length)));
       body+='\n容器剩余 '+(r?.containers.filter(c=>c.status!=='claimed').length||0)+' · 物资剩余 '+(r?.supplies.length||0);}
-    if(tab==='team'){const members=Object.entries(m.participants);page=Math.max(0,Math.min(Number(page)||0,Math.max(0,Math.ceil(members.length/15)-1)));body+='\n\n'+members.slice(page*15,page*15+15).map(([id,p])=>'<@'+id+'> · '+location(p.cell)).join('\n');components.push(row(button('map:personalpage:'+m.id+':team:'+(page-1),'上一页',undefined,!page),button('map:personalpage:'+m.id+':team:'+(page+1),'下一页',undefined,(page+1)*15>=members.length)));}
-    if(tab==='map'){page=Math.max(0,Math.min(Number.isFinite(Number(page))?Number(page):X.xy(part.cell)[1],m.floors-1));components.push(row(select('map:floor:'+m.id,'选择楼层',Array.from({length:m.floors},(_,n)=>({value:String(n),label:(n+1)+'F',default:page===n})))));}
+    if(tab==='team'){const members=Object.entries(m.participants);page=Math.max(0,Math.min(Number(page)||0,Math.max(0,Math.ceil(members.length/15)-1)));body+='\n\n'+members.slice(page*15,page*15+15).map(([id,p])=>'<@'+id+'> · '+place(m,p.cell)).join('\n');components.push(row(button('map:personalpage:'+m.id+':team:'+(page-1),'上一页',undefined,!page),button('map:personalpage:'+m.id+':team:'+(page+1),'下一页',undefined,(page+1)*15>=members.length)));}
+    if(tab==='map'&&m.mapType!=='region'){page=Math.max(0,Math.min(Number.isFinite(Number(page))?Number(page):X.xy(part.cell)[1],m.floors-1));components.push(row(select('map:floor:'+m.id,'选择楼层',Array.from({length:m.floors},(_,n)=>({value:String(n),label:(n+1)+'F',default:page===n})))));}
     components.push(row(button('map:personalpage:'+m.id+':'+tab+':'+page,'刷新当前页'),button('map:leave:'+m.id,'退出探索')));
     const v=payload('探索操作 · '+p.name,body,components,0x1abc9c);v.embeds[0].setFooter({text:m.id+' · 私有操作面板 · 资产不会写入公共地图'});
-    return tab==='map'?require('./map-image').attach(v,require('./map-image').exploration(m,false,page),'floor-'+m.id+'.png'):v;
+    return tab==='map'?require('./map-image').prepare(v,{kind:'exploration',m,floor:page}):v;
   }
   async function publish(guild, ref, force = false) {
     const key = guild + ':' + ref; if (jobs.has(key)) return jobs.get(key);
@@ -112,13 +116,13 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       let m = map(snapshot(guild), ref); const ch = await textChannel(guild, m.channelId);
       if (m.messageId) {
         const old = await ch.messages.fetch(m.messageId).catch(e => { if (e.code === 10008) return null; throw e; });
-        if (old) { await old.edit(board(m)); return; }
+        if (old) { await old.edit(await render(guild,board(m))); return; }
         ok(force, '地图公示已删除，GM核对后补发。');
       }
       ok(force || !['sending', 'uncertain'].includes(m.publication?.status), '地图发送结果待核对，请GM检查后补发。');
       await store.transact(guild, 'map-send:' + C.id('n'), client.user.id, st => { st.explorations[ref].publication = { status: 'sending' }; }, '保存地图公示意图');
       try {
-        m = map(snapshot(guild), ref); const message = await ch.send({ ...board(m), nonce: ref, enforceNonce: true });
+        m = map(snapshot(guild), ref); const message = await ch.send({ ...await render(guild,board(m)), nonce: ref, enforceNonce: true });
         await store.transact(guild, 'map-sent:' + message.id, client.user.id, st => {
           st.explorations[ref].messageId = message.id; st.explorations[ref].publication = { status: 'sent' };
         }, '地图公示送达');
@@ -174,15 +178,16 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   }
   async function openModal(i, s) {
     if (i.isModalSubmit?.() || !i.customId?.startsWith('rpg:map:')) return false;
-    const [, action, ref, arg] = i.customId.split(':').slice(1);
-    if (!['createnamed', 'coord', 'rateedit', 'keyedit', 'teleport'].includes(action)) return false;
+    const [, action, ref, arg,extra] = i.customId.split(':').slice(1);
+    if (!['createnamed', 'coord', 'rateedit', 'keyedit', 'teleport','celldescription'].includes(action)) return false;
     needGM(s, i.member);
     let fields;
-    if (action === 'createnamed') fields = [{ key: 'name', label: '地图名称' }, { key: 'floors', label: '楼层1—20', value: '3' }, { key: 'width', label: '每层格数1—20', value: '9' }];
-    if (action === 'coord' || action === 'teleport') fields = [{ key: 'x', label: '列1—20' }, { key: 'y', label: '楼层1—20' }];
+    if (action === 'createnamed') fields = [{ key: 'name', label: '地图名称' }, { key: 'floors', label:extra==='region'?'区域行数1—20':'楼层1—20', value: '3' }, { key: 'width', label:extra==='region'?'区域列数1—20':'每层格数1—20', value: '9' }];
+    if (action === 'coord' || action === 'teleport') fields = [{ key: 'x', label: '列1—20' }, { key: 'y', label:map(s,ref).mapType==='region'?'区域行1—20':'楼层1—20' }];
     if (action === 'rateedit') fields = [{ key: 'values', label: '白 绿 蓝 紫 金 红（空格分隔，合计100）', value: L.rates(s, ref).join(' ') }];
     if (action === 'keyedit') { const item = M.player(s, ref).inventory[arg]; ok(item?.snapshot.kind === '钥匙', '钥匙已不存在。'); fields = [{ key: 'charges', label: '剩余次数（设置绝对值，0—100000）', value: item.keyCharges }]; }
-    await i.showModal(modal('map:' + action + 'submit:' + ref + (arg ? ':' + arg : ''), 'GM配置', fields)); return true;
+    if(action==='celldescription'){const d=map(s,ref).cellDrafts?.[i.user.id];ok(d,'格子草稿已失效。');fields=[{key:'name',label:'地点名称（留空用模板名称）',value:d.name,required:false},{key:'description',label:'地点说明',value:d.description,long:true,required:false}];}
+    await i.showModal(modal('map:' + action + 'submit:' + ref + (arg ? ':' + arg : '')+(extra?':'+extra:''), 'GM配置', fields)); return true;
   }
   async function component(i, member) {
     const [, action, ref, arg, extra] = i.customId.split(':').slice(1), s = snapshot(i.guildId), uid = i.user.id;
@@ -197,8 +202,9 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
         for(let n=0;n<r.members.length;n+=10){const members=await Promise.all(r.members.slice(n,n+10).map(user=>i.guild.members.fetch({user,force:true}).catch(e=>{if(e.code===10007)return null;throw e;})));freshMembers.push(...members);if(members.some(member=>!member||!U.playerRole(s,member)))missingMember=true;}
       }
       await tx(i,st=>{const live=map(st,ref);if(action==='movevote')ok(U.playerRole(st,member),'需要玩家身份组。');missingMember ||=freshMembers.some(m=>!m||!U.playerRole(st,m));if(action==='movecancel'||missingMember){const r=live.moves[arg];ok(r.status==='pending','申请已经结束。');r.status='cancelled';r.reason=missingMember?'队员已退服或不再拥有玩家身份组':'发起者或GM取消';}else Team.vote(st,live,arg,uid,extra==='yes');},'全队移动确认');
-      await publishMove(i.guildId,ref,arg);await publish(i.guildId,ref);return moveCard(map(snapshot(i.guildId),ref),map(snapshot(i.guildId),ref).moves[arg]);
+      await publishMove(i.guildId,ref,arg);await publish(i.guildId,ref);const dest=map(snapshot(i.guildId),ref).moves[arg].resultMapId;if(dest)await publish(i.guildId,dest);return moveCard(map(snapshot(i.guildId),ref),map(snapshot(i.guildId),ref).moves[arg]);
     }
+    if(action==='portal'){ok(U.playerRole(s,member),'需要玩家身份组。');const r=await tx(i,st=>{ok(U.playerRole(st,member),'需要玩家身份组。');return require('./map-links').propose(st,map(st,ref),uid,arg);},'全队建筑切换申请');await publishMove(i.guildId,ref,r.id);await publish(i.guildId,ref);if(r.resultMapId)await publish(i.guildId,r.resultMapId);return moveCard(map(snapshot(i.guildId),ref),map(snapshot(i.guildId),ref).moves[r.id]);}
     if(['personaltab','personalpage','floor'].includes(action)){ok(U.playerRole(s,member),'需要玩家身份组。');return personal(s,map(s,ref),uid,action==='personaltab'?i.values[0]:action==='floor'?'map':arg,action==='floor'?Number(i.values[0]):Number(extra));}
     if (action === 'home') return home(s, member);
     if (action === 'list') return ref === 'pick' ? (gm ? manage(s, map(s, i.values[0])) : board(map(s, i.values[0]))) :
@@ -227,7 +233,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       const result = await tx(i, st => {
         const live = map(st, ref); ok(U.playerRole(st, member), '需要玩家身份组。');
         if (action === 'join') X.join(st, live, uid);
-        if (action === 'leave') { ok(!M.battleFor(st, uid), '战斗期间请GM移出。'); delete live.participants[uid]; live.version++; }
+        if (action === 'leave') { ok(!M.battleFor(st, uid), '战斗期间请GM移出。'); delete live.participants[uid];require('./map-links').releaseEmpty(st,live); live.version++; }
         if (action === 'move' || action === 'unlock') return { moveRequest: Team.propose(st,live,uid,arg,i.values?.[0]).id };
         if (action === 'open') return X.open(st, live, uid, i.values[0]);
         if (action === 'take') {
@@ -269,12 +275,16 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     if (action === 'keyuser' || action === 'keylist') { const target = action === 'keyuser' ? i.values[0] : ref; return picker('玩家钥匙', Object.values(M.player(s, target).inventory).filter(k => k.snapshot.kind === '钥匙').map(k => ({ label: k.snapshot.name + ' · 剩余' + k.keyCharges, value: k.id })), 'keychoose:' + target, arg, [back()]); }
     if (action === 'keychoose') { if (arg === 'pick') return payload('钥匙次数', '编号 ' + i.values[0], [row(button('map:keyedit:' + ref + ':' + i.values[0], '设置剩余次数'), button('map:keylist:' + ref + ':0', '返回'))]); return picker('玩家钥匙', Object.values(M.player(s, ref).inventory).filter(k => k.snapshot.kind === '钥匙').map(k => ({ label: k.snapshot.name, value: k.id })), 'keychoose:' + ref, arg); }
     if (action === 'keyeditsubmit') { await tx(i, st => { const item = M.player(st, ref).inventory[arg]; ok(item?.snapshot.kind === '钥匙' && M.available(st, ref, arg) > 0, '钥匙不存在或被预留。'); item.keyCharges = C.number(i.fields.getTextInputValue('charges'), '次数', 0, 100000); }, 'GM调整钥匙次数'); return config(snapshot(i.guildId)); }
+    if(action==='createtype')return payload('创建探索地图 · 类型','建筑内部按楼层和走廊排列；区域地图按上下左右相邻格探索。',[row(select('map:mapkind','地图类型',[{value:'indoor',label:'建筑内部 · 多层平面图'},{value:'region',label:'区域大地图 · 道路与地标'}])),row(back())]);
+    if(action==='mapkind'||action==='category'){const type=action==='mapkind'?i.values[0]:ref;
+      if(action==='category'&&arg==='pick')return payload('选择生成方式','随机从指定大类抽房间，固定逐格指定内容。',[row(select('map:createmode:'+i.values[0]+':'+type,'地图方式',[{label:'随机',value:'random'},{label:'固定',value:'fixed'}])),row(back())]);
+      return picker('选择地图大类',Object.values(s.mapCategories).filter(t=>t.published).map(t=>({label:t.name,value:t.id})),'category:'+type,action==='mapkind'?0:arg,[back()]);}
     if (action === 'createcategory') {
       if (ref === 'pick') return payload('选择生成方式', '随机从大类房间抽选；固定逐格指定。', [row(select('map:createmode:' + i.values[0], '地图方式', [{ label: '随机', value: 'random' }, { label: '固定', value: 'fixed' }])), row(button('map:home', '取消'))]);
       return picker('选择地图大类', Object.values(s.mapCategories).map(t => ({ label: t.name, value: t.id })), 'createcategory', ref, [back()]);
     }
-    if (action === 'createmode') return payload('创建地图', '模式 ' + i.values[0] + '，填写大小后进入可编辑预览。', [row(button('map:createnamed:' + ref + ':' + i.values[0], '填写名称与大小'), button('map:home', '取消'))]);
-    if (action === 'createnamedsubmit') { const m = await tx(i, st => X.create(st, uid, i.channelId, i.fields.getTextInputValue('name'), i.fields.getTextInputValue('floors'), i.fields.getTextInputValue('width'), arg, ref), '创建地图草稿'); return manage(snapshot(i.guildId), m); }
+    if (action === 'createmode') return payload('创建地图', '模式 ' + i.values[0] + '，填写大小后进入可编辑预览。', [row(button('map:createnamed:' + ref + ':' + i.values[0]+':'+(arg==='region'?'region':'indoor'), '填写名称与大小'), button('map:home', '取消'))]);
+    if (action === 'createnamedsubmit') { const m = await tx(i, st => X.create(st, uid, i.channelId, i.fields.getTextInputValue('name'), i.fields.getTextInputValue('floors'), i.fields.getTextInputValue('width'), arg, ref,extra==='region'?'region':'indoor'), '创建地图草稿'); return manage(snapshot(i.guildId), m); }
     if (action === 'deaths') {
       if (ref === 'pick') return payload('指定击杀经验', '选择获得经验的有效玩家角色。', [row(new D.UserSelectMenuBuilder().setCustomId('rpg:map:rewarduser:' + i.values[0])), row(back())]);
       return picker('未结算击杀经验', Object.values(s.deaths).filter(d => d.kind === 'npc' && d.team === 'enemy' && !d.rewarded).map(d => ({ label: d.name + ' · 基础经验' + d.baseXP, value: d.id })), 'deaths', ref, [back()]);
@@ -288,11 +298,12 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     if (action === 'corpserepost') { ok(s.corpses[ref], '掉落不存在。'); await publishCorpses(i.guildId, s.corpses[ref].battleId, true); return config(snapshot(i.guildId)); }
     const m = map(s, ref);
     if (action === 'manage') return manage(s, m);
-    if (action === 'celltype') return payload('编辑格子 · 选择类型', '已有交互的格子不能替换。', [row(select('map:typepick:' + ref, '格子类型', [...Object.entries(X.TYPES).map(([value, label]) => ({ value, label })), { label: '删除格子', value: 'empty' }])), row(button('map:manage:' + ref, '返回'))]);
-    if (action === 'typepick') return payload('编辑格子 · 填写位置', X.TYPES[i.values[0]] || '删除格子', [row(button('map:coord:' + ref + ':' + i.values[0], '填写列与楼层'), button('map:manage:' + ref, '取消'))]);
+    if (action === 'celltype') return payload('编辑格子 · 选择类型', '已有交互的格子不能替换。', [row(select('map:typepick:' + ref, '格子类型', [...Object.entries(X.cellTypes(m)).map(([value, label]) => ({ value, label })), { label: '删除格子', value: 'empty' }])), row(button('map:manage:' + ref, '返回'))]);
+    if (action === 'typepick') return payload('编辑格子 · 填写位置', X.cellTypes(m)[i.values[0]] || '删除格子', [row(button('map:coord:' + ref + ':' + i.values[0], '填写列与楼层'), button('map:manage:' + ref, '取消'))]);
     if (action === 'coordsubmit') {
       await tx(i, st => { const live = map(st, ref); ok(['draft', 'paused'].includes(live.status), '请暂停地图。');
-        live.cellDrafts ||= {}; live.cellDrafts[uid] = { x: C.number(i.fields.getTextInputValue('x'), '列', 1, 20), y: C.number(i.fields.getTextInputValue('y'), '楼层', 1, 20), type: arg, categoryId: live.categoryId, templateId: null, version: live.version };
+        live.cellDrafts ||= {}; live.cellDrafts[uid] = { x: C.number(i.fields.getTextInputValue('x'), '列', 1, 20), y: C.number(i.fields.getTextInputValue('y'), '楼层', 1, 20), type: arg,passable:!['water','mountain','wall'].includes(arg), categoryId: live.categoryId, templateId: null, version: live.version };
+        const d=live.cellDrafts[uid],old=live.cells[(d.x-1)+','+(d.y-1)];if(old?.type===d.type)Object.assign(d,C.clone(old),{version:live.version});
       }, '保存格子编辑草稿'); return cellDraft(snapshot(i.guildId), map(snapshot(i.guildId), ref), uid);
     }
     if (action === 'celldraft') return cellDraft(s, m, uid);
@@ -304,7 +315,10 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       const entries = Object.values(action === 'cellcategory' ? s.mapCategories : s.roomTemplates).filter(t => action === 'cellcategory' || t.categoryIds[0] === d.categoryId);
       return picker('选择' + (action === 'cellcategory' ? '大类' : '固定房间'), entries.map(t => ({ label: t.name, value: t.id })), action + ':' + ref, arg, [button('map:celldraft:' + ref, '返回编辑')]);
     }
-    if (action === 'cellapply') { await tx(i, st => { const live = map(st, ref), d = live.cellDrafts?.[uid]; ok(d && d.version === live.version, '地图已有变更，请重新编辑格子。'); X.editCell(st, live, d.x, d.y, d.type, d.categoryId, d.templateId); live.generated = live.status === 'draft' ? false : live.generated; delete live.cellDrafts[uid]; }, '保存地图格子'); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
+    if(action==='celldescriptionsubmit'){await tx(i,st=>{const d=map(st,ref).cellDrafts?.[uid];ok(d,'草稿已失效。');d.name=C.text(i.fields.getTextInputValue('name'),'地点名称',80,true);d.description=C.text(i.fields.getTextInputValue('description'),'地点描述',2000,true);},'编辑地点描述');return cellDraft(snapshot(i.guildId),map(snapshot(i.guildId),ref),uid);}
+    if(action==='cellpass'||action==='cellcontent'){await tx(i,st=>{const d=map(st,ref).cellDrafts?.[uid];ok(d,'草稿失效。');if(action==='cellpass')d.passable=d.passable===false;else d.hasContents=!d.hasContents;},'编辑地点设置');return cellDraft(snapshot(i.guildId),map(snapshot(i.guildId),ref),uid);}
+    if(action==='cellbind'){const d=m.cellDrafts?.[uid];ok(d?.type==='building','选择建筑入口格。');if(arg==='pick'){await tx(i,st=>{const d=map(st,ref).cellDrafts[uid],target=st.explorations[i.values[0]];ok(target&&(target.mapType||'indoor')==='indoor'&&target.id!==ref,'地图类型已变化。');d.buildingMapId=target.id;},'绑定内部地图草稿');return cellDraft(snapshot(i.guildId),map(snapshot(i.guildId),ref),uid);}return picker('选择建筑内部地图',Object.values(s.explorations).filter(x=>(x.mapType||'indoor')==='indoor'&&x.status!=='ended').map(x=>({label:x.name,value:x.id})),'cellbind:'+ref,arg,[button('map:celldraft:'+ref,'返回格子草稿')]);}
+    if (action === 'cellapply') { await tx(i, st => { const live = map(st, ref), d = live.cellDrafts?.[uid]; ok(d && d.version === live.version, '地图已有变更，请重新编辑格子。'); const cell=X.editCell(st,live,d.x,d.y,d.type,d.categoryId,d.templateId);if(d.type!=='empty'){Object.assign(live.cells[cell],{name:d.name||'',description:d.description||'',passable:d.passable!==false,hasContents:!!d.hasContents,buildingMapId:d.buildingMapId||null});if(d.hasContents&&live.status!=='draft'&&!live.cells[cell].room){const temp={...live,mode:live.mode};live.cells[cell].room=X.instantiate(st,X.selectRoom(st,temp,live.cells[cell]),require('node:crypto').randomInt);}} live.generated = live.status === 'draft' ? false : live.generated; delete live.cellDrafts[uid]; }, '保存地图格子'); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
     if (action === 'cellcancel') { await tx(i, st => { delete map(st, ref).cellDrafts?.[uid]; }, '取消格子编辑'); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
     if (action === 'endpreview') return payload('确认结束探索', '保留地图和掉落记录，关闭玩家操作。', [row(button('map:end:' + ref + ':' + m.version, '确认结束', D.ButtonStyle.Danger), button('map:manage:' + ref, '取消'))]);
     if (['generate', 'publish', 'toggle', 'end'].includes(action)) {
@@ -312,7 +326,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
         if (action === 'generate') X.generate(st, live);
         if (action === 'publish') X.publish(st, live);
         if (action === 'toggle') { ok(['active', 'paused'].includes(live.status), '地图状态已变化。'); if (live.status === 'paused') { live.entrance = X.validateMap(live); live.revealed[live.entrance] = true; } live.status = live.status === 'paused' ? 'active' : 'paused'; live.version++; }
-        if (action === 'end') { ok(!Object.values(st.battles).some(b => b.exploration?.mapId === ref && b.status !== 'ended'), '先结束关联战斗。'); live.status = 'ended'; live.version++; }
+        if (action === 'end') {ok(!live.excursion&&!live.parentContext,'请先让队伍返回区域地图再结束探索。');ok(!Object.values(st.battles).some(b => b.exploration?.mapId === ref && b.status !== 'ended'), '先结束关联战斗。'); live.status = 'ended'; live.version++; }
       }, 'GM地图管理'); const next = map(snapshot(i.guildId), ref); if (next.status !== 'draft') await publish(i.guildId, ref); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref));
     }
     if (action === 'repost') { await publish(i.guildId, ref, true); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
@@ -338,10 +352,10 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     if (action === 'transfer') { await tx(i, st => X.transfer(st, map(st, ref), arg, extra, i.values[0]), '转交原容器批次'); return roomGM(snapshot(i.guildId), map(snapshot(i.guildId), ref), arg); }
     if (action === 'players') {
       if (arg === 'pick') return payload('GM玩家调整', '<@' + i.values[0] + '>', [row(button('map:teleport:' + ref + ':' + i.values[0], '调整位置'), button('map:remove:' + ref + ':' + i.values[0], '移出探索'), button('map:manage:' + ref, '返回'))]);
-      return picker('探索队员', Object.entries(m.participants).map(([uid, p]) => ({ label: (s.players[uid]?.name || uid) + ' · ' + location(p.cell), value: uid })), 'players:' + ref, arg, [button('map:manage:' + ref, '返回')]);
+      return picker('探索队员', Object.entries(m.participants).map(([uid, p]) => ({ label: (s.players[uid]?.name || uid) + ' · ' + place(m,p.cell), value: uid })), 'players:' + ref, arg, [button('map:manage:' + ref, '返回')]);
     }
     if (action === 'teleportsubmit' || action === 'remove') { await tx(i, st => { const live = map(st, ref); ok(live.status === 'paused', '先暂停地图。'); ok(live.participants[arg] && !M.battleFor(st, arg), '玩家不存在或仍在战斗。');
-      if (action === 'remove') delete live.participants[arg];
+      if (action === 'remove') {delete live.participants[arg];require('./map-links').releaseEmpty(st,live);}
       else { const to = X.key(C.number(i.fields.getTextInputValue('x'), '列', 1, 20) - 1, C.number(i.fields.getTextInputValue('y'), '楼层', 1, 20) - 1), c = live.cells[to]; ok(c && c.type !== 'wall' && (!c.room || c.room.unlocked), '目标格不存在、是墙或房门未解锁。'); live.participants[arg].cell = to; live.revealed[to] = true; c.touched = true; }
       live.version++;
     }, 'GM调整探索队员'); await publish(i.guildId, ref); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
@@ -349,9 +363,10 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   }
   function cellDraft(s, m, uid) {
     const d = m.cellDrafts?.[uid]; ok(d, '没有格子编辑草稿。');
-    return payload('格子编辑预览', '第' + d.y + '层，第' + d.x + '列 · ' + (X.TYPES[d.type] || '删除') + '\n大类：' + s.mapCategories[d.categoryId]?.name +
+    return payload('格子编辑预览', '第' + d.y + (m.mapType==='region'?'行':'层')+'，第' + d.x + '列 · ' + (X.cellTypes(m)[d.type] || '删除') + '\n大类：' + s.mapCategories[d.categoryId]?.name +
       '\n房间：' + (s.roomTemplates[d.templateId]?.name || '随机抽取（固定模式必须选择）'), [
-      ...(d.type === 'room' ? [row(button('map:cellcategory:' + m.id + ':0', '选择大类'), button('map:cellroom:' + m.id + ':0', '指定房间'))] : []),
+      ...(d.type === 'room'||d.hasContents ? [row(button('map:cellcategory:' + m.id + ':0', '选择大类'), button('map:cellroom:' + m.id + ':0', '指定房间'))] : []),
+      ...(d.type!=='empty'?[row(button('map:celldescription:'+m.id,'地点名称 / 描述'),button('map:cellpass:'+m.id,d.passable===false?'不可通行（切换）':'可通行（切换）'),button('map:cellcontent:'+m.id,d.hasContents?'地点内容：已启用':'启用地点内容'),...(d.type==='building'?[button('map:cellbind:'+m.id+':0','选择内部地图')]:[]))]:[]),
       row(button('map:cellapply:' + m.id, '确认保存', D.ButtonStyle.Success), button('map:cellcancel:' + m.id, '取消'), button('map:manage:' + m.id, '返回地图'))
     ]);
   }

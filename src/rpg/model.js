@@ -204,9 +204,10 @@ function validateTemplate(state, raw) {
       }
     } else {
       ok(['quick', 'formal'].includes(t.action || 'formal'), '技能行动类型无效。');
-      t.action ||= 'formal'; t.casting = num(t.casting || 0, '吟唱行动次数', 0, 100);
+      t.requiresWeapon??=true;t.action ||= 'formal'; t.casting = num(t.casting || 0, '吟唱行动次数', 0, 100);
       if (t.casting > 0) t.action = 'formal';
     }
+    t.aoe=require('./aoe').validate(t.aoe);
     t.hit = num(t.hit, '固定命中', 0, 1000000);
     t.rangeMeters = num(t.rangeMeters ?? (t.range ?? 1) * 50, '攻击距离（米）', 0, 500000, false);
     t.range = t.rangeMeters / 50;
@@ -269,8 +270,8 @@ function validateTemplate(state, raw) {
     t.initialMagazine = clone(magazine);
   }
   t.skillIds ||= [];
-  for (const ref of t.skillIds) ok(state.catalog[ref]?.kind === '技能' && state.catalog[ref].published, '关联技能未发布。');
-  t.skills = t.skillIds.map(ref => clone(state.catalog[ref]));
+  for (const ref of t.skillIds) ok((state.skillTemplates?.[ref]||state.catalog[ref])?.kind === '技能' && (state.skillTemplates?.[ref]||state.catalog[ref]).published, '关联技能未发布。');
+  t.skills = t.skillIds.map(ref => clone(state.skillTemplates?.[ref]||state.catalog[ref]));
   return t;
 }
 function publishTemplate(state, raw, existingId) {

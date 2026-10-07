@@ -2,11 +2,13 @@
 const C=require('./constants'),M=require('./model'),U=require('./ui'),W=require('./weapons'),Dur=require('./durability');
 const ARMOR={head:'头部',chest:'胸部',arms:'双臂',legs:'双腿',feet:'靴子',inner:'内甲'};
 const TABS={overview:'装备总览',weapon:'武器',armor:'盔甲',accessories:'饰品',cards:'卡牌'};
+function ammoText(p,w){if(!require('./ammunition').usesMagazine(w.snapshot))return '';const m=p.inventory[w.magazineId],names=[...new Set((w.loaded?.rounds||[]).map(r=>r.template?.name||r.template?.ammoType||'旧弹药'))];return '\n弹夹／箭匣：'+(m?.snapshot.name||'未装入')+'\n弹种：'+(names.join('、')||'无')+' · 载弹 '+(w.loaded?.current||0)+'/'+(w.loaded?.capacity||w.snapshot.capacity)+(w.loaded?.current?'':' ⚠️ 缺弹');}
 function detail(item){return item.snapshot.name.slice(0,80)+(['武器','防具'].includes(item.snapshot.kind)?' · 耐久 '+Dur.current(item)+'/'+Dur.maximum(item)+(Dur.usable(item)?'':' ⚠️损坏'):'');}
 function view(state,uid,cid,tab='overview',page=0){
   const p=M.player(state,uid);C.requireThat(p.id===cid,'角色已变化，请重新打开装备面板。');
   C.requireThat(TABS[tab],'装备分页无效。');
   const prefix='gear:',route=(action,extra='')=>prefix+action+':'+uid+':'+cid+(extra?':'+extra:'');
+  require('./ammunition').normalize(p);
   const stats=M.stats(p),equipped=M.equippedIds(p),items=refs=>refs.map(id=>p.inventory[id]).filter(Boolean);
   const armor=items(p.equipped.armor),accessories=items(p.equipped.accessories),cards=items(p.equipped.cards);
   const slots=Object.keys(ARMOR).map(slot=>({slot,item:armor.find(i=>C.ARMOR_COVERAGE[i.snapshot.armorType]?.includes(slot))}));
@@ -21,12 +23,12 @@ function view(state,uid,cid,tab='overview',page=0){
   ],0x1abc9c);
   if(tab==='overview'||tab==='weapon'){
     const main=p.inventory[p.equipped.weapon],off=p.inventory[p.equipped.offhand],two=main&&W.hands(main.snapshot)===2;
-    v.embeds[0].addFields(U.field('⚔️ 主手',main?'● '+detail(main)+'\n'+W.label(main.snapshot):'○ 空位',true),
-      U.field('🗡️ 副手',two?'● 由双手武器占用':off?'● '+detail(off):'○ 空位',true));
+    v.embeds[0].addFields(U.field('⚔️ 主手',main?'● '+detail(main)+'\n'+W.label(main.snapshot)+ammoText(p,main):'○ 空位',true),
+      U.field('🗡️ 副手',two?'● 由双手武器占用':off?'● '+detail(off)+ammoText(p,off):'○ 空位',true));
     if(tab==='weapon')for(const ref of W.equipped(p)){
       const item=p.inventory[ref],t=item.snapshot;
       v.embeds[0].addFields(U.field(t.name.slice(0,80),'射程 '+(t.rangeMeters??(t.range??1)*50)+'米 · 有效 '+C.round2(M.modify(stats.effects,'range',t.rangeMeters??(t.range??1)*50))+'米'+
-        (t.melee?' · 近战同格':'')+(item.loaded?'\n弹药 '+item.loaded.current+'/'+item.loaded.capacity:'')));
+        (t.melee?' · 近战同格':'')+ammoText(p,item)));
     }
   }
   if(tab==='overview'||tab==='armor')v.embeds[0].addFields(U.field('🛡️ 盔甲 · '+slots.filter(s=>s.item).length+'/6位置',slots.map(s=>(s.item?'● ':'○ ')+ARMOR[s.slot]+'：'+(s.item?detail(s.item):'空位')).join('\n')));

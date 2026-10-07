@@ -4,6 +4,9 @@ const C = require('./constants'), M = require('./model'), B = require('./combat'
 const R = require('./room-settings');
 const { requireThat: ok, number: num, clone, id } = C;
 const TYPES = { room: '房间', corridor: '走廊', stairs: '楼梯', wall: '墙', entrance: '入口' };
+const REGIONAL={road:'道路',wild:'野地',forest:'森林',ruins:'废墟',water:'水域',mountain:'山地',landmark:'地标',building:'建筑入口',entrance:'起点'};
+const passable=c=>!!c&&c.type!=='wall'&&c.passable!==false;
+const cellTypes=m=>m.mapType==='region'?REGIONAL:TYPES;
 const key = (x, y) => x + ',' + y;
 const xy = ref => ref.split(',').map(Number);
 function quantities(text, refs, max = 100) {
@@ -31,14 +34,15 @@ function validateRoom(state, raw) {
   r.containerCounts=clone(r.boxCounts);r.supplyQuantities=clone(r.supplyCounts);r.npcQuantities=clone(r.npcCounts);
   return r;
 }
-function create(state, owner, channelId, name, floors, width, mode, categoryId) {
+function create(state, owner, channelId, name, floors, width, mode, categoryId,mapType='indoor') {
+  ok(['indoor','region'].includes(mapType),'地图类型无效。');
   ok(['random', 'fixed'].includes(mode), '地图模式无效。');
   ok(state.mapCategories[categoryId]?.published, '先录入地图大类。');
-  const m = { id: id('m'), owner, channelId, name: C.text(name, '地图名称', 80),
+  const m = { mapType,id: id('m'), owner, channelId, name: C.text(name, '地图名称', 80),
     floors: num(floors, '楼层', 1, 20), width: num(width, '每层格数', 1, 20), mode, categoryId,
     cells: {}, revealed: {}, participants: {}, status: 'draft', version: 1, createdAt: Date.now(), messageId: null };
   for (let y = 0; y < m.floors; y++) for (let x = 0; x < m.width; x++)
-    m.cells[key(x, y)] = { type: x === 0 ? (y === 0 ? 'entrance' : 'stairs') : x % 2 ? 'corridor' : 'room', categoryId };
+    m.cells[key(x, y)] = { type:mapType==='region'?(x===0&&y===0?'entrance':x===0||y===0?'road':'wild'):x === 0 ? (y === 0 ? 'entrance' : 'stairs') : x % 2 ? 'corridor' : 'room', categoryId };
   state.explorations[m.id] = m; return m;
 }
 function editable(m) { ok(['draft', 'paused'].includes(m.status), '修改布局前请暂停地图。'); }
@@ -48,8 +52,8 @@ function touched(m, ref) {
 }
 function editCell(state, m, x, y, type, categoryId, templateId) {
   editable(m); x = num(x, '列', 1, 20) - 1; y = num(y, '楼层', 1, 20) - 1;
-  ok(TYPES[type] || type === 'empty', '格子类型无效。'); const ref = key(x, y), old = m.cells[ref];
-  ok(!touched(m, ref), '该格有人或已有交互记录，不能替换或删除。');
+  ok(cellTypes(m)[type] || type === 'empty', '格子类型无效。'); const ref = key(x, y), old = m.cells[ref];
+  if(touched(m,ref)){ok(old.type===type&&old.categoryId===(categoryId||m.categoryId)&&(old.templateId||null)===(templateId||null),'该格有人或已有交互记录，不能替换或删除。');m.version++;return ref;}
   if (type === 'empty') delete m.cells[ref];
   else {
     const c = { type, categoryId: categoryId || m.categoryId, templateId: templateId || null };
@@ -67,7 +71,8 @@ function editCell(state, m, x, y, type, categoryId, templateId) {
 function neighbors(m, ref) {
   const [x, y] = xy(ref), c = m.cells[ref];
   return [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]].map(p => key(...p)).filter(to => {
-    const next = m.cells[to]; if (!next || next.type === 'wall') return false;
+    const next = m.cells[to]; if (!passable(next)) return false;
+    if(m.mapType==='region')return true;
     const [, ny] = xy(to);
     return ny === y || (['stairs', 'entrance'].includes(c?.type) && ['stairs', 'entrance'].includes(next.type));
   });
@@ -77,7 +82,7 @@ function validateMap(m) {
   ok(starts.length === 1, '地图必须恰好有一个入口。');
   const seen = new Set([starts[0][0]]), queue = [...seen];
   for (const ref of queue) for (const n of neighbors(m, ref)) if (!seen.has(n)) { seen.add(n); queue.push(n); }
-  const unreachable = entries.filter(([ref, c]) => c.type !== 'wall' && !seen.has(ref));
+  const unreachable = entries.filter(([ref, c]) => passable(c) && !seen.has(ref));
   ok(!unreachable.length, '存在不可达格子，请连接走廊或相邻楼层的楼梯：' + unreachable.slice(0, 12).map(([r]) => r).join('、'));
   return starts[0][0];
 }
@@ -104,19 +109,20 @@ function instantiate(state, template, rng) {
 }
 function generate(state, m, rng = randomInt) {
   ok(m.status === 'draft', '已发布地图不能重新随机生成。'); validateMap(m);
-  for (const c of Object.values(m.cells)) if (c.type === 'room') c.room = instantiate(state, selectRoom(state, m, c, rng), rng);
+  for (const c of Object.values(m.cells)) if (c.type === 'room'||c.hasContents) c.room = instantiate(state, selectRoom(state, m, c, rng), rng);
   m.generated = true; m.version++; return m;
 }
 function publish(state, m) {
   ok(m.status === 'draft', '地图已经发布。');
   ok(!Object.values(state.explorations).some(x => x.id !== m.id && x.channelId === m.channelId && !['draft', 'ended'].includes(x.status)), '当前频道已有探索地图。');
-  const entrance = validateMap(m); ok(m.generated && Object.values(m.cells).filter(c => c.type === 'room').every(c => c.room), '先生成并预览全部房间。');
+  const entrance = validateMap(m); ok(m.generated && Object.values(m.cells).filter(c => c.type === 'room'||c.hasContents).every(c => c.room), '先生成并预览全部房间。');
   m.entrance = entrance; m.revealed[entrance] = true; m.status = 'active'; m.version++;
 }
 function join(state, m, uid) {
   ok(m.status === 'active', '地图尚未开放或已暂停。'); const p = M.player(state, uid); ok(p.hp > 0, '死亡角色不能参加探索。');
   ok(!Object.values(state.explorations).some(x => x.id !== m.id && x.status !== 'ended' && x.participants[uid]), '已参加另一张探索地图。');
   ok(!M.battleFor(state, uid), '参战期间不能参加探索。');
+  ok(!m.excursion&&(!m.parentContext||m.participants[uid]),'队伍正在建筑内部，暂时不能追加报名。');
   if (m.participants[uid]) { ok(m.participants[uid].characterId === p.id, '角色已经变化，请GM移除原报名。'); return; }
   m.participants[uid] = { characterId: p.id, cell: m.entrance }; m.version++;
 }
@@ -187,5 +193,5 @@ function resolve(state, m, ref) {
   if(r.battleId && r.remainingNpcs?.length) {r.encounter='pending';r.battleId=null;} else r.encounter = 'resolved';
   m.cells[ref].touched = true; m.version++;
 }
-module.exports = { TYPES, key, xy, quantities, validateRoom, create, editCell, neighbors, validateMap, generate, publish,
+module.exports = { TYPES, REGIONAL,passable,cellTypes,key, xy, quantities, validateRoom, create, editCell, neighbors, validateMap,selectRoom,instantiate,generate, publish,
   join, participant, move, currentRoom, open, take, transfer, encounter, resolve, touched };

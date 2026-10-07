@@ -164,12 +164,13 @@ function battleView(state, b) {
     button('withdraw:' + b.id, '撤回报名'), button('start:' + b.id, 'GM正式开战', D.ButtonStyle.Primary),
     button('battle:' + b.id, '查看战场'))] : [row(button('personal:' + b.id, '开始行动／个人面板', D.ButtonStyle.Primary),
       button('battle:' + b.id, '刷新战场'), button('control:' + b.id, 'GM操作'))];
+  if(b.status!=='ended')rows.push(row(button('zoom:'+b.id,'私有放大战场'),button('event:'+b.id+':retry:0','GM核对后补发操作卡')));
   if (b.pending) rows.push(row(button('defense:' + b.id + ':' + b.pending.id, '打开防守面板', D.ButtonStyle.Danger)));
   const color = b.status === 'ended' ? 0x95a5a6 : 0x5865f2;
   const result = payload('战场 · ' + b.name, header, rows, color);
   result.embeds.push(embed('参战者与记录', details, color));
   result.embeds[0].setFooter({ text: '战斗 ' + b.id + ' · ' + status });
-  return require('./map-image').attach(result,require('./map-image').battle(state,b),'battle-'+b.id+'.png');
+  return require('./map-image').prepare(result,{kind:'battle',state,b});
 }
 function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   require('./ammunition').normalize(B.actorCharacter(state,a));
