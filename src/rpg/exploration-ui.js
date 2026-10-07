@@ -26,6 +26,7 @@ function board(m) {
       button('map:personal:' + m.id, '探索操作', D.ButtonStyle.Primary), button('map:manage:' + m.id, 'GM管理'))
   ], 0x2e8b57);
   const visible=Object.keys(m.revealed).length,total=Object.values(m.cells).filter(c=>c.type!=='wall').length;
+  if(require('./rp').waiting(m))v.embeds[0].addFields(U.field('RP环境','等待GM公开环境描述，房间操作暂时锁定。'));
   if(m.excursion)v.embeds[0].addFields(U.field('建筑内队伍','队伍已经进入内部地图；退出建筑后会返回原位置。'));
   v.embeds[0].addFields(U.field('🧭 探索进度',U.bar(visible,total)+' '+visible+'/'+total,true),U.field('👥 队伍',Object.keys(m.participants).slice(0,15).map(uid=>'<@'+uid+'>').join(' ')||'等待报名',true),U.field('📍 最近事件',m.lastEvent||'全员确认后一起移动，迷雾由全队共享。'));
   v.embeds[0].setFooter({ text: m.id + ' · 全队共享迷雾 · 只有进入过的格子公开' }); return require('./map-image').prepare(v,{kind:'exploration',m});
@@ -54,7 +55,7 @@ function corpseView(state, corpse, page = 0) {
 function createExploration({ snapshot, store, tx: transact, textChannel, client, needGM, activities, publishBattle, gmUI, logFailure,render=async(g,v)=>v }) {
   const jobs = new Map();
   const tx = (i, fn, label) => transact(i, st => { if (i.rpgMapGM) needGM(st, i.rpgMapMember || i.member); return fn(st); }, label);
-  function map(s, ref) { const m = s.explorations[ref]; ok(m, '地图不存在。'); return m; }
+  function map(s, ref) { const m = s.explorations[ref]; ok(m, s.mapTombstones?.[ref]?'地图已清理。':'地图不存在。'); return m; }
   function picker(title, entries, base, page = 0, extras = []) {
     page = Math.max(0, Math.min(Number(page) || 0, Math.max(0, Math.ceil(entries.length / 20) - 1)));
     return payload(title, '共' + entries.length + '项 · 第' + (page + 1) + '页', [
@@ -67,33 +68,35 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   function config(s) {
     return payload('GM地图与掉落配置', '先录入地图大类，再录入房间。房间可含固定内容与随机容器、散落物资、NPC。\n随机数量分别按0—6、0—6、0—10的独立概率配置，使用下拉选择。\n保险箱概率与钥匙次数可独立调整。', [
       row(button('map:newcategory', '录入大类', D.ButtonStyle.Primary), button('map:newroom', '录入房间', D.ButtonStyle.Primary), button('map:library:category:0', '已有大类'), button('map:library:room:0', '已有房间')),
-      row(button('map:rates', '保险箱爆率'), button('map:keys', '玩家钥匙次数'), button('map:deaths:0', '指定击杀经验'), button('map:home', '地图列表')),
-      row(button('map:corpselist:0', 'NPC掉落公示 / 补发'))
+      row(button('mapx:boxes:0', '容器分档 / 六色概率'), button('map:keys', '玩家钥匙次数'), button('map:deaths:0', '指定击杀经验'), button('map:home', '地图列表')),
+      row(button('map:corpselist:0', 'NPC掉落公示 / 补发'),button('rp:config','RP隐藏操作频道'),button('mapx:cleanuppreview','清理旧地图'))
     ]);
   }
   function home(s, member) {
     const gm = U.gm(s, member), entries = Object.values(s.explorations).filter(m => gm || ['active', 'paused'].includes(m.status));
     return picker('探索地图', entries.map(m => ({ label: m.name + ' · ' + labels[m.status], value: m.id })), 'list', 0,
-      gm ? [button('map:createtype', '创建地图', D.ButtonStyle.Primary), back()] : []);
+      gm ? [button('mapx:start', '创建地图', D.ButtonStyle.Primary),button('mapx:cleanuppreview','清理已结束地图'), back()] : []);
   }
   function manage(s, m) {
-    const v=payload('GM地图 · ' + m.name, labels[m.status] + '\n完整布局仅GM可见 · 蓝色为队伍 · 青色房间 · 紫色楼梯\n已探索' + Object.keys(m.revealed).length + '格 · 房间内容请在格子详情核对。', [
+    const v=payload('GM地图 · ' + m.name, labels[m.status]+' · 难度上限 '+require('./npc-strength').LEVELS[(m.maxRank??3)-1]+' · RP '+(m.rpEnabled?'开启':'关闭') + '\n完整布局仅GM可见 · 蓝色为队伍 · 青色房间 · 紫色楼梯\n已探索' + Object.keys(m.revealed).length + '格 · 房间内容请在格子详情核对。', [
       row(button('map:celltype:' + m.id, '添加 / 修改 / 删除格子', D.ButtonStyle.Primary, !['draft', 'paused'].includes(m.status)),
         button('map:generate:' + m.id + ':' + m.version, '生成 / 重新抽取', undefined, m.status !== 'draft'),
         button('map:publish:' + m.id + ':' + m.version, '确认发布', D.ButtonStyle.Success, m.status !== 'draft' || !m.generated)),
       row(button('map:toggle:' + m.id + ':' + m.version, m.status === 'paused' ? '恢复探索' : '暂停探索', undefined, !['active', 'paused'].includes(m.status)),
         button('map:gmroom:' + m.id + ':0', '房间 / 遭遇 / 待领取'), button('map:players:' + m.id + ':0', '队员 / 位置'),
         button('map:endpreview:' + m.id, '结束探索', D.ButtonStyle.Danger, m.status === 'ended')),
-      ...(m.moveRequestId?[row(button('map:moveinfo:'+m.id+':'+m.moveRequestId+':0','查看移动申请'),button('map:moverepost:'+m.id+':'+m.moveRequestId,'核对后补发确认'))]:[]),
+      row(button('rp:toggle:'+m.id,m.rpEnabled?'关闭RP':'开启RP'),button('rp:home:'+m.id+':'+(m.rpPendingId||'_'),'环境草稿 / 等待',undefined,!m.rpPendingId),button('mapx:layout:'+m.id+':'+m.version,'重新随机布局',undefined,m.status!=='draft'||m.mode==='fixed')),
+      ...(m.moveRequestId?[row(button('map:moveinfo:'+m.id+':'+m.moveRequestId+':0','当前移动申请'),button('map:moverepost:'+m.id+':'+m.moveRequestId,'核对后补发移动确认'))]:[]),
       row(button('map:manage:' + m.id, '刷新'), button('map:repost:' + m.id, '核对后补发地图', undefined, m.status === 'draft'), button('map:home', '返回地图列表'), button('map:celldraft:' + m.id, '继续格子草稿', undefined, !Object.keys(m.cellDrafts || {}).length))
     ]);
     return require('./map-image').prepare(v,{kind:'exploration',m,full:true});
   }
   function personal(s, m, uid, tab='move', page=0) {
     const part=m.participants[uid],p=s.players[uid];ok(part&&p?.id===part.characterId,'先参加探索。');
+    if(require('./rp').waiting(m))return payload('等待GM描述 · '+m.name,'队伍已进入新房间，GM正在准备环境描述。移动、遭遇和物资领取暂时锁定。',[row(button('map:personal:'+m.id,'刷新探索'))]);
     const c=m.cells[part.cell],r=c?.room,stats=M.stats(p),tabs={move:'全队移动',room:'房间交互',team:'探索队伍',map:'地图楼层'};
     ok(tabs[tab],'探索分页无效。');const components=[row(select('map:personaltab:'+m.id,'探索操作分页',Object.entries(tabs).map(([value,label])=>({value,label,default:tab===value}))))];
-    let body='**'+m.name+'** · '+labels[m.status]+'\n📍 '+place(m,part.cell)+'\n'+(r?'**'+r.snapshot.name+'**\n'+r.snapshot.description.slice(0,1800):(c?.description||X.cellTypes(m)[c?.type]))+'\n'+
+    let body='**'+m.name+'** · '+labels[m.status]+'\n📍 '+place(m,part.cell)+'\n'+(r?'**'+r.snapshot.name+'**\n'+(r.publicDescription||r.snapshot.description).slice(0,1800):(c?.description||X.cellTypes(m)[c?.type]))+'\n'+
       (r?'遭遇 '+({pending:(r.autoStart??r.snapshot.autoStart)?'等待自动开战':'等待GM确认',battle:'战斗中',resolved:'可探索物资'}[r.encounter])+'\n':'')+'负重 '+C.kg(stats.carried)+' / '+C.kg(stats.limit)+' '+U.bar(stats.carried,stats.limit);
     if(tab==='move'){
       const directions=X.neighbors(m,part.cell).map(to=>{const [x,y]=X.xy(to),[ox,oy]=X.xy(part.cell);return button('map:move:'+m.id+':'+to,x<ox?'← 向左':x>ox?'向右 →':y>oy?(m.mapType==='region'?'↓ 向下':'↑ 上楼'):(m.mapType==='region'?'↑ 向上':'↓ 下楼'),D.ButtonStyle.Primary,m.status!=='active'||!!M.battleFor(s,uid));});
@@ -220,7 +223,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       if (action === 'containers' || (action === 'open' && arg !== 'pick')) return picker('房间容器', X.currentRoom(s, m, uid).r.containers.filter(c => c.status !== 'claimed').map(c => ({ label: c.box + ' · ' + c.status, value: c.id })), 'open:' + ref, arg, [button('map:personal:' + ref, '返回房间')]);
       if (action === 'personal') return personal(s, m, uid);
       if (action === 'mapview') return { ...board(m), components: [row(button('map:personal:' + m.id, '返回探索操作'))] };
-      if (action === 'supplies') return picker('固定物资', m.cells[m.participants[uid]?.cell]?.room?.supplies.map(x => ({ label: x.snapshot.name + ' · ' + C.kg(M.itemWeight(x)), value: x.id })) || [], 'take:' + ref, arg, [button('map:personal:' + ref, '返回房间')]);
+      if (action === 'supplies') return picker('固定物资', X.currentRoom(s,m,uid).r.supplies.map(x => ({ label: x.snapshot.name + ' · ' + C.kg(M.itemWeight(x)), value: x.id })) || [], 'take:' + ref, arg, [button('map:personal:' + ref, '返回房间')]);
       if (action === 'take' && arg !== 'pick') return picker('固定物资', X.currentRoom(s, m, uid).r.supplies.map(x => ({ label: x.snapshot.name, value: x.id })), 'take:' + ref, arg);
       if (action === 'move' && m.cells[arg]?.room && !m.cells[arg].room.unlocked) {
         const { p } = X.participant(s, m, uid), required = m.cells[arg].room.snapshot.keyIds[0];
@@ -246,7 +249,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       if(result?.moveRequest){await publishMove(i.guildId,ref,result.moveRequest);return moveCard(map(snapshot(i.guildId),ref),map(snapshot(i.guildId),ref).moves[result.moveRequest]);}
       if (result?.publicationId) await activities.publish(i.guildId, 'loot', result.publicationId, false).catch(e => logFailure('地图容器公示失败，GM可从抽取公示补发。', e));
       if (result?.item) await i.channel.send(payload('探索物资已领取', '<@' + uid + '> 获得 **' + result.item.snapshot.name + '** ×' + result.item.quantity + '\n' + result.item.snapshot.description));
-      if (result?.encountered) {
+      if (result?.encountered && !require('./rp').waiting(map(snapshot(i.guildId),ref))) {
         const room = map(snapshot(i.guildId), ref).cells[result.cell].room;
         await i.channel.send({ ...payload('房间遭遇 · ' + room.snapshot.name, '玩家进入了怪物房，请GM确认阵容后开战。', [row(button('map:room:' + ref + ':' + result.cell, 'GM处理遭遇'))]),
           content: s.config.gmRoleIds.map(r => '<@&' + r + '>').join(' '), allowedMentions: { parse: [], roles: s.config.gmRoleIds } });
@@ -263,12 +266,14 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       if (arg === 'pick') { const f = await tx(i, st => F.create(st, uid, ref === 'category' ? 'mapcategory' : 'room', null, i.values[0]), '修改地图模板'); return F.view(snapshot(i.guildId), f); }
       return picker('已有' + (ref === 'category' ? '大类' : '房间'), Object.values(s[source]).map(t => ({ label: t.name, value: t.id })), 'library:' + ref, arg, [back()]);
     }
+    if(action==='rates'&&s.contentPackVersion===1)return payload('概率已统一到六色容器','请使用新入口调整同档位所有容器。',[row(button('mapx:grades','六色概率'),button('mapx:boxes:0','容器分档'))]);
     if (action === 'rates') return payload('保险箱爆率', '每件独立抽取；已生成结果不受修改影响。', [
       row(select('map:ratepick', '选择保险箱', Object.keys(L.DEFAULT_SAFE_RATES).map(b => ({ label: b, value: b })))), row(back())
     ]);
     if (action === 'ratepick' || action === 'rateview') { const box = action === 'ratepick' ? i.values[0] : ref; return payload(box + ' · 概率',
       '白／绿／蓝／紫／金／红：\n' + L.rates(s, box).join('% ／ ') + '%', [row(button('map:rateedit:' + box, '修改概率'), button('map:ratereset:' + box, '恢复默认'), button('map:rates', '返回'))]); }
     if (action === 'rateeditsubmit' || action === 'ratereset') {
+      ok(s.contentPackVersion!==1,'旧独立保险箱配置已迁移，请使用六色概率面板。');
       await tx(i, st => L.setRates(st, ref, action === 'ratereset' ? L.DEFAULT_SAFE_RATES[ref] : i.fields.getTextInputValue('values').trim().split(/\s+/).map(Number)), '修改保险箱爆率'); return config(snapshot(i.guildId));
     }
     if (action === 'keys') return payload('GM钥匙次数', '选择持有钥匙的玩家。', [row(new D.UserSelectMenuBuilder().setCustomId('rpg:map:keyuser').setPlaceholder('选择玩家')), row(back())]);
@@ -278,7 +283,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     if(action==='createtype')return payload('创建探索地图 · 类型','建筑内部按楼层和走廊排列；区域地图按上下左右相邻格探索。',[row(select('map:mapkind','地图类型',[{value:'indoor',label:'建筑内部 · 多层平面图'},{value:'region',label:'区域大地图 · 道路与地标'}])),row(back())]);
     if(action==='mapkind'||action==='category'){const type=action==='mapkind'?i.values[0]:ref;
       if(action==='category'&&arg==='pick')return payload('选择生成方式','随机从指定大类抽房间，固定逐格指定内容。',[row(select('map:createmode:'+i.values[0]+':'+type,'地图方式',[{label:'随机',value:'random'},{label:'固定',value:'fixed'}])),row(back())]);
-      return picker('选择地图大类',Object.values(s.mapCategories).filter(t=>t.published).map(t=>({label:t.name,value:t.id})),'category:'+type,action==='mapkind'?0:arg,[back()]);}
+      return picker('选择地图大类',Object.values(s.mapCategories).filter(t=>t.published&&(t.mapTypes||['indoor','region']).includes(type)).map(t=>({label:t.name,value:t.id})),'category:'+type,action==='mapkind'?0:arg,[back()]);}
     if (action === 'createcategory') {
       if (ref === 'pick') return payload('选择生成方式', '随机从大类房间抽选；固定逐格指定。', [row(select('map:createmode:' + i.values[0], '地图方式', [{ label: '随机', value: 'random' }, { label: '固定', value: 'fixed' }])), row(button('map:home', '取消'))]);
       return picker('选择地图大类', Object.values(s.mapCategories).map(t => ({ label: t.name, value: t.id })), 'createcategory', ref, [back()]);
@@ -297,6 +302,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     }
     if (action === 'corpserepost') { ok(s.corpses[ref], '掉落不存在。'); await publishCorpses(i.guildId, s.corpses[ref].battleId, true); return config(snapshot(i.guildId)); }
     const m = map(s, ref);
+    if(action==='cellvariant'){const d=m.cellDrafts?.[uid],t=s.roomTemplates[d?.templateId];ok(t,'先指定房间。');if(arg==='pick'){await tx(i,st=>{const d=map(st,ref).cellDrafts[uid],t=st.roomTemplates[d.templateId];ok(i.values[0]==='auto'||t.variants.some(v=>v.id===i.values[0]&&v.enabled!==false),'变种已失效。');d.variantId=i.values[0]==='auto'?null:i.values[0];},'选择固定或随机变种');return cellDraft(snapshot(i.guildId),map(snapshot(i.guildId),ref),uid);}return picker('选择房间变种',[{label:'按变种权重随机',value:'auto'},...t.variants.filter(v=>v.enabled!==false).map(v=>({label:v.name,value:v.id}))],'cellvariant:'+ref,arg,[button('map:celldraft:'+ref,'返回格子')]);}
     if (action === 'manage') return manage(s, m);
     if (action === 'celltype') return payload('编辑格子 · 选择类型', '已有交互的格子不能替换。', [row(select('map:typepick:' + ref, '格子类型', [...Object.entries(X.cellTypes(m)).map(([value, label]) => ({ value, label })), { label: '删除格子', value: 'empty' }])), row(button('map:manage:' + ref, '返回'))]);
     if (action === 'typepick') return payload('编辑格子 · 填写位置', X.cellTypes(m)[i.values[0]] || '删除格子', [row(button('map:coord:' + ref + ':' + i.values[0], '填写列与楼层'), button('map:manage:' + ref, '取消'))]);
@@ -310,15 +316,15 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     if (action === 'cellcategory' || action === 'cellroom') {
       const d = m.cellDrafts?.[uid]; ok(d, '重新填写格子坐标。');
       if (arg === 'pick') { await tx(i, st => { const d = map(st, ref).cellDrafts[uid];
-        if (action === 'cellcategory') { d.categoryId = i.values[0]; d.templateId = null; } else d.templateId = i.values[0];
+        if (action === 'cellcategory') { d.categoryId = i.values[0]; d.templateId = null;d.variantId=null; } else {d.templateId = i.values[0];d.variantId=null;}
       }, '编辑格子选择'); return cellDraft(snapshot(i.guildId), map(snapshot(i.guildId), ref), uid); }
-      const entries = Object.values(action === 'cellcategory' ? s.mapCategories : s.roomTemplates).filter(t => action === 'cellcategory' || t.categoryIds[0] === d.categoryId);
+      const entries = Object.values(action === 'cellcategory' ? s.mapCategories : s.roomTemplates).filter(t => action === 'cellcategory' || t.categoryIds.includes(d.categoryId));
       return picker('选择' + (action === 'cellcategory' ? '大类' : '固定房间'), entries.map(t => ({ label: t.name, value: t.id })), action + ':' + ref, arg, [button('map:celldraft:' + ref, '返回编辑')]);
     }
     if(action==='celldescriptionsubmit'){await tx(i,st=>{const d=map(st,ref).cellDrafts?.[uid];ok(d,'草稿已失效。');d.name=C.text(i.fields.getTextInputValue('name'),'地点名称',80,true);d.description=C.text(i.fields.getTextInputValue('description'),'地点描述',2000,true);},'编辑地点描述');return cellDraft(snapshot(i.guildId),map(snapshot(i.guildId),ref),uid);}
     if(action==='cellpass'||action==='cellcontent'){await tx(i,st=>{const d=map(st,ref).cellDrafts?.[uid];ok(d,'草稿失效。');if(action==='cellpass')d.passable=d.passable===false;else d.hasContents=!d.hasContents;},'编辑地点设置');return cellDraft(snapshot(i.guildId),map(snapshot(i.guildId),ref),uid);}
     if(action==='cellbind'){const d=m.cellDrafts?.[uid];ok(d?.type==='building','选择建筑入口格。');if(arg==='pick'){await tx(i,st=>{const d=map(st,ref).cellDrafts[uid],target=st.explorations[i.values[0]];ok(target&&(target.mapType||'indoor')==='indoor'&&target.id!==ref,'地图类型已变化。');d.buildingMapId=target.id;},'绑定内部地图草稿');return cellDraft(snapshot(i.guildId),map(snapshot(i.guildId),ref),uid);}return picker('选择建筑内部地图',Object.values(s.explorations).filter(x=>(x.mapType||'indoor')==='indoor'&&x.status!=='ended').map(x=>({label:x.name,value:x.id})),'cellbind:'+ref,arg,[button('map:celldraft:'+ref,'返回格子草稿')]);}
-    if (action === 'cellapply') { await tx(i, st => { const live = map(st, ref), d = live.cellDrafts?.[uid]; ok(d && d.version === live.version, '地图已有变更，请重新编辑格子。'); const cell=X.editCell(st,live,d.x,d.y,d.type,d.categoryId,d.templateId);if(d.type!=='empty'){Object.assign(live.cells[cell],{name:d.name||'',description:d.description||'',passable:d.passable!==false,hasContents:!!d.hasContents,buildingMapId:d.buildingMapId||null});if(d.hasContents&&live.status!=='draft'&&!live.cells[cell].room){const temp={...live,mode:live.mode};live.cells[cell].room=X.instantiate(st,X.selectRoom(st,temp,live.cells[cell]),require('node:crypto').randomInt);}} live.generated = live.status === 'draft' ? false : live.generated; delete live.cellDrafts[uid]; }, '保存地图格子'); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
+    if (action === 'cellapply') { await tx(i, st => { const live = map(st, ref), d = live.cellDrafts?.[uid]; ok(d && d.version === live.version, '地图已有变更，请重新编辑格子。'); const cell=X.editCell(st,live,d.x,d.y,d.type,d.categoryId,d.templateId,d.variantId);if(d.type!=='empty'){Object.assign(live.cells[cell],{name:d.name||'',description:d.description||'',passable:d.passable!==false,hasContents:!!d.hasContents,buildingMapId:d.buildingMapId||null});if(d.hasContents&&live.status!=='draft'&&!live.cells[cell].room){const temp={...live,mode:live.mode};live.cells[cell].room=X.instantiate(st,X.selectRoom(st,temp,live.cells[cell]),require('node:crypto').randomInt,live.maxRank??10,d.variantId);}} live.generated = live.status === 'draft' ? false : live.generated; delete live.cellDrafts[uid]; }, '保存地图格子'); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
     if (action === 'cellcancel') { await tx(i, st => { delete map(st, ref).cellDrafts?.[uid]; }, '取消格子编辑'); return manage(snapshot(i.guildId), map(snapshot(i.guildId), ref)); }
     if (action === 'endpreview') return payload('确认结束探索', '保留地图和掉落记录，关闭玩家操作。', [row(button('map:end:' + ref + ':' + m.version, '确认结束', D.ButtonStyle.Danger), button('map:manage:' + ref, '取消'))]);
     if (['generate', 'publish', 'toggle', 'end'].includes(action)) {
@@ -364,8 +370,8 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   function cellDraft(s, m, uid) {
     const d = m.cellDrafts?.[uid]; ok(d, '没有格子编辑草稿。');
     return payload('格子编辑预览', '第' + d.y + (m.mapType==='region'?'行':'层')+'，第' + d.x + '列 · ' + (X.cellTypes(m)[d.type] || '删除') + '\n大类：' + s.mapCategories[d.categoryId]?.name +
-      '\n房间：' + (s.roomTemplates[d.templateId]?.name || '随机抽取（固定模式必须选择）'), [
-      ...(d.type === 'room'||d.hasContents ? [row(button('map:cellcategory:' + m.id + ':0', '选择大类'), button('map:cellroom:' + m.id + ':0', '指定房间'))] : []),
+      '\n房间：' + (s.roomTemplates[d.templateId]?.name || '随机抽取（固定模式必须选择）')+'\n变种：'+(s.roomTemplates[d.templateId]?.variants?.find(v=>v.id===d.variantId)?.name||'按权重随机'), [
+      ...(d.type === 'room'||d.hasContents ? [row(button('map:cellcategory:' + m.id + ':0', '选择大类'), button('map:cellroom:' + m.id + ':0', '指定房间'),button('map:cellvariant:'+m.id+':0','房间变种',undefined,!d.templateId))] : []),
       ...(d.type!=='empty'?[row(button('map:celldescription:'+m.id,'地点名称 / 描述'),button('map:cellpass:'+m.id,d.passable===false?'不可通行（切换）':'可通行（切换）'),button('map:cellcontent:'+m.id,d.hasContents?'地点内容：已启用':'启用地点内容'),...(d.type==='building'?[button('map:cellbind:'+m.id+':0','选择内部地图')]:[]))]:[]),
       row(button('map:cellapply:' + m.id, '确认保存', D.ButtonStyle.Success), button('map:cellcancel:' + m.id, '取消'), button('map:manage:' + m.id, '返回地图'))
     ]);
@@ -373,7 +379,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   function roomGM(s, m, cell) {
     const r = m.cells[cell]?.room; ok(r, '房间不存在，请先生成。');
     return payload('GM房间 · ' + r.snapshot.name, '位置 ' + location(cell) + ' · 遭遇 ' + r.encounter + '\n' + r.snapshot.description +
-      '\n\n本房间已生成NPC：' + ((r.npcs || r.snapshot.npcs).map(n => n.template.name + ' ×' + n.quantity).join('、') || '无') +
+      '\n\n本房间已生成NPC：' + ((r.npcs || r.snapshot.npcs).map(n => n.template.name + (n.template.spawnStrength?' · '+n.template.anomalyRank+'级 / Lv.'+n.template.spawnStrength.level:'')+' ×' + n.quantity).join('、') || '无') +
       (r.remainingNpcs?.length && r.battleId ? '\n待后续战斗NPC：'+r.remainingNpcs.map(n=>n.template.name+' ×'+n.quantity).join('、')+'（每场含玩家最多20名，结束本轮后继续）' : '') +
       '\n钥匙：' + (r.snapshot.keyIds.map(k => s.catalog[k]?.name || k).join('、') || '无需钥匙') +
       '\n容器：' + r.containers.map(c => c.box + ' · ' + c.status).join('、') + '\n物资：' + r.supplies.map(i => i.snapshot.name + ' ×' + i.quantity).join('、') +

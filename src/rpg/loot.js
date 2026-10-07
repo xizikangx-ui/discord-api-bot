@@ -16,7 +16,8 @@ function validateRates(values) {
   C.requireThat(weights.reduce((a, b) => a + b, 0) === 10000, '六色概率之和必须为100%。');
   return weights.map(n => n / 100);
 }
-function rates(state, box) { return C.clone(state.config.safeRates?.[box] || DEFAULT_SAFE_RATES[box] || null); }
+function rates(state, box) { const K=require('./containers');if(state.contentPackVersion===1&&box!=='card'){const d=K.get(state,box);C.requireThat(d,'箱型无效。');return C.clone(state.config.containerRates?.[d.grade]||K.DEFAULTS[d.grade]);}return C.clone(state.config.safeRates?.[box] || DEFAULT_SAFE_RATES[box] || (K.ALL.includes(box)?K.DEFAULTS[K.grade(box)]:null)); }
+function setGradeRates(state, grade, values){const K=require('./containers');C.requireThat(K.DEFAULTS[grade],'档位无效。');state.config.containerRates||=C.clone(K.DEFAULTS);state.config.containerRates[grade]=validateRates(values);}
 function setRates(state, box, values) {
   C.requireThat(DEFAULT_SAFE_RATES[box], '只能单独配置四种保险箱。');
   state.config.safeRates ||= {}; state.config.safeRates[box] = validateRates(values);
@@ -44,10 +45,11 @@ function rarity(state, box, rng = randomInt, luck = 1, frozenRates) {
   throw new Error('保险箱概率配置无效。');
 }
 // The same generator is used by personal tickets and free, shared map containers.
-function generate(state, box, rng = randomInt, luck = 1) {
+function generate(state, box, rng = randomInt, luck = 1, existingContainer = false) {
   const M = require('./model');
   C.requireThat(box === 'card' || C.BOXES.includes(box), '箱型无效。');
-  const batch = { id: C.id('z'), items: [], luck, rates: adjustedRates(state, box, luck), createdAt: Date.now() };
+  C.requireThat(box==='card'||existingContainer||require('./containers').get(state,box)?.enabled!==false,'该容器已停用。');
+  const batch = { id: C.id('z'), items: [], containerGrade:box==='card'?null:require('./containers').get(state,box).grade, luck, rates: adjustedRates(state, box, luck), createdAt: Date.now() };
   const size = box === 'card' ? 1 : rng(1, 7);
   for (let n = 0; n < size; n++) {
     const r = rarity(state, box, rng, luck, batch.rates);
@@ -61,4 +63,4 @@ function generate(state, box, rng = randomInt, luck = 1) {
   }
   return batch;
 }
-module.exports = { DEFAULT_SAFE_RATES, COLORS, validateRates, rates, setRates, adjustedRates, rarity, generate };
+module.exports = { DEFAULT_SAFE_RATES, COLORS, validateRates, rates, setRates, adjustedRates, rarity, generate, setGradeRates };

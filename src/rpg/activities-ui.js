@@ -122,7 +122,7 @@ function createActivities(context) {
     });
   }
   async function publishLoot(guild, ref, force) {
-    let r = snapshot(guild).lootPublications[ref];
+    let r = snapshot(guild).lootPublications[ref];ok(r&&!r.cleanedAt,'该地图结果已清理，不能补发。');
     const ch = await textChannel(guild, r.channelId), pages = lootMessages(r), publishedPending = r.result.pending, publishedUserId = r.userId;
     if (!r.publicationParts) await store.transact(guild, 'loot-parts:' + ref, client.user.id, st => {
       const live = st.lootPublications[ref]; live.publicationParts = pages.map((_, n) => ({ id: C.id('n'), status: n === 0 && live.messageId ? 'sent' : 'pending',
@@ -208,7 +208,7 @@ function createActivities(context) {
     ]; return v;
   }
   function lootMenu(state, uid, gm, page = 0) {
-    const entries = Object.values(state.lootPublications).filter(r => gm || r.userId === uid).sort((a, b) => b.at - a.at);
+    const entries = Object.values(state.lootPublications).filter(r => !r.cleanedAt&&(gm || r.userId === uid)).sort((a, b) => b.at - a.at);
     return selection('抽取公示记录', entries.map(r => ({ value: r.id, label: (r.result.items?.length > 1 ? r.result.items.length + '件 · ' + r.result.box : r.result.item.snapshot.name) + ' · ' +
       (r.publication?.status === 'sent' ? '已公示' : '待补发') })), 'loot:menu', page);
   }
@@ -251,7 +251,7 @@ function createActivities(context) {
       const gm = U.gm(s, member);
       if (action === 'menu' && ref !== 'select') return lootMenu(s, uid, gm, ref);
       const r = s.lootPublications[action === 'menu' ? i.values[0] : ref];
-      ok(r && (r.userId === uid || gm), '只能查看本人抽取结果，其他结果由GM查看。');
+      ok(r && !r.cleanedAt && (r.userId === uid || gm), '只能查看本人抽取结果，其他结果由GM查看。');
       if (action === 'repost') await publish(i.guildId, 'loot', r.id, true);
       const v = lootView(r); v.components = [row(button('activity:loot:repost:' + r.id, '已核对频道，补发公示'),
         button('activity:loot:menu:0', '返回抽取记录'))]; return v;

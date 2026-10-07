@@ -33,7 +33,7 @@ function defaults(kind, itemKind = '杂物') {
 }
 function fields(form) {
   const kind = form.kind, d = form.data;
-  const common = [field('name', '名称'), field('description', '描述', 'long')];
+  const common = [field('name', '名称'), field('description', '描述', 'long'),field('enabled','允许生成 / 发放','bool')];
   if (kind === 'checkskill') return [field('name', '技能名称'), field('level', '初始等级', 'number')];
   const aoeFields=[enumField('aoe.mode','目标模式',[{value:'single',label:'单体'},{value:'selective',label:'选择性圆形AOE'},{value:'all',label:'无差别圆形AOE'}]),field('aoe.radius','AOE半径（米）','number'),field('aoe.allowAlly','选择性AOE允许友军','bool'),field('aoe.allowSelf','选择性AOE允许自身','bool')];
   if(kind==='skill')return [...common,field('hit','固定命中','number'),field('damage.physical','物理伤害骰式'),field('damage.magical','魔法伤害骰式'),field('damage.mental','精神伤害骰式'),field('rangeMeters','攻击距离（米）','number'),enumField('primary','主伤害类型',Object.entries(C.DAMAGE_TYPES).map(([value,label])=>({value,label}))),enumField('action','行动类型',[{value:'formal',label:'正式'},{value:'quick',label:'快速'}]),field('casting','吟唱次数（0瞬发）','number'),field('requiresWeapon','是否要求可用武器','bool'),field('conditions','附带异常','conditions'),...aoeFields];
@@ -50,16 +50,16 @@ function fields(form) {
     }
     return list;
   }
-  if (kind === 'mapcategory') return common;
-  if (kind === 'room') return [...common, refField('categoryIds', '地图大类（先录入）', 'mapCategories', 1),field('autoStart','全队进入后自动开战','bool'),field('spawn.playerX','玩家出生横坐标（米）','number'),field('spawn.playerY','玩家出生纵坐标（米）','number'),field('spawn.npcX','NPC出生横坐标（米）','number'),field('spawn.npcY','NPC出生纵坐标（米）','number'),
-    {...enumField('boxes', '固定容器类型', C.BOXES), type: 'multi', limit: 12}, {key:'containerCounts',label:'固定容器数量（下拉选择）',type:'fixedRoom',source:'boxes',refs:'boxes',max:10},
+  if (kind === 'mapcategory') return [...common,{...enumField('mapTypes','适用地图类型',[{value:'indoor',label:'建筑内部'},{value:'region',label:'区域地图'}]),type:'multi',limit:2}];
+  if (kind === 'room') return [...common, refField('categoryIds', '兼容地图大类（可多选）', 'mapCategories', 25),field('autoStart','全队进入后自动开战','bool'),field('spawn.playerX','玩家出生横坐标（米）','number'),field('spawn.playerY','玩家出生纵坐标（米）','number'),field('spawn.npcX','NPC出生横坐标（米）','number'),field('spawn.npcY','NPC出生纵坐标（米）','number'),
+    {...enumField('boxes', '固定容器类型', C.BOXES), type: 'multi', limit: 52}, {key:'containerCounts',label:'固定容器数量（下拉选择）',type:'fixedRoom',source:'boxes',refs:'boxes',max:10},
     refField('supplyIds', '固定物资', 'catalog', 25, t => t.kind !== '技能'), {key:'supplyQuantities',label:'固定物资数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'supplyIds',max:100},
     refField('npcIds', '固定NPC', 'npcTemplates', 19), {key:'npcQuantities',label:'固定NPC数量（下拉选择）',type:'fixedRoom',source:'npcTemplates',refs:'npcIds',max:19},
     refField('keyIds', '入门钥匙（留空免费）', 'catalog', 1, t => t.kind === '钥匙'),
-    {key:'randomContainers',label:'随机容器 · 0—6个概率',type:'randomRoom',source:'boxes',max:6,limit:12},
+    {key:'randomContainers',label:'随机容器 · 0—6个概率',type:'randomRoom',source:'boxes',max:6,limit:52},
     {key:'randomSupplies',label:'随机散落物资 · 0—6件概率',type:'randomRoom',source:'catalog',max:6,limit:25,predicate:t=>t.kind!=='技能'},
-    {key:'randomNpcs',label:'随机NPC · 0—10个概率',type:'randomRoom',source:'npcTemplates',max:10,limit:25}];
-  if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
+    {key:'randomNpcs',label:'随机NPC · 0—10个概率',type:'randomRoom',source:'npcTemplates',max:10,limit:25},...(form.variantParent?[]:[field('variants','十种环境变种','variants')])];
+  if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'),enumField('anomalyRank','异常等级',require('./npc-strength').LEVELS),field('randomStrength','随机等级强度','bool'),field('levelMin','生成最低等级','number'),field('levelMax','生成最高等级','number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
     field('hpMax', '生命上限', 'number'), refField('itemIds', '随身实物（装备另设槽位）', 'catalog', 25,t=>t.kind!=='技能'),refField('skillIds','NPC战斗技能','skillTemplates',25),
     {key:'quantities',label:'初始物品数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'itemIds',max:100}];
   if (kind === 'rolepanel') return [field('title', '面板标题'), field('description', '面板说明', 'long'),
@@ -67,7 +67,7 @@ function fields(form) {
     field('labels', '自定义领取标签（选择身份组）', 'roleLabels')];
   const list = [...common, enumField('rarity', '六色稀有度', C.RARITIES.map(r => ({ value: r.id, label: r.name }))),
     field('weightKg', '重量kg（两位小数）', 'number'), field('value', '参考价值', 'number'),
-    { ...enumField('boxes', '可从哪些箱型抽出', C.BOXES), type: 'multi', limit: 12 }];
+    { ...enumField('boxes', '可从哪些箱型抽出', C.BOXES), type: 'multi', limit: 52 }];
   if (['武器', '技能'].includes(d.kind)) list.push(field('rangeMeters', '射程 / 攻击距离（米）', 'number'));
   if(d.kind==='武器')list.push(...aoeFields);
   if (d.kind === '武器') list.push(enumField('handedness', '单手 / 双手（可手动调整）', [
@@ -113,7 +113,10 @@ function create(state, owner, kind, itemKind, existingId) {
   if (kind === 'checkskill') state.checkSkillTemplates ||= {};
   const old = existingId ? state[source][existingId] : null;
   if (existingId) ok(old, '模板不存在。');
-  const data = old ? C.clone(old) : defaults(kind, itemKind);
+  const data = old ? C.clone(old) : defaults(kind, itemKind);data.enabled=old?old.published!==false:true;
+  if(kind==='room'&&old)data.variants||=require('./room-variants').defaults(data);
+  if(kind==='npc'){data.anomalyRank||='I';data.randomStrength??=false;}
+  if(kind==='mapcategory')data.mapTypes||=['indoor','region'];
   if (kind === 'item' && old) {
     if(['武器','弹夹'].includes(old.kind)){data.ammoIds=old.ammoIds || (old.initialAmmo?.id ? [old.initialAmmo.id] : Object.values(state.catalog).filter(t=>t.kind==='弹药'&&t.ammoType===old.ammoType).slice(0,1).map(t=>t.id));data.magazineIds=old.magazineIds || (old.initialMagazine?.id?[old.initialMagazine.id]:[]);}
     data.rangeMeters ??= (old.range ?? 1)*50;
@@ -135,6 +138,7 @@ function display(value, field, state, limit = 120) {
   if(field.type==='roleLabels')return typeof value==='object'?Object.entries(value||{}).map(([id,label])=>'<@&'+id+'>：'+label).join('、')||'默认身份组名称':String(value||'默认身份组名称');
   if (field.type === 'randomRoom') return ((value || []).map(e => (field.source==='boxes' ? e.ref : state[field.source][e.ref]?.name || e.ref)+': '+R.summary([e])).join('\n') || '未配置').slice(0,limit);
   if (field.type === 'fixedRoom' && value && typeof value==='object') return Object.entries(value).map(([ref,n])=>(field.source==='boxes' ? ref : state[field.source][ref]?.name || ref)+' ×'+n).join('、') || '默认1';
+  if(field.type==='variants')return (value||[]).length+'种变种，下拉编辑';
   if (field.type === 'bool') return value ? '开启' : '关闭';
   if (['effects', 'conditionEffects'].includes(field.type)) return (value || []).map(e => C.targetLabel(e.target) + ' ' +
     (e.amount ?? ((e.op === 'percent' ? '%' : '+') + e.value))).join('；') || '无';
@@ -200,6 +204,7 @@ function setChoice(state, form, page, selected) {
     ok(values.length <= (def.limit || 10), '最多选择' + (def.limit || 10) + '项。');
     set(form.data, def.key, def.type === 'conditions' ? values.map(x => { const [id, severity] = x.split('|'); return { id, severity }; }) : values);
   } else set(form.data, def.key, selected[0]);
+  if(def.key==='anomalyRank'){const rank=require('./npc-strength').LEVELS.indexOf(selected[0]);form.data.levelMin=rank*10+1;form.data.levelMax=(rank+1)*10;}
   if(def.key==='magazineIds'&&selected.length){const mag=state.catalog[selected[0]];form.data.capacity=mag.capacity;form.data.current=Math.min(form.data.current||0,mag.capacity);if(!form.data.ammoIds?.length)form.data.ammoIds=Object.values(state.catalog).filter(t=>t.kind==='弹药'&&t.ammoType===mag.ammoType).slice(0,1).map(t=>t.id);}
 }
 function effectsView(state, form) {
@@ -220,6 +225,7 @@ function effectsView(state, form) {
 function publish(state, form) {
   const data = C.clone(form.data);
   let result;
+  if(form.variantParent){const V=require('./room-variants'),parent=owned(state,form.variantParent.formId,form.owner);ok((parent.variantVersion||0)===form.variantParent.version,'主房间变种已修改，请重新编辑。');const v=parent.data.variants.find(v=>v.id===form.variantParent.id);ok(v,'变种已不存在。');const checked=require('./exploration').validateRoom(state,data,true);v.overrides=Object.fromEntries(V.KEYS.filter(k=>JSON.stringify(checked[k])!==JSON.stringify(parent.data[k])).map(k=>[k,C.clone(checked[k])]));parent.variantVersion=(parent.variantVersion||0)+1;form.done=true;return {id:v.id,name:v.name};}
   if (form.kind === 'skill') result = require('./skills').publish(state,data,form.existingId);
   else if (form.kind === 'item') result = M.publishTemplate(state, data, form.existingId);
   else {
@@ -239,7 +245,8 @@ function publish(state, form) {
       if (form.existingId) data.portraits = C.clone(state.npcTemplates[form.existingId]?.portraits || {});
       result = B.validateNPC(state, data);
     }
-    if (form.kind === 'mapcategory') result = { name: C.text(data.name, '大类名称', 80), description: C.text(data.description || '', '描述', 2000, true) };
+    if(form.kind==='mapcategory')ok((data.mapTypes||['indoor','region']).length>0&&(data.mapTypes||[]).every(t=>['indoor','region'].includes(t)),'至少选择一个合法地图类型。');
+    if (form.kind === 'mapcategory') result = { name: C.text(data.name, '大类名称', 80), description: C.text(data.description || '', '描述', 2000, true),mapTypes:data.mapTypes||['indoor','region'] };
     if (form.kind === 'room') result = require('./exploration').validateRoom(state, data);
     if (form.kind === 'rolepanel') {
       ok(data.roleIds.length && data.roleIds.length <= 20, '领取面板需要1至20个身份组。');
@@ -257,6 +264,7 @@ function publish(state, form) {
     result.id = form.existingId || C.id('t'); result.version = (state[source][result.id]?.version || 0) + 1; result.published = true;
     state[source][result.id] = result;
   }
+  result.published=data.enabled!==false;
   form.publishedId = result.id; form.existingId = result.id;
   return result;
 }

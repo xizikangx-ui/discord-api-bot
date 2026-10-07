@@ -27,7 +27,7 @@ function commands() {
     int(str(cmd('分配属性点', '为自己的角色分配自由属性点'), '属性', '选择属性', true,
       Object.entries(C.ATTRIBUTES).map(([value, name]) => ({ name, value }))), '点数', '增加的点数', false, 1, 100000),
     cmd('抽卡', '消耗一次抽卡次数；超重时保留待领取结果'),
-    str(cmd('开箱', '消耗一次对应箱型次数，整批领取1至6件随机物品'), '箱型', '要开启的箱子', true, C.BOXES),
+    cmd('开箱', '消耗一次对应箱型次数，整批领取1至6件随机物品').addStringOption(o=>o.setName('箱型').setDescription('搜索52种容器名称').setRequired(true).setAutocomplete(true)),
     cmd('地图配置', 'GM录入地图大类、房间、保险箱概率与钥匙次数'),
     cmd('地图', '创建、管理或参与带迷雾的探索地图'),
     cmd('势力', '查看世界背景、势力介绍并选择角色归属'),
@@ -68,7 +68,7 @@ function commands() {
     str(s,'动作','默认发放技能；经验每100点升一级',false,['发放','经验']);
     return s;
   });
-  gm.addSubcommand(s => int(str(user(s.setName('次数').setDescription('发放抽卡或指定箱型次数')), '类型', '抽卡或箱型', true, ['抽卡', ...C.BOXES]), '数量', '发放次数', true, 1, 100000));
+  gm.addSubcommand(s => int(user(s.setName('次数').setDescription('发放抽卡或指定箱型次数')).addStringOption(o=>o.setName('类型').setDescription('搜索抽卡或52种容器').setRequired(true).setAutocomplete(true)), '数量', '发放次数', true, 1, 100000));
   gm.addSubcommand(s => int(int(item(user(s.setName('收购').setDescription('GM私有选物报价面板，或填写完整参数快捷收购')), '物品', false), '价格', '快捷收购总价，面板中可填写', false, 0, C.MAX_MONEY), '数量', '收购数量', false, 1, 100000));
   gm.addSubcommand(s => user(s.setName('销卡').setDescription('确认后清空角色与财产，保留审计')));
   gm.addSubcommand(s => int(user(s.setName('时运').setDescription('设置玩家基础时运，不能使用自由点')), '数值', '基础时运（-9至11）', true, -9, 11));

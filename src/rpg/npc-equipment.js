@@ -2,7 +2,7 @@
 const C=require('./constants'),M=require('./model');
 function create(template, catalog, virtual = false) {
   const p=M.newCharacter(template.name || 'NPC',C.clone(template.attributes));
-  p.portraits=C.clone(template.portraits||{});p.luck=template.luck??1;p.points=0;p.hpMaxOverride=template.hpMax;p.hp=template.hpMax;
+  p.innateEffects=require('./npc-strength').effects(template);p.level=template.spawnStrength?.level||1;p.anomalyRank=template.anomalyRank||'I';p.portraits=C.clone(template.portraits||{});p.luck=template.luck??1;p.points=0;p.hpMaxOverride=template.hpMax;p.hp=template.hpMax;
   const loadout=template.loadout || (template.itemIds||[]).filter(ref=>catalog[ref]?.published).map(ref=>({template:catalog[ref],quantity:template.quantities?.[ref]||template.itemQuantities?.[ref]||1}));
   p.learnedSkills={};for(const skill of template.skillSnapshots||[])require('./skills').grant(p,skill);
   const legacy=template.equipmentPreset===undefined;

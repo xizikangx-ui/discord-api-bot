@@ -16,7 +16,7 @@ function complete(state,m,r){check(state,m,r);const target=state.explorations[r.
  if(r.kind==='enter'){m.excursion={childId:target.id,returnCell:r.from,characters:clone(r.characters)};target.parentContext={mapId:m.id,returnCell:r.from,characters:clone(r.characters)};}
  else{delete target.excursion;delete m.parentContext;}
  for(const uid of r.members){target.participants[uid]={...m.participants[uid],cell:r.to};delete m.participants[uid];}
- target.revealed[r.to]=true;target.cells[r.to].touched=true;target.version++;m.version++;r.status='completed';r.completedAt=Date.now();r.resultMapId=target.id;
+ require('./rp').enter(state,target,r.to);target.revealed[r.to]=true;target.cells[r.to].touched=true;target.version++;m.version++;r.status='completed';r.completedAt=Date.now();r.resultMapId=target.id;
  m.lastEvent='全队'+(r.kind==='enter'?'进入':'返回')+' '+target.name;target.lastEvent='全队从 '+m.name+' '+(r.kind==='enter'?'进入建筑':'返回区域');
 }
 function releaseEmpty(state,m){if(!m.parentContext||Object.keys(m.participants).length)return;const parent=state.explorations[m.parentContext.mapId];if(parent?.excursion?.childId===m.id){delete parent.excursion;parent.version++;}delete m.parentContext;m.version++;}

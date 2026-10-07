@@ -78,10 +78,11 @@ function createHandlers(context) {
         return F.publish(st, draft);
       }, '发布跑团模板');
       if (f.kind === 'rolepanel') await publishRoles(i, result.id);
-      return payload('已发布', result.name || result.title, [row(button('formback:' + formId, '继续修改草稿'))]);
+      return f.variantParent?payload('变种内容已保存','返回父房间草稿发布，才会用于之后生成的房间。',[row(button('formback:'+f.variantParent.formId,'返回父房间并发布'))]):payload('已发布', result.name || result.title, [row(button('formback:' + formId, '继续修改草稿'))]);
     }
     if (action === 'formedit') {
       const def = F.fields(f)[f.field];
+      if(def.type==='variants')return require('./room-variants').view(s,f);
       if(def.type==='roleLabels')return RL.view(f,i.guild);
       if (['randomRoom','fixedRoom'].includes(def.type)) return R.view(s,f);
       if (['choice', 'refs', 'multi', 'conditions'].includes(def.type)) return F.choiceView(s, f);

@@ -165,13 +165,15 @@ function validateNPC(state, raw) {
   for (const ref of t.itemIds) ok(state.catalog[ref]?.published, 'NPC装备或技能未发布。');
   t.itemQuantities = require('./room-settings').quantities(t.quantities || t.itemQuantities,t.itemIds,100);
   t.loadout = t.itemIds.map(ref => ({ template: clone(state.catalog[ref]), quantity: t.itemQuantities[ref] || 1 }));
+  Object.assign(t,require('./npc-strength').validate(t));
   t.ai = require('./npc-auto').validate(t.ai);
   if (t.equipmentPreset !== undefined) require('./npc-equipment').create(t, state.catalog);
   return t;
 }
 function addNPC(state, battle, templateId, team, frozenTemplate = null) {
   ok(['recruiting', 'paused'].includes(battle.status), '添加NPC前请暂停战斗。');
-  const template = frozenTemplate || state.npcTemplates[templateId];
+  const original = frozenTemplate || state.npcTemplates[templateId];
+  const template = original && require('./npc-strength').freeze(original, randomInt);
   ok(template?.published, 'NPC模板不存在。');
   ok(battle.actors.length < 20, '当前战斗最多20名参战者。');
   ok(['ally', 'enemy'].includes(team), '阵营无效。');

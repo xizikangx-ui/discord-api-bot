@@ -29,7 +29,7 @@ function migrate(state) {
     if (!value || typeof value !== 'object' || seen.has(value)) return;
     seen.add(value);
     if (value.kind && value.rarity && Object.hasOwn(value,'value')) {
-      if (value.value !== 0) value.value = (seedPrice(value.id) ?? seedPrice(ref)) ?? PRICES[value.rarity] ?? value.value;
+      if (value.value !== 0) value.value = (seedPrice(value.id) ?? seedPrice(ref) ?? require('./modern-props').catalog()[value.id||ref]?.value) ?? PRICES[value.rarity] ?? value.value;
       report.prices++;
     }
     if (['武器','技能'].includes(value.kind) || (value.damage && Object.hasOwn(value,'range'))) {

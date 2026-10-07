@@ -10,7 +10,7 @@ function valid(state,m,r,now=Date.now()){
   return r.members.every(uid=>state.players[uid]?.id===r.characters[uid]&&state.players[uid].hp>0&&!M.battleFor(state,uid));
 }
 function expire(state,m,now=Date.now()) {const r=m.moves?.[m.moveRequestId];if(r?.status==='pending'&&!valid(state,m,r,now)){r.status=r.expiresAt<=now?'expired':'cancelled';r.reason=r.status==='expired'?'三分钟内未全员确认':'地图、队伍或角色状态已经变化';return r;}return null;}
-function checks(state,m,r){ok(valid(state,m,r),'移动申请已过期或队伍状态变化，请重新发起。');
+function checks(state,m,r){require('./rp').check(m);ok(valid(state,m,r),'移动申请已过期或队伍状态变化，请重新发起。');
   for(const uid of r.members){const {p,part}=X.participant(state,m,uid);ok(part.cell===r.from,'全队必须在同一格。');ok(!M.stats(p).overloaded,p.name+'超重，无法移动。');}
   if(r.kind&&r.kind!=='move'){require('./map-links').check(state,m,r);return;}
   ok(X.neighbors(m,r.from).includes(r.to),'只能移动到相邻可通行格。');
@@ -35,7 +35,7 @@ function vote(state,m,ref,uid,yes,now=Date.now()){
 }
 function autoEncounters(state){const changed={maps:[],battles:[]};
   for(const m of Object.values(state.explorations).filter(m=>m.status==='active'))for(const [cell,c] of Object.entries(m.cells)){
-    const r=c.room;if(!r||!(r.autoStart??r.snapshot.autoStart))continue;
+    const r=c.room;if(require('./rp').waiting(m)||!r||!(r.autoStart??r.snapshot.autoStart))continue;
     if(r.encounter==='battle'){
       const b=state.battles[r.battleId];if(!b)continue;
       const live=B.liveActors(state,b),enemies=live.filter(a=>a.team==='enemy'),allies=live.filter(a=>a.team==='ally');

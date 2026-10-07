@@ -18,7 +18,7 @@ function draw(values, rng = randomInt) {
   throw Error('数量概率无效。');
 }
 function validateEntries(state, entries, kind) {
-  const max = kind==='npc' ? 10 : 6, limit = kind==='container' ? 12 : 25;
+  const max = kind==='npc' ? 10 : 6, limit = kind==='container' ? 52 : 25;
   ok(Array.isArray(entries || []) && (entries || []).length<=limit, '随机配置项目过多。');
   const refs = new Set();
   return (entries || []).map(e => {
@@ -51,7 +51,7 @@ function view(s,f,index=f.field,page=0) {
   const def=definition(f,index), options=choices(s,f,def);page=Math.max(0,Math.min(Number(page)||0,Math.max(0,Math.ceil(options.length/20)-1)));
   const current=def.type==='randomRoom' ? entries(f,def).map(e=>(options.find(o=>o.value===e.ref)?.label || e.template?.name || e.ref)+'：'+summary([e])).join('\n') :
     Object.entries(quantities(f.data[def.key],f.data[def.refs] || [],def.max)).map(([ref,n])=>(options.find(o=>o.value===ref)?.label || ref)+' ×'+n).join('\n');
-  return U.payload(def.label,'下拉选择名称，再设置数量'+(def.type==='randomRoom' ? '对应的概率。每种内容独立抽取，单项合计100%。' : '。先在对应固定内容字段选择类型。')+'\n\n'+(current || '尚未选择。'),[
+  return U.payload(def.label,'下拉选择名称，再设置数量'+(def.type==='randomRoom' ? '对应的概率。每种内容独立抽取，单项合计100%。' : '。先在对应固定内容字段选择类型。')+'\n\n'+(current || '尚未选择。').slice(0,3300),[
     ...(options.length ? [U.row(U.select('formroomselect:'+f.id+':'+index,'选择要配置的内容',options.slice(page*20,page*20+20)))] : []),
     U.row(U.button('formroomlist:'+f.id+':'+index+':'+(page-1),'上一页',undefined,!page),U.button('formroomlist:'+f.id+':'+index+':'+(page+1),'下一页',undefined,(page+1)*20>=options.length),U.button('formback:'+f.id,'返回草稿'))
   ]);

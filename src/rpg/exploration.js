@@ -12,11 +12,11 @@ const xy = ref => ref.split(',').map(Number);
 function quantities(text, refs, max = 100) {
   return R.quantities(text,refs,max);
 }
-function validateRoom(state, raw) {
+function validateRoom(state, raw, skipVariants=false) {
   const r = clone(raw);
   r.autoStart=!!r.autoStart;r.spawn=Object.fromEntries(Object.entries({playerX:25,playerY:25,npcX:475,npcY:475}).map(([key,value])=>[key,num(r.spawn?.[key]??value,'出生位置',0,499.99,false)]));
   r.name = C.text(r.name, '房间名称', 80); r.description = C.text(r.description || '', '房间描述', 2000, true);
-  ok(r.categoryIds?.length === 1 && state.mapCategories[r.categoryIds[0]]?.published, '先录入并选择一个地图大类。');
+  ok(r.categoryIds?.length && r.categoryIds.length<=25 && r.categoryIds.every(id=>state.mapCategories[id]?.published), '先选择已发布的兼容地图大类。');
   r.boxes ||= []; ok(r.boxes.every(b => C.BOXES.includes(b)), '容器类型无效。');
   r.boxCounts = quantities(r.containerCounts, r.boxes, 10);
   r.supplyIds ||= []; r.npcIds ||= []; r.keyIds ||= [];
@@ -32,6 +32,7 @@ function validateRoom(state, raw) {
   r.randomSupplies = R.validateEntries(state,r.randomSupplies,'supply');
   r.randomNpcs = R.validateEntries(state,r.randomNpcs,'npc');
   r.containerCounts=clone(r.boxCounts);r.supplyQuantities=clone(r.supplyCounts);r.npcQuantities=clone(r.npcCounts);
+  if(!skipVariants){const V=require('./room-variants');r.variants=V.validate(raw.variants,r);for(const v of r.variants)validateRoom(state,V.merge(r,v),true);}
   return r;
 }
 function create(state, owner, channelId, name, floors, width, mode, categoryId,mapType='indoor') {
@@ -50,19 +51,19 @@ function touched(m, ref) {
   const c = m.cells[ref];
   return !!(c?.touched || Object.values(m.participants).some(p => p.cell === ref));
 }
-function editCell(state, m, x, y, type, categoryId, templateId) {
+function editCell(state, m, x, y, type, categoryId, templateId, variantId = null) {
   editable(m); x = num(x, '列', 1, 20) - 1; y = num(y, '楼层', 1, 20) - 1;
   ok(cellTypes(m)[type] || type === 'empty', '格子类型无效。'); const ref = key(x, y), old = m.cells[ref];
   if(touched(m,ref)){ok(old.type===type&&old.categoryId===(categoryId||m.categoryId)&&(old.templateId||null)===(templateId||null),'该格有人或已有交互记录，不能替换或删除。');m.version++;return ref;}
   if (type === 'empty') delete m.cells[ref];
   else {
-    const c = { type, categoryId: categoryId || m.categoryId, templateId: templateId || null };
+    const c = { type, categoryId: categoryId || m.categoryId, templateId: templateId || null, variantId:variantId||null };
     if (type === 'room') {
       ok(state.mapCategories[c.categoryId]?.published, '房间大类不存在。');
-      if (c.templateId) ok(state.roomTemplates[c.templateId]?.categoryIds[0] === c.categoryId, '房间模板与大类不匹配。');
+      if (c.templateId) ok(state.roomTemplates[c.templateId]?.categoryIds.includes(c.categoryId), '房间模板与大类不匹配。');
     }
     m.cells[ref] = c;
-    if (m.status !== 'draft' && type === 'room') c.room = instantiate(state, selectRoom(state, m, c), randomInt);
+    if (m.status !== 'draft' && type === 'room') c.room = instantiate(state, selectRoom(state, m, c), randomInt,m.maxRank??10,c.variantId);
   }
   m.width = Math.max(m.width, x + 1); m.floors = Math.max(m.floors, y + 1); m.version++;
   if (old && m.status === 'draft') delete m.revealed[ref];
@@ -89,27 +90,30 @@ function validateMap(m) {
 function selectRoom(state, m, c, rng = randomInt) {
   if (c.templateId) { const t = state.roomTemplates[c.templateId]; ok(t?.published, '房间模板不存在。'); return t; }
   ok(m.mode === 'random', '固定地图每个房间格都需要选择模板。');
-  const pool = Object.values(state.roomTemplates).filter(r => r.published && r.categoryIds[0] === c.categoryId);
+  const pool = Object.values(state.roomTemplates).filter(r => r.published && r.categoryIds.includes(c.categoryId));
   ok(pool.length, '该大类尚未录入房间。'); return pool[rng(0, pool.length)];
 }
-function instantiate(state, template, rng) {
+function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=null) {
+  if(template.variants?.length){const V=require('./room-variants'),variant=V.choose(template,rng,fixedVariant);const raw=V.merge(template,variant);raw.categoryIds=raw.categoryIds.filter(id=>state.mapCategories[id]?.published);raw.supplyIds=raw.supplyIds.filter(id=>state.catalog[id]?.published);raw.npcIds=raw.npcIds.filter(id=>state.npcTemplates[id]?.published);raw.randomSupplies=(raw.randomSupplies||[]).filter(e=>state.catalog[e.ref]?.published);raw.randomNpcs=(raw.randomNpcs||[]).filter(e=>state.npcTemplates[e.ref]?.published);template=validateRoom(state,raw,true);}
   const r = { id: id('r'), templateId: template.id, snapshot: clone(template), unlocked: !template.keyIds.length,
     encounter: 'resolved', containers: [], supplies: [], battleId: null, randomResults: [], npcs: clone(template.npcs) };
   const random = (list,kind) => (list || []).map(e=>{const quantity=R.draw(e.probabilities,rng);r.randomResults.push({kind,ref:e.ref,quantity,probabilities:clone(e.probabilities)});return {...e,quantity};});
   const containers = [...template.boxes.map(box=>({ref:box,quantity:template.boxCounts[box]})),...random(template.randomContainers,'container')];
-  for (const entry of containers) for (let n = 0; n < entry.quantity; n++)
+  for (const entry of containers.filter(e=>require('./containers').get(state,e.ref)?.enabled!==false)) for (let n = 0; n < entry.quantity; n++)
     r.containers.push({ id: id('c'), box:entry.ref, status: 'unopened', batch: null, owner: null });
   for (const entry of [...template.supplies,...random(template.randomSupplies,'supply')].filter(e=>e.quantity>0)) {
     const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能', '钥匙'].includes(entry.template.kind);
     for (let n = 0; n < (stateful ? entry.quantity : 1); n++) r.supplies.push(M.makeItem(entry.template, stateful ? 1 : entry.quantity));
   }
-  r.npcs.push(...random(template.randomNpcs,'npc').filter(e=>e.quantity>0).map(e=>({template:clone(e.template),quantity:e.quantity})));
+  r.npcs=r.npcs.filter(e=>require('./npc-strength').allowed(e.template,maxRank));
+  r.npcs.push(...random((template.randomNpcs||[]).filter(e=>require('./npc-strength').allowed(e.template,maxRank)),'npc').filter(e=>e.quantity>0).map(e=>({template:clone(e.template),quantity:e.quantity})));
+  r.npcs=r.npcs.flatMap(e=>e.template.randomStrength?Array.from({length:e.quantity},()=>({template:require('./npc-strength').freeze(e.template,rng),quantity:1})): [e]);
   r.remainingNpcs=clone(r.npcs);r.encounter=r.npcs.length ? 'pending' : 'resolved';
   return r;
 }
 function generate(state, m, rng = randomInt) {
   ok(m.status === 'draft', '已发布地图不能重新随机生成。'); validateMap(m);
-  for (const c of Object.values(m.cells)) if (c.type === 'room'||c.hasContents) c.room = instantiate(state, selectRoom(state, m, c, rng), rng);
+  for (const c of Object.values(m.cells)) if (c.type === 'room'||c.hasContents) c.room = instantiate(state, selectRoom(state, m, c, rng), rng,m.maxRank??10,c.variantId);
   m.generated = true; m.version++; return m;
 }
 function publish(state, m) {
@@ -134,6 +138,7 @@ function participant(state, m, uid) {
 }
 function move(state, m, uid, to, keyId) {
   const { p, part } = participant(state, m, uid); ok(!M.stats(p).overloaded, '超重无法移动。');
+  require('./rp').check(m);
   const origin = m.cells[part.cell]; ok(!origin?.room || origin.room.encounter === 'resolved', '请先由GM处理当前房间遭遇。');
   ok(neighbors(m, part.cell).includes(to), '只能走向相邻格，上下楼需连接楼梯。');
   const c = m.cells[to];
@@ -142,10 +147,11 @@ function move(state, m, uid, to, keyId) {
     ok(item?.snapshot.kind === '钥匙' && item.templateId === required && item.keyCharges > 0 && M.available(state, uid, keyId) > 0, '需要匹配且未被交易预留的钥匙。');
     item.keyCharges--; c.room.unlocked = true;
   }
-  part.cell = to; c.touched = true; m.revealed[to] = true; m.version++;
+  part.cell = to; require('./rp').enter(state,m,to); c.touched = true; m.revealed[to] = true; m.version++;
   return c.room?.encounter === 'pending';
 }
 function currentRoom(state, m, uid) {
+  require('./rp').check(m);
   const { p, part } = participant(state, m, uid), c = m.cells[part.cell];
   ok(c?.room && c.room.unlocked && c.room.encounter === 'resolved', '房间尚未解锁或遭遇尚未解除。');
   c.touched = true; return { p, r: c.room, cell: part.cell };
@@ -153,7 +159,7 @@ function currentRoom(state, m, uid) {
 function open(state, m, uid, ref, rng = randomInt) {
   const { p, r, cell } = currentRoom(state, m, uid), c = r.containers.find(c => c.id === ref);
   ok(c && c.status !== 'claimed', '容器已经领取。');
-  if (!c.batch) { c.batch = L.generate(state, c.box, rng, M.stats(p).luck); c.owner = { userId: uid, characterId: p.id }; c.status = 'pending'; }
+  if (!c.batch) { c.batch = L.generate(state, c.box, rng, M.stats(p).luck,true); c.owner = { userId: uid, characterId: p.id }; c.status = 'pending'; }
   ok(c.owner.userId === uid && c.owner.characterId === p.id, '原批次已绑定开启者，需GM转交。');
   const result = { batchId: c.batch.id, box: c.box, luck: c.batch.luck ?? null, rates: clone(c.batch.rates ?? null), items: clone(c.batch.items), item: clone(c.batch.items[0]), pending: true, free: true };
   if (M.weight(p) + c.batch.items.reduce((n, i) => n + M.itemWeight(i), 0) <= M.stats(p).limit) {
@@ -174,6 +180,7 @@ function transfer(state, m, cell, containerId, uid) {
   c.owner = { userId: uid, characterId: p.id }; m.version++;
 }
 function encounter(state, m, ref, users) {
+  require('./rp').check(m);
   ok(m.status === 'active', '恢复地图后才能开始遭遇。'); const c = m.cells[ref];
   ok(c?.room?.encounter === 'pending' && m.revealed[ref], '房间没有待处理遭遇。');
   ok(users.length && users.every(uid => m.participants[uid]?.cell === ref && state.players[uid]?.id === m.participants[uid].characterId), '请选择在该房间且有有效角色的玩家。');

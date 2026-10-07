@@ -10,7 +10,7 @@ function migrateLegacy(state) {
   const seeds = C.seedCatalog();
   function replace(item, ref) {
     const t = seeds[ref];
-    if (t && item.description === '现代场景中的' + t.name + '，价值为游戏内估值。') {
+    if (t && ref.startsWith('seed_') && item.description === '现代场景中的' + t.name + '，价值为游戏内估值。') {
       item.description = t.description; report.descriptions++;
     }
   }

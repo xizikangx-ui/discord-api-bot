@@ -13,8 +13,9 @@ const RARITIES = [
   { id: 'green', name: '绿', weight: 250, min: 20, max: 100, color: 0x2ecc71 },
   { id: 'white', name: '白', weight: 450, min: 1, max: 20, color: 0xecf0f1 },
 ];
-const BOXES = ['大衣', '外套', '书柜', '武器箱', '医疗包', '旅行包', '饭盒', '高级旅行包',
+const LEGACY_BOXES = ['大衣', '外套', '书柜', '武器箱', '医疗包', '旅行包', '饭盒', '高级旅行包',
   '小型保险', '保险箱', '军需保险箱', '武库保险箱'];
+const BOXES = require('./containers').ALL;
 const QUALITIES = ['粗劣', '一般', '标准', '良好', '优秀', '精锐', '史诗', '传奇', '神话', '永恒'];
 const WEAPON_TYPES = ['弓', '弩', '刀', '枪', '剑', '戟', '斧', '匕首', '手枪', '步枪', '狙击枪',
   '霰弹枪', '榴弹枪', '机枪', '反器械枪', '法杖', '其他'];
@@ -120,7 +121,7 @@ function seedCatalog() {
     ['标示组织或活动的普通徽章。', '记录特定功绩或事件的纪念勋章。', '便携观测镜，外壳坚固且镜片清洁。', '保存完好的收藏纪念章，附发行资料。', '记录历史事件的资料原件，含原始批注。', '具有重要历史出处的稀世纪念品，附考证资料。'],
     ['清理工具缝隙与表面灰尘的小型工具刷。', '包含常用维护工具的收纳箱。', '适合精细检查的检测仪，附配套探头。', '用于特定测量任务的专用仪器。', '记录历史技术方案的手稿，保留计算与图示。', '保存独特技术资料的稀世档案，内容完整。'],
   ];
-  BOXES.forEach((box, b) => {
+  LEGACY_BOXES.forEach((box, b) => {
     [...RARITIES].reverse().forEach((r, n) => {
       const key = 'seed_' + b + '_' + r.id;
       catalog[key] = { id: key, version: 1, published: true, kind: '杂物',
@@ -133,7 +134,7 @@ function seedCatalog() {
       kind: '特殊物品', name, special, rarity: 'red', weight: 0, value: 0, effects: [], boxes: [],
       description: '仅由GM发放，使用时扩展一个角色槽位。' };
   }
-  return catalog;
+  return Object.assign(catalog, require('./modern-props').catalog());
 }
 function newState(guildId) {
   return { kind: 'tabletop-rpg', schema: 1, upgrade: 5, guildId, revision: 0,

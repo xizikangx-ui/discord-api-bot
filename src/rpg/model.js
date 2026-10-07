@@ -46,7 +46,7 @@ function isAttached(p, itemId) {
   return Object.values(p.inventory).some(i => (i.attachments || []).includes(itemId) || i.magazineId === itemId);
 }
 function sourceEffects(p) {
-  const result = [];
+  const result = [...(p.innateEffects || [])];
   for (const itemId of equippedIds(p)) {
     const item = p.inventory[itemId];
     if (!item || !Dur.usable(item)) continue;
