@@ -26,7 +26,7 @@ function defaults(kind, itemKind = '杂物') {
     levels: Object.fromEntries(C.SEVERITIES.map(s => [s, { enabled: s === '一般', difficulty: 10,
       duration: { kind: 'actions', count: 3 }, worsenAfter: 0, description: '', effects: [] }])) };
   if (kind === 'mapcategory') return { name: '', description: '' };
-  if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: {}, supplyIds: [], supplyQuantities: {}, npcIds: [], npcQuantities: {}, keyIds: [], autoStart: true, spawn: {playerX:25,playerY:25,npcX:475,npcY:475}, randomContainers: [], randomSupplies: [], randomNpcs: [] };
+  if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: {}, supplyIds: [], supplyQuantities: {}, npcIds: [], npcQuantities: {}, keyIds: [], autoStart: true, spawn: {playerX:25,playerY:25,npcX:475,npcY:475}, obstacles: require('./encounter-layout').defaults(), randomContainers: [], randomSupplies: [], randomNpcs: [] };
   if (kind === 'npc') return { humanoid: false, baseXP: 0, name: '', description: '', attributes: Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, 3])),
     hpMax: 9, itemIds: [], quantities: {}, equipmentPreset: [], ai: require('./npc-auto').config() };
   return { title: '领取玩家身份组', description: '选择身份组后领取。', roleIds: [], exclusive: false, allowCancel: true, labels: {} };
@@ -51,7 +51,7 @@ function fields(form) {
     return list;
   }
   if (kind === 'mapcategory') return [...common,{...enumField('mapTypes','适用地图类型',[{value:'indoor',label:'建筑内部'},{value:'region',label:'区域地图'}]),type:'multi',limit:2}];
-  if (kind === 'room') return [...common, refField('categoryIds', '兼容地图大类（可多选）', 'mapCategories', 25),field('autoStart','全队进入后自动开战','bool'),field('spawn.playerX','玩家出生横坐标（米）','number'),field('spawn.playerY','玩家出生纵坐标（米）','number'),field('spawn.npcX','NPC出生横坐标（米）','number'),field('spawn.npcY','NPC出生纵坐标（米）','number'),
+  if (kind === 'room') return [...common, refField('categoryIds', '兼容地图大类（可多选）', 'mapCategories', 25),field('autoStart','全队进入后自动开战','bool'),field('obstacles.names','障碍名称池（顿号分隔）','long'),field('obstacles.min','最少障碍数（0—3）','number'),field('obstacles.max','最多障碍数（0—3，按面积限制）','number'),enumField('obstacles.terrain','障碍地形',[{value:'blocked',label:'阻挡（不能通过）'},{value:'difficult',label:'困难（双倍移动消耗）'}]),
     {...enumField('boxes', '固定容器类型', C.BOXES), type: 'multi', limit: 52}, {key:'containerCounts',label:'固定容器数量（下拉选择）',type:'fixedRoom',source:'boxes',refs:'boxes',max:10},
     refField('supplyIds', '固定物资', 'catalog', 25, t => t.kind !== '技能'), {key:'supplyQuantities',label:'固定物资数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'supplyIds',max:100},
     refField('npcIds', '固定NPC', 'npcTemplates', 19), {key:'npcQuantities',label:'固定NPC数量（下拉选择）',type:'fixedRoom',source:'npcTemplates',refs:'npcIds',max:19},
@@ -114,7 +114,7 @@ function create(state, owner, kind, itemKind, existingId) {
   const old = existingId ? state[source][existingId] : null;
   if (existingId) ok(old, '模板不存在。');
   const data = old ? C.clone(old) : defaults(kind, itemKind);data.enabled=old?old.published!==false:true;
-  if(kind==='room'&&old)data.variants||=require('./room-variants').defaults(data);
+  if(kind==='room'){if(old)data.variants||=require('./room-variants').defaults(data);data.obstacles||=require('./encounter-layout').defaults(data);}
   if(kind==='npc'){data.anomalyRank||='I';data.randomStrength??=false;}
   if(kind==='mapcategory')data.mapTypes||=['indoor','region'];
   if (kind === 'item' && old) {

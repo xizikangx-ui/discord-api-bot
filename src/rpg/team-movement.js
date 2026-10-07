@@ -49,8 +49,7 @@ function autoEncounters(state){const changed={maps:[],battles:[]};
     if(users.length>=20){m.status='paused';m.lastEvent='自动遭遇暂停：每场20人上限，需给NPC预留位置。';changed.maps.push(m.id);continue;}
     const oldBattles=clone(state.battles),oldRoom=clone(r),oldVersion=m.version,oldPlayers=clone(state.players),oldOffers=clone(state.offers),oldDeaths=clone(state.deaths),oldCorpses=clone(state.corpses);
     try {
-      const b=X.encounter(state,m,cell,users),spawn=r.snapshot.spawn||{};
-      for(const a of b.actors)B.position(b,a.id,a.team==='ally'?(spawn.playerX??25):(spawn.npcX??b.width*50-25),a.team==='ally'?(spawn.playerY??25):(spawn.npcY??b.height*50-25));
+      const b=X.encounter(state,m,cell,users);
       B.start(state,b);changed.battles.push(b.id);changed.maps.push(m.id);m.lastEvent='遭遇开始：'+r.snapshot.name;
     }catch(e){state.battles=oldBattles;state.players=oldPlayers;state.offers=oldOffers;state.deaths=oldDeaths;state.corpses=oldCorpses;c.room=oldRoom;m.version=oldVersion;m.status='paused';m.lastEvent='自动遭遇暂停：'+e.message;changed.maps.push(m.id);}
   }

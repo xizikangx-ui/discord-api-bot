@@ -45,8 +45,8 @@ function migrateMaps(state) {
   return { ...(old || {}), previous: old, maps: true, deaths: true, historicalRewards: 0 };
 }
 function migrate(state) {
-  const maps = migrateMaps(state), roles = require('./upgrade').migrate(state);
-  return maps || roles ? { ...(maps || {}), ...(roles || {}) } : null;
+  const maps = migrateMaps(state), roles = require('./upgrade').migrate(state), actions = require('./action-rules-upgrade').migrate(state);
+  return maps || roles || actions ? { ...(maps || {}), ...(roles || {}), ...(actions || {}) } : null;
 }
 function parseBeijing(value, now = Date.now()) {
   const m = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/);

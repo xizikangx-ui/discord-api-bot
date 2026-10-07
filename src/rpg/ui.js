@@ -151,13 +151,16 @@ function battleView(state, b) {
   const current = b.actors.find(a => a.id === b.current?.actorId);
   const status = { recruiting: '报名中', active: '进行中', paused: '已暂停', ended: '已结束' }[b.status];
   const fence = String.fromCharCode(96).repeat(3);
-  const header = status + ' · 动作点推进 ' + b.wave + ' · 每格50米\n' + (b.environment || '') +
+  const round = B.roundState(b), costText = ref => { const cost = B.opportunityCost(b, ref); return Number.isFinite(cost) ? cost + ' AP' : '超过AP上限，等待下一轮'; };
+  const header = status + ' · 行动第' + round.number + '轮 · 动作点推进 ' + b.wave + ' · 每格50米\n' + (b.environment || '') +
     '\n当前：' + (current?.name || '等待GM') + (b.current ? ' · 快速' + b.current.quick + ' 正式' + b.current.formal + ' 移动' + b.current.move + '米' : '') +
-    (b.pauseReason ? '\n' + b.pauseReason : '') + '\n\n' + '🟦 友方　🟥 敌方　🟨 当前行动　🟫 困难地形　⬛ 阻挡';
+    (b.pauseReason ? '\n' + b.pauseReason : '') + '\n\n' + '🟦 友方　🟥 敌方　🟨 当前行动　🟫 困难地形　⬛ 阻挡' +
+    (b.roomObstacles ? '\n障碍：' + require('./encounter-layout').describe({obstacles:b.roomObstacles}) : '');
   const details = b.actors.map((a, n) => {
       const p = B.actorCharacter(state, a), s = M.stats(p);
       return (n + 1) + '. ' + a.name.slice(0, 24) + ' [' + (a.team === 'ally' ? '友方' : '敌方') + '] HP ' + p.hp + '/' + s.maxHP +
         ' AP ' + p.ap + ' (' + a.x + ',' + a.y + ') ' + (a.deathId ? '💀 已死亡' : a.retreated ? '离场' : '') +
+        (b.status === 'ended' ? '' : ' · 本轮' + (round.counts[a.id] || 0) + '次 · 下次' + costText(a.id)) +
         '\n' + a.id + (p.conditions.length ? ' · ' + p.conditions.map(c => c.template.name + '·' + c.severity).join('、').slice(0, 60) : '');
     }).join('\n') + '\n\n最近记录\n' + b.recent.slice(-4).map(e => e.message).join('\n');
   const rows = b.status === 'ended' ? [] : b.status === 'recruiting' ? [row(button('join:' + b.id, '参与战斗', D.ButtonStyle.Success),
@@ -178,7 +181,10 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   if (a.deathId) return payload('角色已死亡 · ' + a.name, '该角色不能继续操作。死亡记录已保存。', []);
   if (b.status === 'ended') return payload('战斗已结束 · ' + b.name, '操作面板已关闭。\n' + a.name + ' · HP ' + Math.min(p.hp, s.maxHP) + '/' + s.maxHP, [], 0x95a5a6);
   const prefix = b.id + ':' + a.id + ':' + viewer + ':' + (turn?.id || 'look');
+  const round = B.roundState(b), nextCost = B.opportunityCost(b, a.id);
   let body = characterView(p, true).embeds[0].data.description + '\n\n位置 (' + a.x + ',' + a.y + ')　动作点 ' + p.ap +
+    '\n行动第' + round.number + '轮 · 本轮' + (round.counts[a.id] || 0) + '次 · 下次费用 ' + (Number.isFinite(nextCost) ? nextCost + ' AP' : '超过AP上限，等待下一轮') +
+    (turn ? '\n本次' + (turn.free ? '免费偷袭' : '已扣 ' + (turn.apCost ?? 100) + ' AP') : '') +
     '\n' + (turn ? '快速 ' + turn.quick + '／正式 ' + turn.formal + '／剩余移动 ' + turn.move + '米' : '当前不是此角色的行动机会。') +
     '\n吟唱：' + (a.casting ? a.casting.name + ' ' + a.casting.count + '/' + a.casting.required + (a.casting.confirmed ? ' · 已确认' : '') : '无') +
     '\n'+W.describe(p)+

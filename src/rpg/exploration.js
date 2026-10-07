@@ -15,6 +15,7 @@ function quantities(text, refs, max = 100) {
 function validateRoom(state, raw, skipVariants=false) {
   const r = clone(raw);
   r.autoStart=!!r.autoStart;r.spawn=Object.fromEntries(Object.entries({playerX:25,playerY:25,npcX:475,npcY:475}).map(([key,value])=>[key,num(r.spawn?.[key]??value,'出生位置',0,499.99,false)]));
+  r.obstacles = require('./encounter-layout').validate(r.obstacles, r);
   r.name = C.text(r.name, '房间名称', 80); r.description = C.text(r.description || '', '房间描述', 2000, true);
   ok(r.categoryIds?.length && r.categoryIds.length<=25 && r.categoryIds.every(id=>state.mapCategories[id]?.published), '先选择已发布的兼容地图大类。');
   r.boxes ||= []; ok(r.boxes.every(b => C.BOXES.includes(b)), '容器类型无效。');
@@ -179,17 +180,20 @@ function transfer(state, m, cell, containerId, uid) {
   ok(c?.status === 'pending' && m.participants[uid]?.characterId === p.id, '选择待领取容器及本地图有效玩家。');
   c.owner = { userId: uid, characterId: p.id }; m.version++;
 }
-function encounter(state, m, ref, users) {
+function encounter(state, m, ref, users, rng = randomInt) {
   require('./rp').check(m);
   ok(m.status === 'active', '恢复地图后才能开始遭遇。'); const c = m.cells[ref];
   ok(c?.room?.encounter === 'pending' && m.revealed[ref], '房间没有待处理遭遇。');
   ok(users.length && users.every(uid => m.participants[uid]?.cell === ref && state.players[uid]?.id === m.participants[uid].characterId), '请选择在该房间且有有效角色的玩家。');
   const remaining=c.room.remainingNpcs || clone(c.room.snapshot.npcs), slots=20-users.length;
   ok(slots>0,'每场最多20名参战者，请为NPC预留位置。');
-  const b = B.createBattle(state, m.channelId, m.owner, m.name + ' · ' + c.room.snapshot.name);
+  const Layout = require('./encounter-layout'), layout = Layout.validateLayout(c.room.tacticalLayout || Layout.generate(c.room.snapshot, rng));
+  const b = B.createBattle(state, m.channelId, m.owner, m.name + ' · ' + c.room.snapshot.name, layout.width, layout.height);
+  b.terrain = clone(layout.terrain); b.roomObstacles = clone(layout.obstacles); b.environment = c.room.snapshot.description;
   for (const uid of users) B.join(state, b, uid);
   let capacity=slots;
   for (const entry of remaining) {const count=Math.min(capacity,entry.quantity);for(let n=0;n<count;n++)B.addNPC(state,b,entry.template.id,'enemy',entry.template);entry.quantity-=count;capacity-=count;}
+  Layout.place(b, rng, !!layout.legacy); c.room.tacticalLayout = clone(layout);
   c.room.remainingNpcs=remaining.filter(e=>e.quantity>0);
   b.exploration = { mapId: m.id, cell: ref }; c.room.battleId = b.id; c.room.encounter = 'battle'; c.touched = true; m.version++;
   return b;

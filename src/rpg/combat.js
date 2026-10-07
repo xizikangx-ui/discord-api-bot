@@ -134,7 +134,7 @@ function createBattle(state, channelId, creatorId, name, width = 10, height = 10
   const b = { id: id('b'), channelId, creatorId, name: C.text(name, '战斗名', 80),
     width: num(width, '地图列数', 1, 20), height: num(height, '地图行数', 1, 20),
     terrain: {}, environment: '', status: 'recruiting', actors: [], queue: [], current: null, pending: null,
-    wave: 0, priority: [], recent: [], messageId: null, createdAt: Date.now(), surpriseTeam: null };
+    wave: 0, actionRound: { number: 1, counts: {}, completed: [] }, priority: [], recent: [], messageId: null, createdAt: Date.now(), surpriseTeam: null };
   state.battles[b.id] = b;
   return b;
 }
@@ -198,8 +198,44 @@ function setTerrain(battle, x, y, type) {
   ok(['normal', 'difficult', 'blocked'].includes(type), '地形无效。');
   ok(type !== 'blocked' || !battle.actors.some(a => Math.floor(a.x / 50) === x && Math.floor(a.y / 50) === y), '该格已有参战者。');
   battle.terrain[x + ',' + y] = type;
+  if (battle.roomObstacles) battle.roomObstacles = battle.roomObstacles.flatMap(o => o.cell !== x + ',' + y ? [o] : type === 'normal' ? [] : [{ ...o, terrain: type }]);
 }
 function liveActors(state, b) { return b.actors.filter(a => !a.retreated && actorCharacter(state, a).hp > 0); }
+function roundState(b) {
+  if (b.actionRound) return b.actionRound;
+  const paid = b.current && !b.current.free;
+  return { number: 1, counts: paid ? { [b.current.actorId]: 1 } : {}, completed: [] };
+}
+function ensureActionRound(b) {
+  b.actionRound ||= roundState(b);
+  if (b.current && !b.current.free && b.current.roundNumber == null) {
+    b.current.roundNumber = b.actionRound.number;
+    b.current.opportunity = b.actionRound.counts[b.current.actorId] || 1;
+    b.current.apCost = 100;
+  }
+  return b.actionRound;
+}
+function opportunityCost(b, actorId) {
+  const count = roundState(b).counts[actorId] || 0;
+  // Beyond this exponent even the maximum possible AP balance cannot pay.
+  return count >= 34 ? Infinity : 100 * 2 ** count;
+}
+function eligibleOpportunity(b, actor, p) {
+  const cost = opportunityCost(b, actor.id);
+  return cost <= C.MAX_MONEY && p.ap >= cost;
+}
+function completeOpportunity(b, turn) {
+  const round = ensureActionRound(b);
+  if (!turn.free && (turn.roundNumber ?? round.number) === round.number && !round.completed.includes(turn.actorId)) round.completed.push(turn.actorId);
+}
+function resetActionRound(state, b) {
+  const round = ensureActionRound(b), actors = liveActors(state, b);
+  if (b.current || b.pending || !actors.length || !actors.every(a => round.completed.includes(a.id))) return false;
+  b.actionRound = { number: round.number + 1, counts: {}, completed: [] };
+  b.queue = [];
+  record(b, '所有在场角色已完成一轮，行动费用重置为100 AP。', { roundNumber: b.actionRound.number, actorIds: actors.map(a => a.id) });
+  return true;
+}
 function order(state, b, actors, rng) {
   const scores = new Map(actors.map(a => [a.id, { agility: M.stats(actorCharacter(state, a)).attributes.agility, tie: [] }]));
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -225,6 +261,7 @@ function order(state, b, actors, rng) {
   return result;
 }
 function advance(state, b, rng) {
+  ensureActionRound(b);
   const actors = liveActors(state, b);
   if (!actors.length) { b.status = 'paused'; b.pauseReason = '没有可行动参战者。'; return; }
   for (let attempts = 0; attempts < 100; attempts++) {
@@ -238,9 +275,9 @@ function advance(state, b, rng) {
       p.ap += gain; gains.push({ actorId: a.id, roll: die.total, gain });
     }
     record(b, '自动推进第' + b.wave + '次动作点。', { gains });
-    if (actors.some(a => actorCharacter(state, a).ap >= 100)) {
+    if (actors.some(a => eligibleOpportunity(b, a, actorCharacter(state, a)))) {
       b.priority = order(state, b, actors, rng);
-      b.queue = b.priority.filter(ref => actorCharacter(state, actorById(b, ref)).ap >= 100).map(actorId => ({ actorId, free: false }));
+      b.queue = b.priority.filter(ref => eligibleOpportunity(b, actorById(b, ref), actorCharacter(state, actorById(b, ref)))).map(actorId => ({ actorId, free: false }));
       return;
     }
   }
@@ -248,6 +285,7 @@ function advance(state, b, rng) {
 }
 function nextOpportunity(state, b, rng = randomInt) {
   if (b.status !== 'active' || b.pending) return;
+  ensureActionRound(b);
   if (b.current) {
     const actor = b.actors.find(a => a.id === b.current.actorId);
     if (actor && !actor.retreated && actorCharacter(state, actor).hp > 0) return;
@@ -255,8 +293,9 @@ function nextOpportunity(state, b, rng = randomInt) {
     b.current = null;
   }
   for (let attempts = 0; attempts < 200; attempts++) {
+    resetActionRound(state, b);
     if (!b.queue.length) {
-      const eligible = liveActors(state, b).filter(a => actorCharacter(state, a).ap >= 100);
+      const eligible = liveActors(state, b).filter(a => eligibleOpportunity(b, a, actorCharacter(state, a)));
       if (eligible.length) {
         const ordered = b.priority.filter(ref => eligible.some(a => a.id === ref));
         for (const a of eligible) if (!ordered.includes(a.id)) ordered.push(a.id);
@@ -269,13 +308,16 @@ function nextOpportunity(state, b, rng = randomInt) {
     const a = b.actors.find(a => a.id === queued.actorId);
     if (!a || a.retreated) continue;
     const p = actorCharacter(state, a);
-    if (p.hp <= 0 || (!queued.free && p.ap < 100)) continue;
-    if (!queued.free) p.ap -= 100;
+    if (p.hp <= 0 || (!queued.free && !eligibleOpportunity(b, a, p))) continue;
+    const apCost = queued.free ? 0 : opportunityCost(b, a.id), round = b.actionRound;
+    if (!queued.free) { p.ap -= apCost; round.counts[a.id] = (round.counts[a.id] || 0) + 1; }
     if (a.casting && a.casting.count < a.casting.required) a.casting.count++;
     beginConditions(p, b, a, rng, state);
     if (p.hp <= 0) { endConditions(p, b, a, rng); record(b, a.name + (a.deathId ? '已死亡，跳过主动行动。' : '失能，跳过主动行动。')); continue; }
-    b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, moveSpent: 0, startedAt: Date.now(), free: queued.free };
-    record(b, '轮到' + a.name + '行动。');
+    b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, moveSpent: 0, startedAt: Date.now(), free: queued.free,
+      roundNumber: round.number, opportunity: queued.free ? 0 : round.counts[a.id], apCost };
+    record(b, '轮到' + a.name + '行动。' + (queued.free ? '免费偷袭机会。' : '第' + round.number + '轮，第' + b.current.opportunity + '次，扣除' + apCost + ' AP。'),
+      { actorId: a.id, turnId: b.current.id, roundNumber: round.number, opportunity: b.current.opportunity, apCost, apRemaining: p.ap });
     return;
   }
   b.status = 'paused'; b.pauseReason = '无法产生有效行动，请GM检查状态。';
@@ -284,6 +326,7 @@ function start(state, b, surpriseTeam, rng = randomInt) {
   ok(b.status === 'recruiting' && b.actors.length, '请先招募至少一名参战者。');
   for (const a of b.actors) {if(!a.userId&&!a.initialAmmoLoaded){a.initialAmmoLoaded=true;const loaded=require('./ammunition').primeNPC(actorCharacter(state,a));if(loaded.length)record(b,a.name+'开战前补弹：'+loaded.map(e=>e.name+' '+e.current+'/'+e.capacity+'发').join('、'));}actorCharacter(state, a).ap = 0; a.retreated = false; }
   b.status = 'active'; b.startedAt = Date.now();
+  b.actionRound = { number: 1, counts: {}, completed: [] };
   if (surpriseTeam) {
     ok(['ally', 'enemy'].includes(surpriseTeam), '偷袭阵营无效。');
     b.surpriseTeam = surpriseTeam;
@@ -305,7 +348,7 @@ function finish(state, b, turnId, rng = randomInt) {
   ok(b.status === 'active' && b.current?.id === turnId, '行动已变化，请刷新。');
   const actor = actorById(b, b.current.actorId), p = actorCharacter(state, actor);
   ok(!b.pending, '请先完成待响应攻击。');
-  endConditions(p, b, actor, rng); b.current = null;
+  completeOpportunity(b, b.current); endConditions(p, b, actor, rng); b.current = null;
   nextOpportunity(state, b, rng);
 }
 function pass(state, b, turnId, type, rng = randomInt) {
@@ -497,7 +540,7 @@ function flee(state, b, turnId, rng = randomInt) {
   ok(!b.pending && turn.formal > 0, '正式行动不可用。');
   turn.formal--; actor.retreated = true;
   record(b, actor.name + '离开战斗。');
-  endConditions(p, b, actor, rng); b.current = null;
+  completeOpportunity(b, turn); endConditions(p, b, actor, rng); b.current = null;
   nextOpportunity(state, b, rng);
 }
 function pause(b, resume = false) {
@@ -517,5 +560,5 @@ function endBattle(state, b) {
 }
 module.exports = { actorCharacter, actorById, record, validateCondition, applyCondition, beginConditions, endConditions,
   createBattle, join, withdraw, validateNPC, addNPC, position, setTerrain, liveActors, order, advance,
-  nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, attackPlan, readonlyCurrent, validateOperation, defend,
+  roundState, ensureActionRound, opportunityCost, resetActionRound, nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, attackPlan, readonlyCurrent, validateOperation, defend,
   confirmCasting, reload, switchWeapon, useItem, flee, pause, endBattle };

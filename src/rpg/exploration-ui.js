@@ -382,6 +382,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   function roomGM(s, m, cell) {
     const r = m.cells[cell]?.room; ok(r, '房间不存在，请先生成。');
     return payload('GM房间 · ' + r.snapshot.name, '位置 ' + location(cell) + ' · 遭遇 ' + r.encounter + '\n' + r.snapshot.description +
+      '\n遭遇战场：' + (r.tacticalLayout ? r.tacticalLayout.width + '×' + r.tacticalLayout.height + '格 · ' + require('./encounter-layout').describe(r.tacticalLayout) : '首次遭遇时生成2—3列、2—4行，随机出生与房间障碍') +
       '\n\n本房间已生成NPC：' + ((r.npcs || r.snapshot.npcs).map(n => n.template.name + (n.template.spawnStrength?' · '+n.template.anomalyRank+'级 / Lv.'+n.template.spawnStrength.level:'')+' ×' + n.quantity).join('、') || '无') +
       (r.remainingNpcs?.length && r.battleId ? '\n待后续战斗NPC：'+r.remainingNpcs.map(n=>n.template.name+' ×'+n.quantity).join('、')+'（每场含玩家最多20名，结束本轮后继续）' : '') +
       '\n钥匙：' + (r.snapshot.keyIds.map(k => s.catalog[k]?.name || k).join('、') || '无需钥匙') +

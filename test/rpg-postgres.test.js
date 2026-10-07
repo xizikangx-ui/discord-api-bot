@@ -53,6 +53,29 @@ test('PostgreSQL isolated integration, concurrency, disconnect and recovery', {s
     const before=rpg.store.select(seed.guildId,s=>s.players['1'].balance);await Promise.all(Array.from({length:50},(_,n)=>rpg.store.transact(seed.guildId,'pg-burst-'+n,'1',s=>{s.players['1'].balance++;})));assert.equal((await db.load(seed.guildId)).players['1'].balance,before+50);console.log(JSON.stringify({test:'private-postgres-mocked-discord',clicks:20,ackP95Ms:Math.round(p95('interaction.ack')),resultP95Ms:Math.round(p95('interaction.result')),burstWrites:50}));
    }finally{rpg.stop();await rpg.drain();}
   });
+  await t.test('paid round and random encounter persist once across duplicate clicks, reload and subsequent batches',async()=>{
+   await st.recover(seed.guildId);const X=require('../src/rpg/exploration');let draws=0;
+   const refs=await st.transact(seed.guildId,'round-layout-seed','GM',s=>{
+    for(const b of Object.values(s.battles))if(b.status!=='ended')B.endBattle(s,b);
+    // The earlier death tests leave both player characters alive.
+    const cf=F.create(s,'GM','mapcategory');cf.data.name='隔离布局类别';const cat=F.publish(s,cf);
+    const template=npc(s,{hpMax:100});const rf=F.create(s,'GM','room');Object.assign(rf.data,{name:'隔离办公室',categoryIds:[cat.id],npcIds:[template.id]});F.publish(s,rf);
+    const m=X.create(s,'GM','pg-layout','隔离地图',1,3,'random',cat.id);X.generate(s,m,minRng);X.publish(s,m);X.join(s,m,'1');m.participants['1'].cell='2,0';m.revealed['2,0']=true;m.cells['2,0'].room.remainingNpcs[0].quantity=22;
+    const b=B.createBattle(s,'pg-round','GM','隔离行动轮');B.join(s,b,'2');B.start(s,b,null,minRng);return{map:m.id,round:b.id};
+   });
+   const encounters=await Promise.all(Array.from({length:20},()=>st.transact(seed.guildId,'one-random-encounter','GM',s=>X.encounter(s,s.explorations[refs.map],'2,0',['1'],(lo)=>{draws++;return lo;}).id)));
+   assert.equal(new Set(encounters).size,1);const count=draws,original=await db.load(seed.guildId),before=original.battles[refs.round].current;
+   assert.equal(original.battles[encounters[0]].actors.length,20);assert.equal(before.apCost,100);
+   const loaded=createStore(h.deps);await loaded.load(seed.guildId);assert.deepEqual(loaded.select(seed.guildId,s=>s.battles[refs.round]),original.battles[refs.round]);
+   await Promise.all(Array.from({length:20},()=>loaded.transact(seed.guildId,'one-finish','2',s=>{B.finish(s,s.battles[refs.round],before.id,minRng);return s.battles[refs.round].current.id;})));
+   const finished=await db.load(seed.guildId);assert.equal(finished.battles[refs.round].actionRound.number,2);assert.equal(finished.battles[refs.round].current.apCost,100);
+   const again=createStore(h.deps);await again.load(seed.guildId);await again.transact(seed.guildId,'one-random-encounter','GM',()=>{throw Error('must not reroll');});assert.equal(draws,count);
+   await again.transact(seed.guildId,'next-room-batch','GM',s=>{const m=s.explorations[refs.map];B.endBattle(s,s.battles[encounters[0]]);X.resolve(s,m,'2,0');X.encounter(s,m,'2,0',['1'],minRng);});
+   const final=await db.load(seed.guildId);assert.deepEqual(final.explorations[refs.map].cells['2,0'].room.tacticalLayout,original.explorations[refs.map].cells['2,0'].room.tacticalLayout);
+   assert.deepEqual(final.battles[refs.round],finished.battles[refs.round]);
+   // Keep the outer store synchronized for the remaining recovery checks.
+   await st.recover(seed.guildId);
+  });
   await t.test('encrypted logical backup restores exact state into a separate namespace',async()=>{
    const exported=await db.load(seed.guildId),packed=JSON.parse(st.pack(exported)),envelope=h.deps.decrypt(packed).value,copy=JSON.parse(require('node:zlib').gunzipSync(Buffer.from(envelope.body,'base64')));
    restored=createPostgres({connectionString:process.env.RPG_TEST_DATABASE_URL,schema:schema+'_restore',encrypt:h.deps.encrypt,decrypt:h.deps.decrypt});await restored.acquireLease('restore');await restored.importState(seed.guildId,copy,'isolated-recovery-drill');assert.equal(digest(await restored.load(seed.guildId)),digest(exported));
