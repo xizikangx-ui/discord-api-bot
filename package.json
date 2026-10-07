@@ -6,7 +6,8 @@
   "main": "src/bot.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --use-env-proxy src/bot.js",
-    "test:rpg": "node --test test/rpg.test.js"
+    "test:rpg": "node --test test/rpg.test.js test/rpg-concurrency.test.js",
+    "test:rpg:postgres": "node --test test/rpg-postgres.test.js"
   },
   "engines": {
     "node": ">=24.5"
@@ -15,6 +16,7 @@
     "@resvg/resvg-js": "^2.6.2",
     "discord.js": "^14.22.1",
     "dotenv": "^16.6.1",
+    "pg": "^8.23.1",
     "sharp": "^0.35.5"
   }
 }

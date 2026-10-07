@@ -2,7 +2,7 @@
 const C = require('./constants'), U = require('./ui');
 // Ephemeral webhook tokens stay in memory only. A restart requires reopening a
 // private panel; durable drafts, assets and combat progress remain in the store.
-function createNavigation(snapshot) {
+function createNavigation(snapshot, selector = (guild, fn) => fn(snapshot(guild))) {
   const groups = new Map(), routes = new Map();
   function clean() {
     const now = Date.now();
@@ -11,25 +11,26 @@ function createNavigation(snapshot) {
   }
   function capture(guild, customId) {
     const match = customId.match(/^rpg:form[^:]*:([^:]+)/);
-    const f = match && snapshot(guild).forms[match[1]];
+    const f = match && selector(guild, s => { const f=s.forms[match[1]];return f&&{id:f.id,version:f.version,field:f.field}; });
     return f ? { id: f.id, version: f.version || 0, field: f.field } : null;
   }
   function add(g, original, modal = false) {
     const id = 'rpg:n:' + C.id('n');
     routes.set(id, { group: g.id, generation: g.generation, original, modal, form: capture(g.guild, original) });
     if (modal) g.modal = id;
-    for (const b of Object.keys(snapshot(g.guild).battles)) if (original.includes(b)) g.battles.add(b);
+    for (const b of selector(g.guild,s=>Object.keys(s.battles))) if (original.includes(b)) g.battles.add(b);
     return id;
   }
   function wrap(i, result) {
     clean();
     let g = i.rpgNavigation && groups.get(i.rpgNavigation.group);
     if (!g) {
-      g = { id: C.id('p'), owner: i.user.id, guild: i.guildId, characterId: snapshot(i.guildId).players[i.user.id]?.id, generation: 0, battles: new Set() };
+      g = { id: C.id('p'), owner: i.user.id, guild: i.guildId, characterId: selector(i.guildId,s=>s.players[i.user.id]?.id), generation: 0, battles: new Set() };
       groups.set(g.id, g);
     }
     g.generation++; g.modal = null; g.busy = false;
     g.expiresAt = Date.now() + 14 * 60000; g.handle = i;
+    i.rpgResponseGroup=g.id;
     const out = { content: '', ...result };
     out.components = (result.components || []).map(r => {
       const json = typeof r.toJSON === 'function' ? r.toJSON() : C.clone(r);
@@ -44,10 +45,10 @@ function createNavigation(snapshot) {
     const r = routes.get(i.customId), g = r && groups.get(r.group);
     C.requireThat(g && g.owner === i.user.id && g.guild === i.guildId && r.generation === g.generation &&
       (!r.modal || g.modal === i.customId), '该步骤已失效，请重新打开个人面板或持久草稿。');
-    C.requireThat(!g.characterId || snapshot(g.guild).players[g.owner]?.id === g.characterId, '角色已死亡或已更换，请重新打开面板。');
+    C.requireThat(!g.characterId || selector(g.guild,s=>s.players[g.owner]?.id) === g.characterId, '角色已死亡或已更换，请重新打开面板。');
     C.requireThat(!g.busy, '该面板正在处理，请稍后刷新。');
     if (r.form) {
-      const f = snapshot(g.guild).forms[r.form.id];
+      const f = selector(g.guild,s=>{const f=s.forms[r.form.id];return f&&{version:f.version,field:f.field};});
       C.requireThat(f && (f.version || 0) === r.form.version && f.field === r.form.field, '草稿步骤已经变化，请重新打开。');
     }
     g.busy = true; i.rpgNavigation = r; i.customId = r.original;
@@ -78,6 +79,8 @@ function createNavigation(snapshot) {
     }
     clean();
   }
-  return { wrap, resolve, modal, clearBattle, clearUser, invalidate };
+  function ticket(i){const g=groups.get(i.rpgResponseGroup);return g&&{id:g.id,generation:g.generation};}
+  function current(i,t){const g=t&&groups.get(t.id);return !!g&&g.handle===i&&g.generation===t.generation&&(!g.characterId||selector(g.guild,s=>s.players[g.owner]?.id)===g.characterId);}
+  return { wrap, resolve, modal, clearBattle, clearUser, invalidate, ticket, current };
 }
 module.exports = { createNavigation };

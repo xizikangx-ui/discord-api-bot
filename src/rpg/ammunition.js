@@ -44,9 +44,16 @@ function swap(p,weaponId,magazineId){normalize(p);const w=p.inventory[weaponId],
   }else {ok(old,'武器没有可抽出的弹夹。');delete w.magazineId;w.loaded=empty(w.snapshot);}
   w.magazineStorage=true;p.ammoVersion=(p.ammoVersion||0)+1;return old;
 }
+function validateBattleOperation(state,b,turnId,op,context){const B=require('./combat'),M=require('./model'),W=require('./weapons');const {actor,p,turn}=context||B.readonlyCurrent(state,b,turnId);if(!context)normalize(p);
+ ok(!b.pending&&turn.quick>0,'需要自己的快速行动且没有待响应攻击。');if(actor.userId)for(const ref of [op.weapon,op.magazine,op.ammo].filter(Boolean))ok(M.available(state,actor.userId,ref)>0,'物品已被交易预留。');
+ if(op.type==='fill'){const m=p.inventory[op.magazine],a=p.inventory[op.ammo];ok(m?.snapshot.kind==='弹夹'&&a?.snapshot.kind==='弹药','请选择弹夹和弹药。');ok(!attached(p,op.magazine),'先抽出弹夹，再填弹。');ok(ammoCompatible(m.snapshot,a.snapshot),'弹药与弹夹不兼容。');const free=m.loaded.capacity-m.loaded.current,available=actor.userId?M.available(state,actor.userId,op.ammo):a.quantity,n=op.quantity??Math.min(free,available||0);C.number(n,'填弹数量',1,10000);ok(n>0&&n<=free&&n<=a.quantity,'弹夹已满或弹药不足。');}
+ else{ok(['extract','swap'].includes(op.type),'弹药操作无效。');ok(W.equipped(p).includes(op.weapon),'只能操作已装备的武器。');const w=p.inventory[op.weapon],m=p.inventory[op.magazine];ok(w&&usesMagazine(w.snapshot),'该武器不支持弹夹／箭匣。');if(op.type==='extract')ok(w.magazineId,'武器没有可抽出的弹夹。');else{ok(m?.snapshot.kind==='弹夹'&&!attached(p,op.magazine),'弹夹不存在或已装入武器。');ok(magazineCompatible(w.snapshot,m.snapshot),'弹夹与武器不兼容。');ok(m.loaded.rounds.every(r=>ammoCompatible(w.snapshot,r.template||{id:w.snapshot.initialAmmo?.id,ammoType:w.snapshot.ammoType})),'弹夹中的弹药不兼容此武器。');}}
+ return true;
+}
 function battleOperation(state,b,turnId,op){const B=require('./combat'),M=require('./model'),W=require('./weapons');const {actor,p,turn}=B.current(state,b,turnId);
   ok(!b.pending&&turn.quick>0,'需要自己的快速行动且没有待响应攻击。');normalize(p);
   const refs=[op.weapon,op.magazine,op.ammo].filter(Boolean);if(actor.userId)for(const ref of refs)ok(M.available(state,actor.userId,ref)>0,'物品已被交易预留。');
+  validateBattleOperation(state,b,turnId,op,{actor,p,turn});
   let value;
   if(op.type==='fill'){const m=p.inventory[op.magazine];ok(m?.snapshot.kind==='弹夹','弹夹已变化。');const available=actor.userId?M.available(state,actor.userId,op.ammo):p.inventory[op.ammo]?.quantity;const count=op.quantity??Math.min(m.loaded.capacity-m.loaded.current,available||0);value=fill(p,op.magazine,op.ammo,count);}
   else {ok(W.equipped(p).includes(op.weapon),'只能操作已装备的武器。');value=swap(p,op.weapon,op.type==='extract'?null:op.magazine);}
@@ -60,4 +67,4 @@ function primeNPC(p){normalize(p);const W=require('./weapons'),results=[];
     results.push({name:w.snapshot.name,current:w.loaded.current,capacity:w.loaded.capacity});
   }return results;
 }
-module.exports={usesMagazine,ammoCompatible,magazineCompatible,normalize,empty,round,attached,fill,swap,battleOperation,migrate,primeNPC};
+module.exports={usesMagazine,ammoCompatible,magazineCompatible,normalize,empty,round,attached,fill,swap,validateBattleOperation,battleOperation,migrate,primeNPC};

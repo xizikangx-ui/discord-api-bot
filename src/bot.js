@@ -3548,7 +3548,13 @@ const polls = createPolls({ client, settingsFor, guildIds: commandGuildIds, save
   scopeFor: guildId => punishmentGuildIds().includes(guildId) ? punishmentGuildIds() : [guildId],
   validatePunishment: validatePunishmentRequest, executePunishment: executePunishmentRequest,
 });
-const rpg = createRpg({ client, guildIds: rpgGuildIds, channel: () => storageChannel, settingsFor,
+if (process.env.RPG_STORAGE_BACKEND && !['discord','postgres'].includes(process.env.RPG_STORAGE_BACKEND)) throw Error('RPG_STORAGE_BACKEND须为discord或postgres。');
+if (process.env.RPG_STORAGE_BACKEND==='postgres'&&!process.env.RPG_DATABASE_URL) throw Error('PostgreSQL跑团存储须配置RPG_DATABASE_URL。');
+const rpgMetrics=require('./rpg/metrics').createMetrics({enabled:process.env.RPG_PERFORMANCE_METRICS==='1'});
+const rpgDatabase=process.env.RPG_STORAGE_BACKEND==='postgres'?require('./rpg/postgres').createPostgres({connectionString:process.env.RPG_DATABASE_URL,encrypt:encryptJson,decrypt:decryptJson,metrics:rpgMetrics,onLeaseLost:()=>{storageReady=false;rpg.store.guilds().forEach(g=>rpg.store.freeze(g));rpg.stop();client.destroy();console.error('数据库运行锁已丢失，Bot停止处理，等待单实例恢复。');process.exitCode=1;setTimeout(()=>process.exit(1),1000).unref();}}):null;
+client.rest.on('rateLimited',data=>rpgMetrics.observe('discord.rateLimitWait',data.timeToReset||0));
+const gatewayMetricsTimer=setInterval(()=>rpgMetrics.gauge('discord.gatewayPing',client.ws.ping),60000);gatewayMetricsTimer.unref();
+const rpg = createRpg({ client, guildIds: rpgGuildIds, channel: () => storageChannel, settingsFor,database:rpgDatabase,metrics:rpgMetrics,allowImport:process.env.RPG_IMPORT_DISCORD_ONCE==='1',
   saveIndex: saveGuildData, encrypt: encryptJson, decrypt: decryptJson, logFailure,
   protectedRoles: guildId => {
     const setting = settingsFor(guildId);
@@ -6052,6 +6058,7 @@ client.on('interactionCreate', async (interaction) => {
 
 async function main() {
   if (!storageChannelId) throw new Error('请先在 .env 配置 DISCORD_STORAGE_CHANNEL_ID（私密存储频道 ID）。');
+  if(rpgDatabase)await rpgDatabase.acquireLease(process.env.DISCORD_CLIENT_ID);
   await registerCommands();
   console.log('指令注册成功，正在登录 Discord……');
   readyWatchdog = setTimeout(() => {
@@ -6066,3 +6073,7 @@ main().catch((error) => {
   logFailure('Bot startup failed.', error);
   process.exit(1);
 });
+let shuttingDown=false;
+async function shutdown(){if(shuttingDown)return;shuttingDown=true;storageReady=false;clearInterval(gatewayMetricsTimer);rpg.stop();
+  try{await Promise.race([rpg.drain(),new Promise((_,reject)=>setTimeout(()=>reject(Error('关闭等待超时，未完成公示将由存档恢复。')),25000))]);if(rpgDatabase)await rpgDatabase.close();}catch(e){logFailure('Bot关闭等待未完成。',e);}finally{client.destroy();process.exit(0);}}
+process.once('SIGTERM',shutdown);process.once('SIGINT',shutdown);

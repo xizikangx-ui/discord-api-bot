@@ -28,12 +28,13 @@ const dangerous = ['Administrator', 'ManageGuild', 'ManageRoles', 'ManageChannel
 const dangerBits = dangerous.filter(k => D.PermissionFlagsBits[k]).reduce((s, k) => s | D.PermissionFlagsBits[k], 0n);
 function createRpg(deps) {
   const { client, guildIds, logFailure } = deps;
-  const store = createStore(deps);
+  const metrics=deps.metrics||require('./metrics').createMetrics({enabled:process.env.RPG_PERFORMANCE_METRICS==='1'});
+  const store = createStore({...deps,metrics});
   const ready = new Set(), publishing = new Map(), roleLocks = new Set(), ticking = new Set();
-  let timer;
+  let timer,backupTimer;const mediaJobs=new Set(),interactions=new Set(),tickJobs=new Set();
   const enabled = guild => guildIds().includes(guild);
   function snapshot(guild) { ok(ready.has(guild), '跑团存档正在读取或读取失败，暂未启用。'); return store.snapshot(guild); }
-  const navigation = createNavigation(snapshot);
+  const navigation = createNavigation(snapshot,store.select);
   const needGM = (s, member) => ok(U.gm(s, member), '需要本服务器配置的GM身份组。');
   const needConfig = member => ok(member.permissions.has(D.PermissionFlagsBits.ManageGuild), '配置面板需要“管理服务器”权限。');
   const owner = (i, uid) => ok(uid === i.user.id, '该个人操作面板不属于你，请重新打开自己的面板。');
@@ -53,14 +54,42 @@ function createRpg(deps) {
     ok(ch?.guildId === guild && ch.isTextBased() && ch.send, '请选择本服务器可发送消息的文字频道或子区。');
     return ch;
   }
-  async function publishBattle(guild, battleId) {
+  async function publishBattle(guild,battleId){if(store.backgroundPublications)return store.enqueue(guild,'battle',battleId,{priority:store.select(guild,s=>s.battles[battleId]?.pending)?0:5});return publishBattleNow(guild,battleId);}
+  async function publishDefenseNow(guild, battleId) {
+    const s=snapshot(guild),b=battle(s,battleId),ch=await textChannel(guild,b.channelId);
+    for(const hit of require('./aoe').hits(b).filter(h=>!h.notified&&(store.backgroundPublications||b.pending?.automatic||b.pending?.kind==='aoe')&&(!store.backgroundPublications||B.actorById(b,h.targetId).userId||AI.config(B.actorById(b,h.targetId).ai).mode!=='auto'))){
+      const target=B.actorById(b,hit.targetId),roles=target.userId?[]:s.config.gmRoleIds;
+      const claimed=await store.transact(guild,'auto-defense:'+hit.id,client.user.id,st=>{const live=require('./aoe').hit(st.battles[b.id],hit.id);if(!live)return false;live.notified=true;st.battles[b.id].defenseNotifications||={};st.battles[b.id].defenseNotifications[hit.id]={status:'sending',targetId:hit.targetId,groupId:hit.groupId};return true;},'防守通知发送意图',{delivery:false});
+      if(!claimed)continue;
+      try{const message=await ch.send({content:(target.userId?'<@'+target.userId+'>':roles.map(r=>'<@&'+r+'>').join(' '))+' **'+target.name+'** 受到攻击，请选择防守。',components:[row(button('defense:'+b.id+':'+hit.id,'打开防守面板',D.ButtonStyle.Danger))],allowedMentions:{parse:[],users:target.userId?[target.userId]:[],roles},nonce:hit.id,enforceNonce:true});
+        await store.transact(guild,'auto-prompt:'+message.id,client.user.id,st=>{const battle=st.battles[b.id];battle.auxiliaryMessages||=[];battle.auxiliaryMessages.push(message.id);battle.defenseNotifications[hit.id].status='sent';battle.defenseNotifications[hit.id].messageId=message.id;},'记录防守通知送达',{delivery:false});
+      }catch(e){if(!store.frozen(guild))await store.transact(guild,'defense-error:'+hit.id,client.user.id,st=>{st.battles[b.id].defenseNotifications[hit.id].status='uncertain';},'防守通知发送待核对',{delivery:false});throw e;}
+    }
+  }
+  async function publishBattleNow(guild, battleId) {
     const key = guild + ':' + battleId;
     const job = (publishing.get(key) || Promise.resolve()).catch(() => {}).then(async () => {
       let s = snapshot(guild), b = battle(s, battleId);
       const ch = await textChannel(guild, b.channelId);
+      if(!store.backgroundPublications)await publishDefenseNow(guild,battleId);
+      if(b.status==='paused'&&b.pauseReason&&b.notifiedPause!==b.pauseReason){
+        const reason=b.pauseReason,roles=s.config.gmRoleIds;
+        await store.transact(guild,'pause:'+C.id('t'),client.user.id,st=>{st.battles[b.id].notifiedPause=reason;},'自动操作暂停通知意图');
+        await ch.send({content:roles.map(r=>'<@&'+r+'>').join(' ')+' **战斗已暂停**：'+reason,allowedMentions:{parse:[],roles}});
+      }
+      // Persist notification intent first. Ambiguous send never repeats a ping.
+      if (b.current && b.status === 'active' && b.notifiedTurn !== b.current.id) {
+        const turnId = b.current.id, a = B.actorById(b, b.current.actorId);
+        if(a.userId||AI.config(a.ai).mode!=='auto')await store.transact(guild, 'notice:' + turnId, client.user.id, st => { st.battles[b.id].notifiedTurn = turnId; }, '行动通知');
+        const roles = a.userId || AI.config(a.ai).mode==='auto' ? [] : s.config.gmRoleIds;
+        const content = (a.userId ? '<@' + a.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) +
+          ' 轮到 **' + a.name + '** 行动，请打开战场上的个人操作面板。';
+        if(a.userId||AI.config(a.ai).mode!=='auto')await ch.send({ content, allowedMentions: { parse: [], users: a.userId ? [a.userId] : [], roles },nonce:turnId,enforceNonce:true });
+      }
       if (b.messageId) {
         const message = await ch.messages.fetch(b.messageId).catch(e => { if (e.code === 10008) return null; throw e; });
-        if (message) await message.edit(await renderer.decorate(guild,U.battleView(s,b)));
+        if (message) { const version=require('./outbox').fingerprint(b),rendered=await renderer.decorate(guild,U.battleView(s,b));
+          if(version===store.select(guild,st=>require('./outbox').fingerprint(st.battles[b.id])))await message.edit(rendered); }
         else await store.transact(guild, 'missing-board:' + b.messageId, client.user.id, st => { st.battles[b.id].messageId = null; }, '战场消息失效');
       }
       s = snapshot(guild); b = battle(s, battleId);
@@ -72,33 +101,24 @@ function createRpg(deps) {
         }
       }
       if (!b.messageId) {
-        const message = await ch.send(await renderer.decorate(guild,U.battleView(s,b)));
-        await store.transact(guild, 'board:' + message.id, client.user.id, st => { st.battles[b.id].messageId = message.id; }, '发布战场');
+        ok(!['sending','uncertain'].includes(b.boardPublication?.status),'战场发送结果待核对，请GM恢复公示。');
+        await store.transact(guild,'board-intent:'+C.id('j'),client.user.id,st=>{st.battles[b.id].boardPublication={status:'sending'};},'战场发送意图',{delivery:false});
+        try{const message = await ch.send({...await renderer.decorate(guild,U.battleView(s,b)),nonce:b.id,enforceNonce:true});
+          await store.transact(guild, 'board:' + message.id, client.user.id, st => { st.battles[b.id].messageId = message.id;st.battles[b.id].boardPublication={status:'sent'}; }, '发布战场',{delivery:false});
+        }catch(e){if(!store.frozen(guild))await store.transact(guild,'board-error:'+C.id('j'),client.user.id,st=>{st.battles[b.id].boardPublication={status:typeof e.code==='number'&&e.code>=10000?'failed':'uncertain'};},'战场公示待核对',{delivery:false});throw e;}
       }
       s = snapshot(guild); b = battle(s, battleId);
-      await exploration.publishCorpses(guild, battleId).catch(e => logFailure('NPC掉落公示失败。', e));
+      if(b.messageId&&b.recruitAnnouncement?.status==='pending'){
+        const notice=b.recruitAnnouncement,announcement=await textChannel(guild,notice.channelId);
+        await store.transact(guild,'recruit-intent:'+b.id,client.user.id,st=>{st.battles[b.id].recruitAnnouncement.status='sending';},'招募通知意图',{delivery:false});
+        try{const message=await announcement.send({content:'战斗招募：'+b.name+'\nhttps://discord.com/channels/'+guild+'/'+b.channelId+'/'+b.messageId,allowedMentions:{parse:[]},nonce:'r'+b.id,enforceNonce:true});
+          await store.transact(guild,'recruit-sent:'+b.id,client.user.id,st=>{st.battles[b.id].recruitAnnouncement={...notice,status:'sent',messageId:message.id};},'招募通知送达',{delivery:false});
+        }catch(e){await store.transact(guild,'recruit-error:'+C.id('j'),client.user.id,st=>{st.battles[b.id].recruitAnnouncement.status='uncertain';},'招募通知待核对',{delivery:false});throw e;}
+      }
+      if(!store.backgroundPublications)await exploration.publishCorpsesNow(guild, battleId).catch(e => logFailure('NPC掉落公示失败。', e));
       for (const a of b.actors.filter(a => a.userId && a.deathId)) await navigation.clearUser(guild, a.userId, a.finalCharacter.id);
       await battleEvents.publish(guild,b.id);
-      for(const hit of require('./aoe').hits(b).filter(h=>(b.pending.automatic||b.pending.kind==='aoe')&&!h.notified)){
-        const target=B.actorById(b,hit.targetId),roles=target.userId?[]:s.config.gmRoleIds;
-        await store.transact(guild,'auto-defense:'+hit.id,client.user.id,st=>{const live=require('./aoe').hit(st.battles[b.id],hit.id);if(live)live.notified=true;},'自动攻击防守通知意图');
-        const message=await ch.send({content:(target.userId?'<@'+target.userId+'>':roles.map(r=>'<@&'+r+'>').join(' '))+' **'+target.name+'** 受到攻击，请选择防守。',components:[row(button('defense:'+b.id+':'+hit.id,'打开防守面板',D.ButtonStyle.Danger))],allowedMentions:{parse:[],users:target.userId?[target.userId]:[],roles},nonce:hit.id,enforceNonce:true});
-        await store.transact(guild,'auto-prompt:'+message.id,client.user.id,st=>{st.battles[b.id].auxiliaryMessages||=[];st.battles[b.id].auxiliaryMessages.push(message.id);},'记录自动攻击通知');
-      }
-      if(b.status==='paused'&&b.pauseReason&&b.notifiedPause!==b.pauseReason){
-        const reason=b.pauseReason,roles=s.config.gmRoleIds;
-        await store.transact(guild,'pause:'+C.id('t'),client.user.id,st=>{st.battles[b.id].notifiedPause=reason;},'自动操作暂停通知意图');
-        await ch.send({content:roles.map(r=>'<@&'+r+'>').join(' ')+' **战斗已暂停**：'+reason,allowedMentions:{parse:[],roles}});
-      }
-      // Persist notification intent first. Ambiguous send never repeats a ping.
-      if (b.current && b.status === 'active' && b.notifiedTurn !== b.current.id) {
-        const turnId = b.current.id, a = B.actorById(b, b.current.actorId);
-        await store.transact(guild, 'notice:' + turnId, client.user.id, st => { st.battles[b.id].notifiedTurn = turnId; }, '行动通知');
-        const roles = a.userId || AI.config(a.ai).mode==='auto' ? [] : s.config.gmRoleIds;
-        const content = (a.userId ? '<@' + a.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) +
-          ' 轮到 **' + a.name + '** 行动，请打开战场上的个人操作面板。';
-        if(a.userId||AI.config(a.ai).mode!=='auto')await ch.send({ content, allowedMentions: { parse: [], users: a.userId ? [a.userId] : [], roles } });
-      }
+
     });
     publishing.set(key, job);
     try { await job; } finally { if (publishing.get(key) === job) publishing.delete(key); }
@@ -122,7 +142,7 @@ function createRpg(deps) {
         return expired;
       }, '到期交易及默认防御');
       const changed = Object.values(snapshot(guild).battles).filter(b => b.status !== 'ended' &&
-        (due.some(x => x.id === b.id) || b.actors.some(a => expiredCharacters.includes(B.actorCharacter(snapshot(guild), a).id))));
+        (due.some(x => x.id === b.id) || b.actors.some(a => expiredCharacters.includes(B.actorCharacter(s, a).id))));
       for (const b of changed) await publishBattle(guild, b.id);
     }
     const before=snapshot(guild);
@@ -171,8 +191,9 @@ function createRpg(deps) {
         }
       } catch (e) { logFailure('跑团初始化失败：' + guild, e); }
     }
-    timer = setInterval(() => { for (const guild of ready) tickGuild(guild).catch(e => logFailure('跑团定时处理失败。', e)); }, 2000);
+    timer = setInterval(() => { for (const guild of ready) {const job=tickGuild(guild).catch(e => logFailure('跑团定时处理失败。', e));tickJobs.add(job);job.finally(()=>tickJobs.delete(job));} }, 2000);
     timer.unref();
+    if(store.backgroundPublications){outbox.start();backupTimer=setInterval(()=>{for(const guild of ready)store.backup(guild).catch(e=>logFailure('跑团数据库Discord备份失败，数据库存档仍为权威。',e));},300000);backupTimer.unref();}
   }
   function configView(s) {
     const roles = ids => ids.map(r => '<@&' + r + '>').join('、') || '未配置';
@@ -258,6 +279,7 @@ function createRpg(deps) {
     ok([o.creatorId, o.targetId].includes(uid) || U.gm(s, member), '只能查看本人参与的交易。'); return o;
   }
   async function announceOffer(i, offer) {
+    if(store.backgroundPublications){await store.transact(i.guildId,'offer-channel:'+offer.id+':'+i.id,i.user.id,st=>{st.offers[offer.id].channelId=i.channelId;},'安排交易通知');return store.enqueue(i.guildId,'offer',offer.id,{priority:2});}
     await i.channel.send({ content: '<@' + offer.targetId + '> 有一份待确认的' + ({ trade: '交易', transfer: '转账', buyback: 'GM收购报价' }[offer.type]) +
       '，5分钟内点击查看。', components: [row(button('offer:' + offer.id, '查看并操作交易', D.ButtonStyle.Primary))],
       allowedMentions: { parse: [], users: [offer.targetId] } });
@@ -355,8 +377,8 @@ function createRpg(deps) {
           row(button('activity:loot:repost:' + record.id, '核对后补发已存结果'), button('activity:loot:menu:0', '查看抽取记录'))]);
       }
       const saved = snapshot(i.guildId).lootPublications[record.id];
-      return payload('抽取结果已公示', record.result.items.length + '件物品 · 批次 ' + record.result.batchId + (record.result.pending ? ' · 整批待领取，未扣次数' : ' · 已入包') +
-        '\nhttps://discord.com/channels/' + i.guildId + '/' + saved.channelId + '/' + saved.messageId,
+      return payload(saved.messageId?'抽取结果已公示':'抽取结果已保存 · 公示处理中', record.result.items.length + '件物品 · 批次 ' + record.result.batchId + (record.result.pending ? ' · 整批待领取，未扣次数' : ' · 已入包') +
+        (saved.messageId?'\nhttps://discord.com/channels/' + i.guildId + '/' + saved.channelId + '/' + saved.messageId:'\n公示将在后台发送，原抽取结果已保存。'),
         [row(button('activity:loot:menu:0', '查看公示记录'), button('bag:' + uid + ':' + uid + ':0', '查看个人背包'))]);
     }
     if (name === '使用') {
@@ -513,6 +535,7 @@ function createRpg(deps) {
       needGM(st, member);
       if (sub === '招募') {
         const b = B.createBattle(st, i.channelId, i.user.id, o.getString('名称'), o.getInteger('列数') || 10, o.getInteger('行数') || 10);
+        if(store.backgroundPublications&&st.config.announcementChannelId&&st.config.announcementChannelId!==i.channelId)b.recruitAnnouncement={channelId:st.config.announcementChannelId,status:'pending'};
         b.environment = C.text(o.getString('场景') || '', '场景', 400, true); return b.id;
       }
       const b = channelBattle(st, i.channelId);
@@ -551,7 +574,7 @@ function createRpg(deps) {
       return b.id;
     });
     await publishBattle(i.guildId, ref);
-    if (sub === '招募' && s.config.announcementChannelId && s.config.announcementChannelId !== i.channelId) {
+    if (!store.backgroundPublications && sub === '招募' && s.config.announcementChannelId && s.config.announcementChannelId !== i.channelId) {
       const b = battle(snapshot(i.guildId), ref), ch = await textChannel(i.guildId, s.config.announcementChannelId);
       await ch.send({ content: '战斗招募：' + b.name + '\nhttps://discord.com/channels/' + i.guildId + '/' + b.channelId + '/' + b.messageId,
         allowedMentions: { parse: [] } });
@@ -561,7 +584,7 @@ function createRpg(deps) {
   const characterPanel=createCharacterPanel({snapshot,tx});
   const bulkIssue=createBulkIssue({snapshot,tx,needGM});
   const portraits=createPortraits({...deps,snapshot,tx,needGM,pickView});
-  const renderer=require('./map-image').createRenderer({portraits,logFailure});
+  const renderer=deps.renderer||require('./map-image').createRenderer({portraits,logFailure,metrics});
   const battleEvents=require('./battle-events').createEvents({snapshot,store,client,textChannel,render:renderer.decorate,logFailure});
   const aoePanel=require('./aoe').createAoePanel({snapshot,tx,publishBattle,canActor});
   const combatSkills=require('./skills').createSkills({snapshot,tx,needGM,pickView});
@@ -569,6 +592,7 @@ function createRpg(deps) {
   const npcPanel=createNpcPanel({snapshot,tx,needGM,publishBattle});
   const ammoPanel=createAmmunitionPanel({snapshot,tx,needGM,publishBattle});
   const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
+  const boardRecovery=require('./board-recovery').createBoardRecovery({snapshot,store,tx,needGM,textChannel,busy:(g,r)=>publishing.has(g+':'+r)});
   const buyback = createBuyback({ snapshot, tx, needGM, announceOffer });
   const factions = createFactions({ snapshot, tx });
   const exploration = createExploration({ snapshot, tx, store, textChannel, client, needGM, activities, publishBattle, gmUI, logFailure,render:renderer.decorate });
@@ -579,9 +603,16 @@ function createRpg(deps) {
   const selections=createSelections({snapshot,tx,needGM,pickView,use,publishBattle,offerAccess,owner});
   const equipment=createEquipment({snapshot,selections});
   const checkSkills=createCheckSkills({snapshot,tx,needGM,pickView});
+  async function publishOffer(guild,ref){const o=store.select(guild,s=>s.offers[ref]);if(!o||o.status!=='ready'||o.expiresAt<=Date.now())return;if(['sent','sending','uncertain'].includes(o.notification?.status))return;
+    await store.transact(guild,'offer-intent:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:'sending'};},'交易通知意图',{delivery:false});
+    try{const ch=await textChannel(guild,o.channelId),msg=await ch.send({content:'<@'+o.targetId+'> 有一份待确认的'+({trade:'交易',transfer:'转账',buyback:'GM收购报价'}[o.type])+'，5分钟内点击查看。',components:[row(button('offer:'+ref,'查看并操作交易',D.ButtonStyle.Primary))],allowedMentions:{parse:[],users:[o.targetId]},nonce:ref,enforceNonce:true});await store.transact(guild,'offer-sent:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:'sent',messageId:msg.id};},'交易通知送达',{delivery:false});}
+    catch(e){if(!store.frozen(guild))await store.transact(guild,'offer-failed:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:typeof e.code==='number'&&e.code>=10000?'failed':'uncertain'};},'交易通知待核对',{delivery:false});throw e;}}
+  const outbox=require('./outbox').createOutbox({store,client,logFailure,metrics,handlers:{defense:publishDefenseNow,battle:publishBattleNow,map:async(g,r,f)=>{if(!store.select(g,s=>s.explorations[r]))return;await exploration.publishNow(g,r,f);},move:(g,r,f)=>exploration.publishMoveNow(g,...r.split('/'),f),corpses:(g,r,f)=>exploration.publishCorpsesNow(g,r,f),loot:(g,r,f)=>activities.publishNow(g,'loot',r,f),check:(g,r,f)=>activities.publishNow(g,'check',r,f),attempt:(g,r,f)=>activities.publishNow(g,'attempt',r,f),session:(g,r,f)=>activities.publishNow(g,'session',r,f),offer:publishOffer,rp:(g,r)=>rpPanel.publishQueued(g,...r.split('/')),rpDraft:(g,r,f)=>rpPanel.draft(g,r,f),reminder:(g,r)=>activities.remind(g,r)}});
+  store.onCommit(()=>outbox.wake());
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
     configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI,selections,aoePanel });
   async function handle(i) {
+    const receivedAt=performance.now();
     const ours = (i.isChatInputCommand?.() || i.isAutocomplete?.()) ? commandNames.has(i.commandName) : i.customId?.startsWith('rpg:');
     if (!ours) return false;
     if (i.isAutocomplete?.()) { await autocomplete(i).catch(() => i.respond([]).catch(() => {})); return true; }
@@ -590,7 +621,7 @@ function createRpg(deps) {
       ok(i.guildId && enabled(i.guildId), '跑团功能仅在指定跑团服务器启用。');
       if (!ready.has(i.guildId) && i.isChatInputCommand?.() && i.commandName === 'gm' && i.options.getSubcommand() === '恢复存档') {
         needConfig(i.member);
-        await i.deferReply({ flags: E }); await store.recover(i.guildId);if(snapshot(i.guildId).tacticalVersion!==1)await store.transact(i.guildId,'tactical-migration-v1',client.user.id,st=>require('./skills').migrate(st),'独立战斗技能与双地图迁移'); if(snapshot(i.guildId).contentPackVersion!==1)await store.transact(i.guildId,'content-pack-v1',client.user.id,st=>require('./content-pack').install(st),'六色容器与随机探索预置库'); ready.add(i.guildId);
+        await i.deferReply({ flags: E }); await store.recover(i.guildId);ready.add(i.guildId);if(snapshot(i.guildId).tacticalVersion!==1)await store.transact(i.guildId,'tactical-migration-v1',client.user.id,st=>require('./skills').migrate(st),'独立战斗技能与双地图迁移'); if(snapshot(i.guildId).contentPackVersion!==1)await store.transact(i.guildId,'content-pack-v1',client.user.id,st=>require('./content-pack').install(st),'六色容器与随机探索预置库'); ready.add(i.guildId);
         await i.editReply(payload('跑团存档已恢复', '请 /跑团配置面板 核对GM、玩家和公告配置。')); return true;
       }
       const s = snapshot(i.guildId);
@@ -599,12 +630,16 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await variantPanel.openModal(i,s) || await mapExtra.openModal(i,s) || await rpPanel.openModal(i,s) || await aoePanel.openModal(i,s) || await npcPanel.openModal(i,s) || await checkSkills.openModal(i,s) || await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
+      if (i.customId && (await boardRecovery.openModal(i,s) || await variantPanel.openModal(i,s) || await mapExtra.openModal(i,s) || await rpPanel.openModal(i,s) || await aoePanel.openModal(i,s) || await npcPanel.openModal(i,s) || await checkSkills.openModal(i,s) || await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       const privateSource = !!i.message?.flags?.has(E);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
       else await i.deferReply(publicResult ? {} : { flags: E });
-      const member = await i.guild.members.fetch({ user: i.user.id, force: true });
+      metrics.observe('interaction.ack',performance.now()-receivedAt);
+      // discord.js patches this GuildMember from the current Discord interaction
+      // payload. Its roles are fresh; a second REST lookup can queue behind limits.
+      const member = i.member?.id===i.user.id&&i.member?.guild?.id===i.guildId&&i.member?.roles?.cache&&i.member?.permissions?.has
+        ? i.member : await i.guild.members.fetch({ user: i.user.id, force: true });
       const result = i.isChatInputCommand?.() ? await slash(i, member) :
         i.customId.startsWith('rpg:variant:') ? await variantPanel.component(i,member) :
         i.customId.startsWith('rpg:mapx:') ? await mapExtra.component(i,member) :
@@ -612,6 +647,7 @@ function createRpg(deps) {
         i.customId.startsWith('rpg:aoe:') ? await aoePanel.component(i,member) :
         i.customId.startsWith('rpg:skill:') ? await combatSkills.component(i,member) :
         i.customId.startsWith('rpg:event:') ? await battleEvents.component(i,member) :
+        i.customId.startsWith('rpg:boardrepair:') ? await boardRecovery.component(i,member) :
         i.customId.startsWith('rpg:npcui:') ? await npcPanel.component(i,member) :
         i.customId.startsWith('rpg:ammo:') ? await ammoPanel.component(i,member) :
         i.customId.startsWith('rpg:checkskill:') ? await checkSkills.component(i,member) :
@@ -626,9 +662,14 @@ function createRpg(deps) {
         i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
         i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) :
         /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|hand:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
-      const response=await renderer.decorate(i.guildId,await portraits.decorate(i.guildId,result||payload('已完成','操作已保存。')));
+      const raw=result||payload('已完成','操作已保存。');
+      const delayed=store.backgroundPublications&&(raw.rpgMap||raw.rpgPortraits);
+      const response=delayed?{...raw,embeds:(raw.embeds||[]).map(e=>D.EmbedBuilder.from(e).setImage(null).setThumbnail(null)),files:[],attachments:[]}:await renderer.decorate(i.guildId,await portraits.decorate(i.guildId,raw));
+      delete response.rpgMap;delete response.rpgPortraits;
       if(!publicResult){response.attachments ||= [];response.files ||= [];}
-      await i.editReply(publicResult ? response : navigation.wrap(i, response));
+      const wrapped=publicResult?response:navigation.wrap(i,response),replyDone=metrics.start('interaction.reply');await i.editReply(wrapped);replyDone();
+      metrics.observe('interaction.result',performance.now()-receivedAt);
+      if(delayed){const ticket=navigation.ticket(i),job=(async()=>{const decorated=await renderer.decorate(i.guildId,await portraits.decorate(i.guildId,raw));if(publicResult||navigation.current(i,ticket))await i.editReply({...decorated,components:wrapped.components});})().catch(e=>logFailure('跑团图片后台补充失败，文字和按钮仍可使用。',e));mediaJobs.add(job);job.finally(()=>mediaJobs.delete(job));}
     } catch (error) {
       navigation.invalidate(i);
       logFailure('跑团操作失败。', error);
@@ -640,6 +681,9 @@ function createRpg(deps) {
     }
     return true;
   }
-  return { start, handle, stop: () => clearInterval(timer), store, activities, exploration, tickGuild, portraits };
+  function stop(){clearInterval(timer);clearInterval(backupTimer);outbox.stop();renderer.close();metrics.close();}
+  async function drain(){await Promise.allSettled([...interactions,...tickJobs]);await outbox.drain();await Promise.allSettled([...mediaJobs]);await store.drain();}
+  async function trackedHandle(i){const job=handle(i);interactions.add(job);try{return await job;}finally{interactions.delete(job);}}
+  return { start, handle:trackedHandle, stop, drain, store, activities, exploration, tickGuild, portraits, outbox,metrics };
 }
 module.exports = { createRpg, commands, dangerBits };

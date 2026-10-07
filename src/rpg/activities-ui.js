@@ -85,7 +85,8 @@ function createActivities(context) {
     const job = (locks.get(key) || Promise.resolve()).catch(() => {}).then(fn); locks.set(key, job);
     try { return await job; } finally { if (locks.get(key) === job) locks.delete(key); }
   }
-  async function publish(guild, type, ref, force = false) {
+  async function publish(guild,type,ref,force=false){if(store.backgroundPublications&&!force){await store.enqueue(guild,type,ref);return snapshot(guild).lootPublications?.[ref]?.messageId;}return publishNow(guild,type,ref,force);}
+  async function publishNow(guild, type, ref, force = false) {
     return locked(guild + ':' + type + ':' + ref, async () => {
       let s = snapshot(guild), r = record(s, type, ref); ok(r, '记录不存在。');
       if (type === 'loot' && r.result.items) return publishLoot(guild, ref, force);
@@ -450,8 +451,8 @@ function createActivities(context) {
     for (const r of Object.values(snapshot(guild).sessions)) if (r.messageId) await publish(guild, 'session', r.id).catch(e => logFailure('开团卡恢复失败。', e));
   }
   async function tick(guild, now = Date.now()) {
-    for (const r of Object.values(snapshot(guild).sessions)) if (r.reminder.status === 'pending' && r.startsAt <= now && r.status !== 'cancelled') await remind(guild, r.id, false, now);
+    for (const r of Object.values(snapshot(guild).sessions)) if (r.reminder.status === 'pending' && r.startsAt <= now && r.status !== 'cancelled') {if(store.backgroundPublications)await store.enqueue(guild,'reminder',r.id,{priority:1});else await remind(guild, r.id, false, now);}
   }
-  return { openModal, slash, component, publish, tick, recover, remember, remind, lootMenu, sessionDraft };
+  return { openModal, slash, component, publish, publishNow, tick, recover, remember, remind, lootMenu, sessionDraft };
 }
 module.exports = { createActivities, checkView, attemptView, sessionView, lootView, lootMessages };

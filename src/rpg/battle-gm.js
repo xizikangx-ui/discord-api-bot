@@ -21,7 +21,7 @@ function createBattleGM(context) {
       ...(b.status === 'recruiting' ? [row(button('gmstart:' + b.id + ':normal', '正式开战', D.ButtonStyle.Success),
         button('gmstart:' + b.id + ':ally', '确认友方偷袭'), button('gmstart:' + b.id + ':enemy', '确认敌方偷袭'))] : []),
       row(button('gmui:' + b.id + ':npc:0', 'NPC模板下拉'), button('gmui:' + b.id + ':current', '操作当前角色', D.ButtonStyle.Primary, !b.current),
-        button('gmui:' + b.id + ':view', '刷新GM面板'))
+        button('gmui:' + b.id + ':view', '刷新GM面板'),button('boardrepair:'+b.id+':view','战场公示核对'))
     ]);
     v.embeds[0].setFooter({ text: b.id + ' · GM个人操作面板 · 战斗结束后清理' }); return v;
   }

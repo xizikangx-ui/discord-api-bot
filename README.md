@@ -1,10 +1,12 @@
 # Discord API Bot 部署指南
 
-这是一个中文 Discord 管理 Bot，配置和运行记录保存在你自己的 Discord 私密频道中；不再接入外部 AI API。
+这是一个中文 Discord 管理 Bot。基础管理配置和记录保存在 Discord 私密频道；跑团使用 Railway 私网 PostgreSQL 作为权威存储，记录继续以 AES-256-GCM 加密。不接入外部 AI API。
 
 公开版本不包含 `.env`、`node_modules/` 或 `data/` 运行数据。隐私政策见 [PRIVACY.md](PRIVACY.md)，特权意图审核准备资料见 [PRIVILEGED_INTENT_REVIEW.md](PRIVILEGED_INTENT_REVIEW.md)。
 
 ## 跑团系统（服务器 1549280540505411635）
+
+存储迁移、并发任务、备份与回滚见 [RPG_OPERATIONS.md](RPG_OPERATIONS.md)。个人操作提交成功后先返回文字和按钮，图片及公共频道刷新在后台进行。每场战斗的每个 NPC 固定更新一张公开操作卡；玩家操作独立留存，同一行动机会内的移动继续合并。完整骰点、事件和死亡奖励审计保留。
 
 跑团仅向 `DISCORD_RPG_GUILD_IDS` 注册，目标服务器也需加入 `DISCORD_GUILD_IDS`，因此同时保留现有指令。跑团服务器不自动加入处罚互通名单。
 

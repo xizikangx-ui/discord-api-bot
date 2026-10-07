@@ -359,8 +359,7 @@ function abilities(p) {
   }
   return result;
 }
-function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng = randomInt, firing = {}) {
-  const {actor,p,turn}=current(state,b,turnId),A=require('./aoe'),AM=require('./ammunition');
+function attackPlan(state,b,{actor,p,turn},abilityKey,targetId,action='formal',firing={}){const A=require('./aoe'),AM=require('./ammunition');
   ok(!b.pending,'已有攻击等待防守。');
   const ability=abilities(p).find(a=>a.key===abilityKey);ok(ability,'武器／技能当前不可用。');const t=ability.attack;
   ok(t.kind==='技能'&&!t.requiresWeapon || W.equipped(p).some(ref=>Dur.usable(p.inventory[ref])),'必须先装备可用武器才能攻击或释放此技能。');
@@ -371,13 +370,20 @@ function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng =
   else {const target=actorById(b,targetId);ok(actor.id!==target.id&&actorCharacter(state,target).hp>0&&!target.retreated,'目标不可用。');
     if(t.melee)ok(Math.floor(actor.x/50)===Math.floor(target.x/50)&&Math.floor(actor.y/50)===Math.floor(target.y/50),'近战必须同格。');
     else ok(Math.hypot(actor.x-target.x,actor.y-target.y)<=M.modify(M.stats(p).effects,'range',t.rangeMeters??t.range*50)+.000001,'目标超出有效射程。');targets=[target];}
-  if(t.kind==='技能'&&t.casting){if(!actor.casting){turn[action]--;actor.casting={key:abilityKey,name:t.name,required:t.casting,count:1,confirmed:false};record(b,actor.name+'开始吟唱'+t.name+'。',{actorId:actor.id,portrait:p.portraits?.avatar,ability:t.name});return {casting:true};}
+  if(t.kind==='技能'&&t.casting){if(!actor.casting)return {actor,p,turn,ability,t,area,targets,castingStart:true};
     ok(actor.casting.key===abilityKey&&actor.casting.confirmed,'请先完成并用快速行动确认吟唱。');}
   const weapon=p.inventory[abilityKey],firearm=C.FIREARMS.includes(t.weaponType),magazineWeapon=AM.usesMagazine(t),mode=firing.mode||'semi';
   ok(['semi','auto'].includes(mode),'射击模式无效。');const count=mode==='auto'?num(firing.count,'连射发数',1,10000):1;
   ok(mode==='semi'||firearm,'只有枪械可以全自动射击。');
   if(magazineWeapon){ok((t.fireModes||['semi']).includes(mode),'这把枪械不支持所选射击模式。');ok(weapon?.loaded?.current>=count,'无弹药或剩余弹药不足，请装填或减少连射发数。');}
   if(weapon&&t.kind==='武器')ok(Dur.current(weapon)>=count,'武器耐久不足，请修复或减少连射发数。');
+  if(t.weaponType==='弓')ok(Object.values(p.inventory).some(i=>i.snapshot.kind==='弹药'&&AM.ammoCompatible(t,i.snapshot)&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0)),'缺少对应箭矢。');
+  return {actor,p,turn,ability,t,area,targets,weapon,firearm,magazineWeapon,mode,count};
+}
+function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng = randomInt, firing = {}) {
+  const AM=require('./ammunition'),plan=attackPlan(state,b,current(state,b,turnId),abilityKey,targetId,action,firing);
+  const {actor,p,turn,ability,t,area,targets,weapon,firearm,magazineWeapon,mode,count}=plan;
+  if(plan.castingStart){turn[action]--;actor.casting={key:abilityKey,name:t.name,required:t.casting,count:1,confirmed:false};record(b,actor.name+'开始吟唱'+t.name+'。',{actorId:actor.id,portrait:p.portraits?.avatar,ability:t.name});return {casting:true};}
   const rounds=[];
   for(let n=0;n<count;n++){let round={};if(magazineWeapon){round=weapon.loaded.rounds?.shift()||{};weapon.loaded.current--;}
     else if(t.weaponType==='弓'){const ammo=Object.values(p.inventory).find(i=>i.snapshot.kind==='弹药'&&AM.ammoCompatible(t,i.snapshot)&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0));ok(ammo,'缺少对应箭矢。');round=AM.round(ammo.snapshot);ammo.quantity--;if(!ammo.quantity)delete p.inventory[ammo.id];}rounds.push(round);}
@@ -441,9 +447,24 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
   if(b.status==='active'&&!b.pending&&!b.current)nextOpportunity(state,b,rng);
   return result;
 }
+// Candidate checks copy only the acting character; they never roll or alter the live battle.
+function readonlyCurrent(state,b,turnId){ok(b.status==='active'&&b.current?.id===turnId,'当前行动已变化或战斗暂停，请重新打开面板。');const actor=actorById(b,b.current.actorId),p=clone(actorCharacter(state,actor));const expired=M.expireEffects(p);ok(p.hp>0&&!actor.retreated,'角色已经失能或离场。');const remaining=C.round2(Math.max(0,M.stats(p).move-(b.current.moveSpent||0)));return {actor,p,turn:{...b.current,move:expired.length?remaining:Math.min(b.current.move,remaining)}};}
+function validateQuick(state,b,{actor,p,turn},op){ok(!b.pending&&turn.quick>0,'快速行动不可用。');
+ if(op.type==='cast')ok(actor.casting&&actor.casting.count>=actor.casting.required,'吟唱未完成或快速行动已用完。');
+ else if(op.type==='switch'){ok(['main','off','auto'].includes(op.hand||'auto'),'请选择主手或副手。');if(op.item){ok(p.inventory[op.item]?.snapshot.kind==='武器','武器不可用。');if(actor.userId)ok(M.available(state,actor.userId,op.item)>0,'武器已被交易预留。');}}
+ else if(op.type==='heal'){const item=p.inventory[op.item];ok([...C.CONSUMABLES,'修复道具'].includes(item?.snapshot.kind),'该道具没有已录入的使用效果。');if(actor.userId)ok(M.available(state,actor.userId,op.item)>0,'道具已预留。');if(item.snapshot.kind!=='修复道具'){ok(item.quantity>0,'请选择食物、药品或消耗品。');const t=item.snapshot;if(t.effects?.length&&t.duration)ok(['actions','minutes'].includes(t.duration.kind),'持续时间无效。');}}
+ return true;
+}
+function validateOperation(state,b,op){const context=readonlyCurrent(state,b,b.current?.id);
+ if(op.type==='attack'){const actor=context.actor,shadow={...b,actors:b.actors.map(a=>a.id===actor.id&&!actor.userId?{...a,character:context.p,finalCharacter:undefined}:a)},s=actor.userId?{...state,players:{...state.players,[actor.userId]:context.p}}:state;return attackPlan(s,shadow,context,op.ability,op.target,op.group,op.firing||{});}
+ if(['reload','extract','fill'].includes(op.type))return require('./ammunition').validateBattleOperation(state,b,b.current.id,{...op,type:op.type==='reload'?'swap':op.type},context);
+ if(['cast','switch','heal'].includes(op.type))return validateQuick(state,b,context,op);
+ if(op.type==='move'){ok(!b.pending&&!M.stats(context.p).overloaded,'当前不能移动。');const to={x:C.round2(Number(op.x)),y:C.round2(Number(op.y))};ok(to.x>=0&&to.y>=0&&to.x<b.width*50&&to.y<b.height*50,'位置超出地图。');ok(movementCost(b,context.actor,to)<=context.turn.move+.000001,'移动预算不足。');return true;}
+ ok(['pass','finish'].includes(op.type)&&!b.pending,'当前不能结束行动。');return true;
+}
 function confirmCasting(state, b, turnId) {
   const { actor, turn } = current(state, b, turnId);
-  ok(!b.pending && turn.quick > 0 && actor.casting && actor.casting.count >= actor.casting.required, '吟唱未完成或快速行动已用完。');
+  validateQuick(state,b,{actor,p:actorCharacter(state,actor),turn},{type:'cast'});
   turn.quick--; actor.casting.confirmed = true;
   record(b, actor.name + '确认吟唱完成。',{actorId:actor.id,portrait:actorCharacter(state,actor).portraits?.avatar});
 }
@@ -455,11 +476,13 @@ function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
     ok(p.inventory[itemId]?.snapshot.kind === '武器', '武器不可用。');
     if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '武器已被交易预留。');
   }
+  validateQuick(state,b,{actor,p,turn},{type:'switch',item:itemId,hand});
   W.set(p, itemId, hand); turn.quick--; M.syncHP(p);record(b,actor.name+'切换武器：'+(itemId?p.inventory[itemId].snapshot.name:'卸下武器'),{actorId:actor.id,portrait:p.portraits?.avatar});
 }
 function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');
+  validateQuick(state,b,{actor,p,turn},{type:'heal',item:itemId});
   const item = p.inventory[itemId];
   ok([...C.CONSUMABLES,'修复道具'].includes(item?.snapshot.kind), '该道具没有已录入的使用效果。');
   if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '道具已预留。');
@@ -494,5 +517,5 @@ function endBattle(state, b) {
 }
 module.exports = { actorCharacter, actorById, record, validateCondition, applyCondition, beginConditions, endConditions,
   createBattle, join, withdraw, validateNPC, addNPC, position, setTerrain, liveActors, order, advance,
-  nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, defend,
+  nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, attackPlan, readonlyCurrent, validateOperation, defend,
   confirmCasting, reload, switchWeapon, useItem, flee, pause, endBattle };

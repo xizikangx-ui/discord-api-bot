@@ -1,11 +1,24 @@
 'use strict';
 const C=require('./constants'),U=require('./ui');
+const {createHash}=require('node:crypto');
+function migrateNpcCards(b){
+ if(b.npcCardMigrationVersion===1)return;
+ b.npcCards||={};b.npcCardCleanup||=[];
+ for(const a of b.actors.filter(a=>!a.userId)){
+  const events=(b.publicEvents||[]).filter(e=>e.actorId===a.id),latest=events.at(-1);if(!latest)continue;
+  const published=events.filter(e=>e.publication?.messageId),keep=published.at(-1);
+  b.npcCards[a.id]={actorId:a.id,eventId:latest.id,version:1,publication:{status:keep?'pending':events.some(e=>['sending','uncertain'].includes(e.publication?.status))?'uncertain':'pending',messageId:keep?.publication.messageId}};
+  if(b.status!=='ended')for(const e of published)if(e.publication.messageId!==keep?.publication.messageId)b.npcCardCleanup.push({actorId:a.id,messageId:e.publication.messageId,eventId:e.id,status:'pending'});
+ }
+ b.npcCardMigrationVersion=1;
+}
+function updateNpc(b,e){const a=b.actors.find(a=>a.id===e.actorId);if(!a||a.userId)return;migrateNpcCards(b);const old=b.npcCards[a.id]||{actorId:a.id,version:0,publication:{status:'pending'}};old.eventId=e.id;old.version++;if(!['sending','uncertain'].includes(old.publication.status))old.publication.status='pending';b.npcCards[a.id]=old;}
 function capture(b,entry){if(!b.id)return;const text=entry.message,type=/死亡/.test(text)?'death':/移动至/.test(text)?'move':/等待防守/.test(text)?'attack':/伤害，剩余|成功闪避/.test(text)?'result':/开始吟唱|确认吟唱/.test(text)?'casting':/弹药操作/.test(text)?'reload':/切换武器/.test(text)?'switch':/使用.+恢复|使用.+修复/.test(text)?'item':null;if(!type)return;
  b.publicEvents||=[];let e=type==='move'&&b.publicEvents.find(e=>e.type==='move'&&e.turnId===b.current?.id&&e.actorId===entry.details?.actorId);
- if(e){e.message=text;e.details=C.clone(entry.details);e.at=entry.at;e.version++;e.publication.status='pending';return;}
+ if(e){e.message=text;e.details=C.clone(entry.details);e.at=entry.at;e.version++;e.publication.status='pending';updateNpc(b,e);return;}
  const details=C.clone(entry.details||{}),actor=b.actors.find(a=>a.id===(details.actorId||details.attackerId)),targetIds=details.targetIds||[];
  const portrait=details.portrait||(actor&&(actor.finalCharacter||actor.character)?.portraits?.avatar);
- e={id:entry.id||C.id('e'),type,turnId:b.current?.id||details.turnId||null,actorId:actor?.id||null,actorName:actor?.name||null,portrait:portrait||null,message:text,details,at:entry.at,version:1,publication:{status:'pending'},targetNames:targetIds.map(id=>b.actors.find(a=>a.id===id)?.name||'已离场')};b.publicEvents.push(e);
+ e={id:entry.id||C.id('e'),type,turnId:b.current?.id||details.turnId||null,actorId:actor?.id||null,actorName:actor?.name||null,portrait:portrait||null,message:text,details,at:entry.at,version:1,publication:{status:'pending'},targetNames:targetIds.map(id=>b.actors.find(a=>a.id===id)?.name||'已离场')};b.publicEvents.push(e);updateNpc(b,e);
 }
 function lines(e){const d=e.details,out=[];
  if(d.area)out.push('中心 ('+d.area.center.x+', '+d.area.center.y+')米 · 半径 '+d.area.radius+'米');
@@ -15,27 +28,53 @@ function lines(e){const d=e.details,out=[];
  if(d.breakdown)out.push('实际伤害：'+Object.entries(d.breakdown).map(([k,v])=>C.DAMAGE_TYPES[k]+' '+v).join(' · '));
  if(d.hp!=null)out.push('HP：'+(d.hpBefore??'?')+' → '+d.hp+' / '+d.maxHP+' '+U.bar(d.hp,d.maxHP));
  if(d.saves?.length)out.push('异常豁免：'+d.saves.map(s=>s.name+' '+s.save.total+'/'+s.save.difficulty+(s.save.success?' 成功':' 失败')).join(' · '));
+ if(d.results?.length&&!d.children)for(const r of d.results)out.push('结算：'+r.target+' · 伤害 '+r.total+' · 剩余HP '+r.hp);
  if(d.remaining!=null)out.push('剩余移动：'+d.remaining+'米');return out;
 }
-function settle(b,hit){const e=b.publicEvents?.find(e=>e.type==='attack'&&e.details.groupId===hit.groupId);if(!e?.details.children)return;const child=e.details.children.find(h=>h.id===hit.id);if(child){child.result=C.clone(hit.result);e.version++;e.publication.status='pending';}}
+function settle(b,hit){const e=b.publicEvents?.find(e=>e.type==='attack'&&e.details.groupId===hit.groupId);if(!e)return;const child=e.details.children?.find(h=>h.id===hit.id);if(child)child.result=C.clone(hit.result);e.details.results||=[];if(!e.details.results.some(r=>r.id===hit.id))e.details.results.push({id:hit.id,targetId:hit.targetId,...C.clone(hit.result)});e.version++;e.publication.status='pending';const card=b.npcCards?.[e.actorId];if(card?.eventId===e.id){card.version++;if(!['sending','uncertain'].includes(card.publication.status))card.publication.status='pending';}}
 function view(b,e,page=0){const children=e.details.children||[],sections=children.length?children.flatMap(h=>Array.from({length:Math.max(1,Math.ceil((h.shots||[]).length/4))},(_,n)=>({child:h,shotPage:n}))):[{shotPage:0}];const ordinaryPages=Math.max(1,Math.ceil((e.details.shots||[]).length/4)),pages=children.length?sections.length:ordinaryPages;page=Math.max(0,Math.min(Number(page)||0,pages-1));const section=children.length?sections[page]:{shotPage:page},shots=section.child?.shots||e.details.shots||[],shotPage=section.shotPage;const labels={attack:'攻击成立',result:'防守与伤害结果',move:'战术移动',death:'死亡结算',casting:'技能吟唱',reload:'弹药操作',switch:'切换武器',item:'使用道具'};
  const rolls=shots.slice(shotPage*4,shotPage*4+4).map((shot,n)=>'第'+(shotPage*4+n+1)+'发/击 · '+Object.entries(shot.rolls||{}).map(([type,r])=>C.DAMAGE_TYPES[type]+'：'+(r.expression||'0')+' ['+(r.rolls||[]).map(x=>x.chosen).join(',')+']'+(r.ammunition?' ＋弹药 '+r.ammunition.total:'')+' = '+(shot.damage?.[type]??r.total)).join('；'));
  const components=[U.row(U.button('battle:'+b.id,'查看战场'),U.button('event:'+b.id+':'+e.id+':'+page,'查看操作记录'))];
- if(e.type==='attack'&&b.pending)components[0].components.push(U.button('defense:'+b.id+':'+b.pending.id,'打开防守面板',U.D.ButtonStyle.Danger));
+ if(e.type==='attack'&&b.pending&&e.details.groupId===b.pending.id)components[0].components.push(U.button('defense:'+b.id+':'+b.pending.id,'打开防守面板',U.D.ButtonStyle.Danger));
  if(pages>1)components.push(U.row(U.button('event:'+b.id+':'+e.id+':'+(page-1),'上一页逐发结果',undefined,!page),U.button('event:'+b.id+':'+e.id+':'+(page+1),'下一页逐发结果',undefined,page===pages-1)));
  const target=section.child?'\n\n**范围目标：'+section.child.name+'** · '+(section.child.result?'已结算，伤害 '+section.child.result.total+'，剩余HP '+section.child.result.hp:'等待独立防守'):'';
  const v=U.payload(labels[e.type],e.message+'\n'+lines(e).join('\n')+target+(rolls.length?'\n\n'+rolls.join('\n'):''),components,e.type==='death'?0xcc4455:e.type==='result'?0xdf8b45:0x37b8c3);
  v.embeds[0].setFooter({text:e.id+' · '+(page+1)+'/'+pages+' · 已保存结果，不重新掷骰'});v.allowedMentions={parse:[]};v.rpgMap={kind:'event',event:e,b};return v;
 }
 function createEvents({snapshot,store,client,textChannel,render,logFailure}){
- async function publish(guild,ref,force=false){let b=snapshot(guild).battles[ref];const channel=await textChannel(guild,b.channelId);
-  for(const initial of b.publicEvents||[]){let e=snapshot(guild).battles[ref].publicEvents.find(e=>e.id===initial.id);if(e.publication.status==='sent'&&e.publication.version===e.version)continue;if(!force&&['sending','uncertain'].includes(e.publication.status))continue;
-   const version=e.version;await store.transact(guild,'event-intent:'+C.id('n'),client.user.id,st=>{st.battles[ref].publicEvents.find(x=>x.id===e.id).publication.status='sending';},'公开战斗事件发送意图');
-   try{b=snapshot(guild).battles[ref];e=b.publicEvents.find(x=>x.id===e.id);const card=await render(guild,view(b,e));let message=e.publication.messageId&&await channel.messages.fetch(e.publication.messageId).catch(err=>{if(err.code===10008)return null;throw err;});message=message?await message.edit(card):await channel.send({...card,nonce:e.id,enforceNonce:true});await store.transact(guild,'event-sent:'+C.id('n'),client.user.id,st=>{const live=st.battles[ref].publicEvents.find(x=>x.id===e.id);live.publication={status:live.version===version?'sent':'pending',messageId:message.id,version};},'公开战斗事件已送达');}
-   catch(err){if(!store.frozen(guild))await store.transact(guild,'event-failed:'+C.id('n'),client.user.id,st=>{st.battles[ref].publicEvents.find(x=>x.id===e.id).publication.status=typeof err.code==='number'?'failed':'uncertain';},'公开事件等待补发');logFailure('公开战斗操作卡发送失败，GM可核对后补发。',err);}
+ async function cleanup(guild,ref,channel){
+  for(const item of snapshot(guild).battles[ref].npcCardCleanup||[]){if(item.status!=='pending')continue;
+   const b=snapshot(guild).battles[ref],a=b.actors.find(a=>a.id===item.actorId),e=b.publicEvents?.find(e=>e.id===item.eventId);
+   if(b.status==='ended')return;
+   if(!a||a.userId||e?.actorId!==a.id||e.publication?.messageId!==item.messageId||b.npcCards[a.id]?.publication.messageId===item.messageId)continue;
+   try{const message=await channel.messages.fetch(item.messageId).catch(err=>{if(err.code===10008)return null;throw err;});
+    const current=snapshot(guild).battles[ref];if(current.status==='ended'||current.npcCards[a.id]?.publication.messageId===item.messageId)return;
+    if(message){C.requireThat(message.author.id===client.user.id&&message.channelId===channel.id,'旧NPC操作卡归属不能确认。');await message.delete();}
+    await store.transact(guild,'npc-clean:'+item.messageId,client.user.id,st=>{const entry=st.battles[ref].npcCardCleanup.find(x=>x.messageId===item.messageId);if(entry)entry.status='deleted';},'清理活动战斗重复NPC操作卡',{delivery:false});
+   }catch(err){logFailure('重复NPC操作卡未能清理，保留历史及玩家消息。',err);}
   }
+ }
+ async function publish(guild,ref,force=false){let b=snapshot(guild).battles[ref];if(!b)return;
+  const legacyEnded=b.status==='ended'&&b.npcCardMigrationVersion!==1;
+  if(!legacyEnded&&b.npcCardMigrationVersion!==1){await store.transact(guild,'npc-cards-v1:'+ref,client.user.id,st=>migrateNpcCards(st.battles[ref]),'NPC操作卡迁移',{delivery:false});b=snapshot(guild).battles[ref];}
+  const channel=await textChannel(guild,b.channelId);
+  const tasks=(b.publicEvents||[]).filter(e=>legacyEnded||(!b.npcCards?.[e.actorId]&&!b.actors.some(a=>a.id===e.actorId&&!a.userId))).map(e=>({id:e.id,npc:false}));
+  if(!legacyEnded)tasks.push(...Object.keys(b.npcCards||{}).map(id=>({id,npc:true})));
+  for(const task of tasks){b=snapshot(guild).battles[ref];const current=task.npc?b.npcCards[task.id]:b.publicEvents.find(e=>e.id===task.id),e=task.npc?b.publicEvents.find(e=>e.id===current.eventId):current;if(!e)continue;
+   const publication=current.publication,version=current.version;if(publication.status==='sent'&&publication.version===version)continue;if(!force&&['sending','uncertain'].includes(publication.status))continue;
+   const live=st=>task.npc?st.battles[ref].npcCards[task.id]:st.battles[ref].publicEvents.find(e=>e.id===task.id);
+   await store.transact(guild,'event-intent:'+C.id('n'),client.user.id,st=>{live(st).publication.status='sending';},'公开战斗事件发送意图',{delivery:false});
+   try{const card=await render(guild,view(b,e));if(task.npc)card.embeds[0].setTitle('NPC · '+e.actorName+' · 最新操作');
+    if(store.select(guild,st=>live(st)?.version)!==version){await store.transact(guild,'event-stale:'+C.id('n'),client.user.id,st=>{live(st).publication.status='pending';},'跳过旧版操作卡图片',{delivery:false});continue;}
+    let message=publication.messageId&&await channel.messages.fetch(publication.messageId).catch(err=>{if(err.code===10008)return null;throw err;});
+    const nonce=task.npc?createHash('sha256').update(ref+':'+task.id).digest('hex').slice(0,24):e.id;
+    message=message?await message.edit(card):await channel.send({...card,nonce,enforceNonce:true});
+    await store.transact(guild,'event-sent:'+C.id('n'),client.user.id,st=>{const target=live(st);target.publication={status:target.version===version?'sent':'pending',messageId:message.id,version};},'公开战斗事件已送达',{delivery:false});
+   }catch(err){if(!store.frozen(guild))await store.transact(guild,'event-failed:'+C.id('n'),client.user.id,st=>{live(st).publication.status=typeof err.code==='number'&&err.code>=10000?'failed':'uncertain';},'公开事件等待补发',{delivery:false});logFailure('公开战斗操作卡发送失败，GM可核对后补发。',err);}
+  }
+  await cleanup(guild,ref,channel);
  }
  async function component(i,member){const [,,ref,id,page]=i.customId.split(':'),s=snapshot(i.guildId),b=s.battles[ref];C.requireThat(b,'战斗已不存在。');if(id==='retry'){C.requireThat(U.gm(s,member),'补发需要GM。');await publish(i.guildId,ref,true);return U.payload('已补发已有事件','沿用存档中的骰点与结果。');}const e=b.publicEvents?.find(x=>x.id===id);C.requireThat(e,'事件不存在。');return view(b,e,page);}
  return {publish,component};
 }
-module.exports={capture,view,lines,settle,createEvents};
+module.exports={capture,view,lines,settle,createEvents,migrateNpcCards};

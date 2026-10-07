@@ -447,6 +447,7 @@ function createHandlers(context) {
     const next = snapshot(i.guildId), liveBattle = battle(next, b.id), liveActor = B.actorById(liveBattle, a.id);
     if (action === 'target'||action==='firesubmit') {
       if (result.casting) return U.personalView(next, liveBattle, liveActor, uid, 'quick');
+      if(store.backgroundPublications)return U.personalView(next,liveBattle,liveActor,uid);
       const target = B.actorById(liveBattle, result.targetId), ch = await context.textChannel(i.guildId, liveBattle.channelId);
       const roles = target.userId ? [] : next.config.gmRoleIds;
       const message = await ch.send({ content: (target.userId ? '<@' + target.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) + ' 请为 **' + target.name + '** 选择防守方式。'+(result.shotCount>1?'（连射 '+result.shotCount+' 发，每发单独抵扣防御）':'')+(result.ammoEmpty?'\n⚠️ '+liveActor.name+'的弹夹已空：无弹药，请装填。':''),

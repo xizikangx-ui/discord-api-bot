@@ -113,13 +113,14 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     const v=payload('探索操作 · '+p.name,body,components,0x1abc9c);v.embeds[0].setFooter({text:m.id+' · 私有操作面板 · 资产不会写入公共地图'});
     return tab==='map'?require('./map-image').prepare(v,{kind:'exploration',m,floor:page}):v;
   }
-  async function publish(guild, ref, force = false) {
+  async function publish(guild,ref,force=false){if(store.backgroundPublications&&!force)return store.enqueue(guild,'map',ref);return publishNow(guild,ref,force);}
+  async function publishNow(guild, ref, force = false) {
     const key = guild + ':' + ref; if (jobs.has(key)) return jobs.get(key);
     const job = (async () => {
       let m = map(snapshot(guild), ref); const ch = await textChannel(guild, m.channelId);
       if (m.messageId) {
         const old = await ch.messages.fetch(m.messageId).catch(e => { if (e.code === 10008) return null; throw e; });
-        if (old) { await old.edit(await render(guild,board(m))); return; }
+        if (old) { const version=require('./outbox').fingerprint(m),rendered=await render(guild,board(m));if(version===store.select(guild,st=>require('./outbox').fingerprint(st.explorations[ref])))await old.edit(rendered); return; }
         ok(force, '地图公示已删除，GM核对后补发。');
       }
       ok(force || !['sending', 'uncertain'].includes(m.publication?.status), '地图发送结果待核对，请GM检查后补发。');
@@ -136,7 +137,8 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       }
     })(); jobs.set(key, job); try { await job; } finally { jobs.delete(key); }
   }
-  async function publishMove(guild,ref,requestId,force=false){const key='move:'+guild+':'+ref+':'+requestId;
+  async function publishMove(guild,ref,requestId,force=false){if(store.backgroundPublications&&!force)return store.enqueue(guild,'move',ref+'/'+requestId,{priority:1});return publishMoveNow(guild,ref,requestId,force);}
+  async function publishMoveNow(guild,ref,requestId,force=false){const key='move:'+guild+':'+ref+':'+requestId;
     const job=(jobs.get(key)||Promise.resolve()).catch(()=>{}).then(async()=>{
       let m=map(snapshot(guild),ref),r=m.moves?.[requestId];ok(r,'移动申请不存在。');const ch=await textChannel(guild,m.channelId);
       let missingFirst=false;
@@ -174,7 +176,8 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       }, '尸体公示待核对'); throw e; }
     }
   }
-  async function publishCorpses(guild, battleId, force = false) {
+  async function publishCorpses(guild,battleId,force=false){if(store.backgroundPublications&&!force)return store.enqueue(guild,'corpses',battleId);return publishCorpsesNow(guild,battleId,force);}
+  async function publishCorpsesNow(guild, battleId, force = false) {
     const key = 'corpses:' + guild + ':' + battleId;
     const job = (jobs.get(key) || Promise.resolve()).catch(() => {}).then(() => publishCorpsesInner(guild, battleId, force));
     jobs.set(key, job); try { await job; } finally { if (jobs.get(key) === job) jobs.delete(key); }
@@ -393,6 +396,6 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     for (const m of Object.values(snapshot(guild).explorations).filter(m => !['draft', 'ended'].includes(m.status))){await publish(guild, m.id).catch(e => logFailure('探索地图恢复失败。', e));
       const r=m.moves?.[m.moveRequestId];if(r)await publishMove(guild,m.id,r.id).catch(e=>logFailure('全队移动确认恢复失败，请GM核对发送记录。',e));}
   }
-  return { config, home, manage, personal, component, openModal, publish, publishMove, publishCorpses, recover };
+  return { config, home, manage, personal, component, openModal, publish, publishNow, publishMove, publishMoveNow, publishCorpses, publishCorpsesNow, recover };
 }
 module.exports = { grid, board, moveCard, corpseView, createExploration };

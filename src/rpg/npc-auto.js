@@ -69,7 +69,7 @@ function execute(state,b,op,rng=randomInt) {
   if(op.type==='finish') return B.finish(state,b,turn,rng);
   throw new Error('自动操作类型无效。');
 }
-function legal(state,b,op) {try {const s={...state,players:clone(state.players),battles:{[b.id]:clone(b)},deaths:clone(state.deaths),corpses:clone(state.corpses),explorations:clone(state.explorations),offers:clone(state.offers)};execute(s,s.battles[b.id],op,(min)=>min);return true;}catch{return false;} }
+function legal(state,b,op){try{B.validateOperation(state,b,op);return true;}catch{return false;}}
 function options(state,b,a) {
   const p=B.actorCharacter(state,a), enemies=B.liveActors(state,b).filter(t=>t.team!==a.team), result=[];
   for(const group of ['quick','formal']) {
