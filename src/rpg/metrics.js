@@ -35,7 +35,14 @@ function createMetrics({ enabled = false, emit = line => console.log(line) } = {
   function restResponse(data,response){
     const method=['GET','POST','PATCH','PUT','DELETE'].includes(String(data.method).toUpperCase())?String(data.method).toUpperCase():'OTHER';
     count('discord.rest.'+method+'.'+restFamily(data.route));
-    if(response.status>=400)count('discord.rest.status.'+response.status);
+    if(response.status>=400){count('discord.rest.status.'+response.status);count('discord.rest.status.'+response.status+'.'+method+'.'+restFamily(data.route));}
+    // discord.js emits rateLimited when its known bucket is exhausted, but an
+    // unexpected HTTP 429 can be retried without emitting that event.
+    if(response.status===429){
+      const after=Number(response.headers?.get('retry-after'))*1000;
+      const kind=response.headers?.get('x-ratelimit-global')?'global':'resource';
+      if(Number.isFinite(after)&&after>0)observe('discord.http429Wait.'+restFamily(data.route)+'.'+kind,after);
+    }
   }
   function report() {
     if (!enabled) return;

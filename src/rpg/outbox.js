@@ -3,6 +3,9 @@ const C = require('./constants');
 // Delivery metadata never dirties a public projection. Business changes do.
 const omitted = new Set(['publication', 'publicationParts', 'messageId', 'auxiliaryMessages', 'notifiedTurn', 'notifiedPause', 'notified', 'defenseNotifications', 'npcCards', 'npcCardCleanup', 'boardPublication', 'notification', 'recruitAnnouncement', 'draft']);
 const fingerprint = value => JSON.stringify(value, (key, v) => omitted.has(key) ? undefined : v);
+// PostgreSQL already records whether a projection is done, retrying or awaiting
+// GM review. A restart resumes that task; it must not recreate every task.
+function needsRecovery(store,guild,kind,ref){return !store.backgroundPublications||!store.select(guild,s=>s.deliveryJobs?.[kind+':'+ref]);}
 function put(state, kind, ref, options = {}) {
   state.deliveryJobs ||= {};
   const key = kind + ':' + ref, old = state.deliveryJobs[key];
@@ -78,4 +81,4 @@ function createOutbox({ store, handlers, client, logFailure, metrics, concurrenc
   function stop() { stopped = true; clearInterval(timer); }
   return { start, stop, wake, drain, active };
 }
-module.exports = { fingerprint, put, derive, createOutbox };
+module.exports = { fingerprint, put, derive, createOutbox,needsRecovery };

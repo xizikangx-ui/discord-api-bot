@@ -42,4 +42,6 @@ Discord 请求、图片、头像与备份在事务外进行。战场、地图和
 
 同一私人面板在操作处理中再次点击，仅确认收到，等待原请求更新，不重做资产或随机操作。进入新步骤后跳过尚未发送的旧图片。RP频道选择失败会列出每个缺少权限的GM身份组，保留原菜单供修正后重选；仍须保证玩家和普通身份组不可查看隐藏频道，Bot不会自动扩大频道权限。申请公示内容未变化时不重复读取和编辑消息。
 
+PostgreSQL启动时沿用已保存的战场、地图、移动、鉴定和开团公示任务。未完成任务由后台继续；已完成任务不因重启重新排入，失败任务等待明确补发或后续业务变化。缺少持久任务的旧记录仍补建恢复任务。真实HTTP 429另按接口类别记录，避免漏掉discord.js内部重试产生的限流。
+
 参考：[Railway PostgreSQL](https://docs.railway.com/databases/postgresql)、[Private Networking](https://docs.railway.com/networking/private-networking)、[Backups](https://docs.railway.com/volumes/backups)、[Pricing](https://docs.railway.com/pricing/plans)。

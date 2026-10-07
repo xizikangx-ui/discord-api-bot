@@ -9,6 +9,7 @@ function runtime(){
  const h=harness(),s=state();s.config.gmRoleIds=['gm'];s.config.playerRoleIds=['player'];
  require('../src/rpg/content-pack').install(s);require('../src/rpg/skills').migrate(s);require('../src/rpg/ammunition').migrate(s);
  let saved=C.clone(s);h.deps.database={assertLease(){},load:async()=>C.clone(saved),save:async(_,before,next)=>{assert.equal(saved.revision,before.revision);saved=C.clone(next);}};
+ h.seed=fn=>fn(saved);
  h.errors=[];h.deps.logFailure=(label,error)=>h.errors.push({label,error});
  const P=D.PermissionFlagsBits;for(const [id,name]of [[h.guild.id,'所有人'],['gm','GM'],['player','玩家'],['extra','备用GM']])h.guild.roles.cache.set(id,{id,name,permissions:new D.PermissionsBitField()});
  let extra=false,visible=false;h.hidden={id:'hidden',guildId:h.guild.id,type:D.ChannelType.GuildText,permissionOverwrites:{cache:new Map()},permissionsFor:obj=>new D.PermissionsBitField(['BOT','gm'].includes(obj.id)?[P.ViewChannel,P.SendMessages,P.EmbedLinks]:obj.id==='extra'&&visible?[P.ViewChannel,...(extra?[P.SendMessages]:[])]:0n)};
@@ -53,11 +54,22 @@ test('REST metrics distinguish endpoint limits without credentials and small-sam
   metrics.observe('interaction.result',10);metrics.observe('interaction.result',900);
   metrics.rateLimited({route:'/guilds/123456789012345678/roles/member-counts',timeToReset:60000,global:false});
   metrics.rateLimited({route:'/webhooks/123456789012345678/secret-token/messages/@original',retryAfter:2000,sublimitTimeout:2000});
-  metrics.restResponse({method:'PATCH',route:'/webhooks/123456789012345678/secret-token/messages/@original'},{status:429});metrics.report();
+  metrics.restResponse({method:'PATCH',route:'/webhooks/123456789012345678/secret-token/messages/@original'},{status:429,headers:new Map([['retry-after','1.5']])});metrics.report();
   assert.equal(lines.length,1);const report=JSON.parse(lines[0]);assert.equal(report.stages['interaction.result'].p95,900);
   assert.equal(report.stages['discord.rateLimitWait.guild.roleCounts.resource'].p95,60000);assert.equal(report.stages['discord.rateLimitWait.interaction.reply.sublimit'].p95,2000);assert.equal(report.counters['discord.rest.PATCH.interaction.reply'],1);
+  assert.equal(report.stages['discord.http429Wait.interaction.reply.resource'].p95,1500);assert.equal(report.counters['discord.rest.status.429.PATCH.interaction.reply'],1);
   assert.doesNotMatch(lines[0],/secret-token|123456789012345678/);
  }finally{metrics.close();}
+});
+
+test('PostgreSQL startup preserves completed and failed delivery records instead of republishing historical cards',async()=>{
+ const h=runtime();let reads=0;h.ch.messages.fetch=async()=>{reads++;throw Object.assign(Error('must not revisit old cards'),{code:10008});};
+ h.seed(s=>{
+  const b=require('../src/rpg/combat').createBattle(s,'channel','GM','history');b.status='ended';b.endedAt=Date.now();b.messageId='old-board';b.auxiliaryMessages=['old-defense'];
+  s.checks.check={id:'check',messageId:'deleted-check'};s.sessions.session={id:'session',messageId:'old-session',status:'cancelled',reminder:{status:'sent'}};
+  const {put}=require('../src/rpg/outbox');for(const [kind,ref,status]of [['battle',b.id,'done'],['session','session','done'],['check','check','failed']]){const key=put(s,kind,ref);s.deliveryJobs[key].status=status;}
+ });
+ const rpg=createRpg(h.deps);try{await rpg.start();await pause(100);assert.equal(reads,0);assert.equal(h.sent.length,0);assert.equal(h.errors.length,0);const jobs=rpg.store.select(h.guild.id,s=>s.deliveryJobs);assert.equal(jobs['check:check'].status,'failed');assert.equal(jobs['session:session'].status,'done');}finally{rpg.stop();await rpg.drain();}
 });
 
 test('periodic application refresh skips unchanged message reads and edits but publishes changed counts',async t=>{

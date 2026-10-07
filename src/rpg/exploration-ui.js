@@ -393,8 +393,8 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     ]);
   }
   async function recover(guild) {
-    for (const m of Object.values(snapshot(guild).explorations).filter(m => !['draft', 'ended'].includes(m.status))){await publish(guild, m.id).catch(e => logFailure('探索地图恢复失败。', e));
-      const r=m.moves?.[m.moveRequestId];if(r)await publishMove(guild,m.id,r.id).catch(e=>logFailure('全队移动确认恢复失败，请GM核对发送记录。',e));}
+    for (const m of Object.values(snapshot(guild).explorations).filter(m => !['draft', 'ended'].includes(m.status))){if(require('./outbox').needsRecovery(store,guild,'map',m.id))await publish(guild, m.id).catch(e => logFailure('探索地图恢复失败。', e));
+      const r=m.moves?.[m.moveRequestId];if(r&&require('./outbox').needsRecovery(store,guild,'move',m.id+'/'+r.id))await publishMove(guild,m.id,r.id).catch(e=>logFailure('全队移动确认恢复失败，请GM核对发送记录。',e));}
   }
   return { config, home, manage, personal, component, openModal, publish, publishNow, publishMove, publishMoveNow, publishCorpses, publishCorpsesNow, recover };
 }

@@ -447,8 +447,8 @@ function createActivities(context) {
         else live.reminder.status = live.reminder.batches.some(b => b.status === 'uncertain') ? 'uncertain' : 'failed';
       }
     }, '恢复开团提醒状态');
-    for (const c of Object.values(snapshot(guild).checks)) if (c.messageId) await publish(guild, 'check', c.id).catch(e => logFailure('鉴定卡恢复失败。', e));
-    for (const r of Object.values(snapshot(guild).sessions)) if (r.messageId) await publish(guild, 'session', r.id).catch(e => logFailure('开团卡恢复失败。', e));
+    for (const c of Object.values(snapshot(guild).checks)) if (c.messageId&&require('./outbox').needsRecovery(store,guild,'check',c.id)) await publish(guild, 'check', c.id).catch(e => logFailure('鉴定卡恢复失败。', e));
+    for (const r of Object.values(snapshot(guild).sessions)) if (r.messageId&&require('./outbox').needsRecovery(store,guild,'session',r.id)) await publish(guild, 'session', r.id).catch(e => logFailure('开团卡恢复失败。', e));
   }
   async function tick(guild, now = Date.now()) {
     for (const r of Object.values(snapshot(guild).sessions)) if (r.reminder.status === 'pending' && r.startsAt <= now && r.status !== 'cancelled') {if(store.backgroundPublications)await store.enqueue(guild,'reminder',r.id,{priority:1});else await remind(guild, r.id, false, now);}

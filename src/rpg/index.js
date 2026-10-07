@@ -187,6 +187,7 @@ function createRpg(deps) {
         await mapExtra.recover(guild);await rpPanel.tick(guild);
         await tickGuild(guild);
         for (const b of Object.values(snapshot(guild).battles).filter(b => b.status !== 'ended' || b.endedAt >= Date.now() - 86400000)) {
+          if(!require('./outbox').needsRecovery(store,guild,'battle',b.id))continue;
           await publishBattle(guild, b.id).catch(e => logFailure('跑团战场恢复失败。', e));
         }
       } catch (e) { logFailure('跑团初始化失败：' + guild, e); }
