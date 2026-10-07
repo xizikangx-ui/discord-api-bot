@@ -38,4 +38,8 @@ Discord 请求、图片、头像与备份在事务外进行。战场、地图和
 
 启用指标后每分钟输出 `rpg-performance`：排队、计算、提交、初始确认、文字回复、后台公示和渲染阶段的样本数/P50/P95，队列深度、事件循环延迟、Discord限流等待和网关延迟。仅记录性能元数据，不记录正文、玩家资产、连接字符串或密钥。正常网络目标为初始确认 P95 <1 秒、文字结果 P95 <3 秒。数据库配合模拟 Discord 的测试成绩不能宣称真实生产 Discord 达标；上线后需结合真实交互指标判断。
 
+限流指标按固定接口类别区分成员、身份组人数、频道消息及交互回复，同时区分资源、子限流及全局限流。该指标为 Discord 声明的等待窗口，不代表每一次点击都等待了同样时间；结合 `interaction.gatewayAge`（交互生成到 Bot 收到）、`interaction.work`、`interaction.reply` 与 `interaction.endToEnd` 定位。P95 使用最近秩法，小样本不会遗漏最慢的一次。REST日志不含原始路径、Discord ID或Webhook Token。
+
+同一私人面板在操作处理中再次点击，仅确认收到，等待原请求更新，不重做资产或随机操作。进入新步骤后跳过尚未发送的旧图片。RP频道选择失败会列出每个缺少权限的GM身份组，保留原菜单供修正后重选；仍须保证玩家和普通身份组不可查看隐藏频道，Bot不会自动扩大频道权限。申请公示内容未变化时不重复读取和编辑消息。
+
 参考：[Railway PostgreSQL](https://docs.railway.com/databases/postgresql)、[Private Networking](https://docs.railway.com/networking/private-networking)、[Backups](https://docs.railway.com/volumes/backups)、[Pricing](https://docs.railway.com/pricing/plans)。

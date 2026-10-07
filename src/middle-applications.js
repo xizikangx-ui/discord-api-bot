@@ -36,6 +36,7 @@ function createMiddleApplications(deps) {
   const retryConfirmations = new Map();
   const locks = new Set();
   const counts = new Map();
+  const publicPayloads = new Map();
   const refreshTimers = new Map();
   const refreshing = new Map();
   const refreshAgain = new Set();
@@ -299,7 +300,10 @@ function createMiddleApplications(deps) {
     let current = counts.get(guild.id);
     const roleIds = new Set(Object.values(state(guild.id).panels).flatMap(awardRoleIds));
     if (!roleIds.size) return;
-    if (current?.loading) { await current.loading; return refreshCounts(guild, force); }
+    if (current?.loading) {
+      await current.loading;
+      if([...roleIds].every(id=>current.values.has(id)||current.roleErrors.has(id)))return;
+    }
     if (!force && current && !current.error && Date.now() - current.updatedAt < 60 * 1000
       && [...roleIds].every((id) => current.values.has(id))) return;
     current ||= { values: new Map(), roleErrors: new Map(), updatedAt: 0 };
@@ -335,8 +339,12 @@ function createMiddleApplications(deps) {
       await refreshCounts(guild, force).catch((error) => logFailure('中层申请人数读取失败。', error));
       let pruned = false;
       for (const config of Object.values(state(guild.id).panels)) {
+        const payload=publicPayload(guild.id,config),signature=JSON.stringify(payload);
         for (const ref of [...config.messages]) {
           const key = `${guild.id}:${ref.channelId}:${ref.messageId}`;
+          // Counts and pending applications can stay unchanged for hours. A
+          // periodic check should not spend message API quota on identical edits.
+          if(publicPayloads.get(key)===signature)continue;
           try {
             const channel = await guild.channels.fetch(ref.channelId);
             if (!channel) {
@@ -345,7 +353,9 @@ function createMiddleApplications(deps) {
               throw error;
             }
             const message = await channel.messages.fetch(ref.messageId);
-            await message.edit(publicPayload(guild.id, config));
+            await message.edit(payload);
+            publicPayloads.set(key,signature);
+            if(publicPayloads.size>1000)publicPayloads.delete(publicPayloads.keys().next().value);
             publicRefreshErrors.delete(key);
           } catch (error) {
             if ([10008, 10003].includes(Number(error.code ?? error.rawError?.code))) {
@@ -357,6 +367,7 @@ function createMiddleApplications(deps) {
                 pruned ||= before !== live.messages.length;
               }
               publicRefreshErrors.delete(key);
+              publicPayloads.delete(key);
               console.log(`已清理失效的中层申请公开面板引用：${key}，可在配置面板重新发布。`);
             } else if (Date.now() - (publicRefreshErrors.get(key) || 0) > 5 * 60 * 1000) {
               publicRefreshErrors.set(key, Date.now());

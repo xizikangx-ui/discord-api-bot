@@ -46,7 +46,7 @@ function createNavigation(snapshot, selector = (guild, fn) => fn(snapshot(guild)
     C.requireThat(g && g.owner === i.user.id && g.guild === i.guildId && r.generation === g.generation &&
       (!r.modal || g.modal === i.customId), '该步骤已失效，请重新打开个人面板或持久草稿。');
     C.requireThat(!g.characterId || selector(g.guild,s=>s.players[g.owner]?.id) === g.characterId, '角色已死亡或已更换，请重新打开面板。');
-    C.requireThat(!g.busy, '该面板正在处理，请稍后刷新。');
+    if(g.busy)throw Object.assign(new Error('上一项操作仍在处理，完成后面板会自动更新。'),{code:'RPG_PANEL_BUSY'});
     if (r.form) {
       const f = selector(g.guild,s=>{const f=s.forms[r.form.id];return f&&{version:f.version,field:f.field};});
       C.requireThat(f && (f.version || 0) === r.form.version && f.field === r.form.field, '草稿步骤已经变化，请重新打开。');
@@ -80,7 +80,7 @@ function createNavigation(snapshot, selector = (guild, fn) => fn(snapshot(guild)
     clean();
   }
   function ticket(i){const g=groups.get(i.rpgResponseGroup);return g&&{id:g.id,generation:g.generation};}
-  function current(i,t){const g=t&&groups.get(t.id);return !!g&&g.handle===i&&g.generation===t.generation&&(!g.characterId||selector(g.guild,s=>s.players[g.owner]?.id)===g.characterId);}
+  function current(i,t){const g=t&&groups.get(t.id);return !!g&&!g.busy&&g.handle===i&&g.generation===t.generation&&(!g.characterId||selector(g.guild,s=>s.players[g.owner]?.id)===g.characterId);}
   return { wrap, resolve, modal, clearBattle, clearUser, invalidate, ticket, current };
 }
 module.exports = { createNavigation };

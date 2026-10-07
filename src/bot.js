@@ -3552,7 +3552,8 @@ if (process.env.RPG_STORAGE_BACKEND && !['discord','postgres'].includes(process.
 if (process.env.RPG_STORAGE_BACKEND==='postgres'&&!process.env.RPG_DATABASE_URL) throw Error('PostgreSQL跑团存储须配置RPG_DATABASE_URL。');
 const rpgMetrics=require('./rpg/metrics').createMetrics({enabled:process.env.RPG_PERFORMANCE_METRICS==='1'});
 const rpgDatabase=process.env.RPG_STORAGE_BACKEND==='postgres'?require('./rpg/postgres').createPostgres({connectionString:process.env.RPG_DATABASE_URL,encrypt:encryptJson,decrypt:decryptJson,metrics:rpgMetrics,onLeaseLost:()=>{storageReady=false;rpg.store.guilds().forEach(g=>rpg.store.freeze(g));rpg.stop();client.destroy();console.error('数据库运行锁已丢失，Bot停止处理，等待单实例恢复。');process.exitCode=1;setTimeout(()=>process.exit(1),1000).unref();}}):null;
-client.rest.on('rateLimited',data=>rpgMetrics.observe('discord.rateLimitWait',data.timeToReset||0));
+client.rest.on('rateLimited',rpgMetrics.rateLimited);
+client.rest.on('response',rpgMetrics.restResponse);
 const gatewayMetricsTimer=setInterval(()=>rpgMetrics.gauge('discord.gatewayPing',client.ws.ping),60000);gatewayMetricsTimer.unref();
 const rpg = createRpg({ client, guildIds: rpgGuildIds, channel: () => storageChannel, settingsFor,database:rpgDatabase,metrics:rpgMetrics,allowImport:process.env.RPG_IMPORT_DISCORD_ONCE==='1',
   saveIndex: saveGuildData, encrypt: encryptJson, decrypt: decryptJson, logFailure,

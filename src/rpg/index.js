@@ -615,8 +615,10 @@ function createRpg(deps) {
     const receivedAt=performance.now();
     const ours = (i.isChatInputCommand?.() || i.isAutocomplete?.()) ? commandNames.has(i.commandName) : i.customId?.startsWith('rpg:');
     if (!ours) return false;
+    if(Number.isFinite(i.createdTimestamp))metrics.observe('interaction.gatewayAge',Math.max(0,Date.now()-i.createdTimestamp));
     if (i.isAutocomplete?.()) { await autocomplete(i).catch(() => i.respond([]).catch(() => {})); return true; }
     let release, originalShowModal;
+    const privateSource = !!i.message?.flags?.has(E);
     try {
       ok(i.guildId && enabled(i.guildId), '跑团功能仅在指定跑团服务器启用。');
       if (!ready.has(i.guildId) && i.isChatInputCommand?.() && i.commandName === 'gm' && i.options.getSubcommand() === '恢复存档') {
@@ -632,10 +634,10 @@ function createRpg(deps) {
       // Modal opening itself is the initial response. Mutation is deferred on submit.
       if (i.customId && (await boardRecovery.openModal(i,s) || await variantPanel.openModal(i,s) || await mapExtra.openModal(i,s) || await rpPanel.openModal(i,s) || await aoePanel.openModal(i,s) || await npcPanel.openModal(i,s) || await checkSkills.openModal(i,s) || await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
-      const privateSource = !!i.message?.flags?.has(E);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
       else await i.deferReply(publicResult ? {} : { flags: E });
       metrics.observe('interaction.ack',performance.now()-receivedAt);
+      const workDone=metrics.start('interaction.work');
       // discord.js patches this GuildMember from the current Discord interaction
       // payload. Its roles are fresh; a second REST lookup can queue behind limits.
       const member = i.member?.id===i.user.id&&i.member?.guild?.id===i.guildId&&i.member?.roles?.cache&&i.member?.permissions?.has
@@ -662,6 +664,7 @@ function createRpg(deps) {
         i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
         i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) :
         /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|hand:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
+      workDone();
       const raw=result||payload('已完成','操作已保存。');
       const delayed=store.backgroundPublications&&(raw.rpgMap||raw.rpgPortraits);
       const response=delayed?{...raw,embeds:(raw.embeds||[]).map(e=>D.EmbedBuilder.from(e).setImage(null).setThumbnail(null)),files:[],attachments:[]}:await renderer.decorate(i.guildId,await portraits.decorate(i.guildId,raw));
@@ -669,8 +672,26 @@ function createRpg(deps) {
       if(!publicResult){response.attachments ||= [];response.files ||= [];}
       const wrapped=publicResult?response:navigation.wrap(i,response),replyDone=metrics.start('interaction.reply');await i.editReply(wrapped);replyDone();
       metrics.observe('interaction.result',performance.now()-receivedAt);
-      if(delayed){const ticket=navigation.ticket(i),job=(async()=>{const decorated=await renderer.decorate(i.guildId,await portraits.decorate(i.guildId,raw));if(publicResult||navigation.current(i,ticket))await i.editReply({...decorated,components:wrapped.components});})().catch(e=>logFailure('跑团图片后台补充失败，文字和按钮仍可使用。',e));mediaJobs.add(job);job.finally(()=>mediaJobs.delete(job));}
+      if(Number.isFinite(i.createdTimestamp))metrics.observe('interaction.endToEnd',Math.max(0,Date.now()-i.createdTimestamp));
+      if(delayed){const ticket=navigation.ticket(i),job=(async()=>{
+        // Rapid navigation can make an image obsolete before downloading/rendering.
+        await new Promise(resolve=>setTimeout(resolve,200));
+        if(!publicResult&&!navigation.current(i,ticket))return;
+        const decorated=await renderer.decorate(i.guildId,await portraits.decorate(i.guildId,raw));
+        if(publicResult||navigation.current(i,ticket)){const done=metrics.start('interaction.imageReply');await i.editReply({...decorated,components:wrapped.components});done();}
+      })().catch(e=>logFailure('跑团图片后台补充失败，文字和按钮仍可使用。',e));mediaJobs.add(job);job.finally(()=>mediaJobs.delete(job));}
     } catch (error) {
+      if(error.code==='RPG_PANEL_BUSY'){
+        metrics.observe('interaction.busy',performance.now()-receivedAt);
+        // The first request owns the operation and will update this same panel.
+        // A repeated click only acknowledges receipt; it must not execute again.
+        await i.deferUpdate().catch(e=>logFailure('跑团重复点击确认失败，原操作仍会继续。',e));return true;
+      }
+      if(error.recoverable&&privateSource&&i.deferred){
+        metrics.observe('interaction.validation',performance.now()-receivedAt);
+        await i.editReply({content:error.message,allowedMentions:{parse:[]}}).catch(()=>{});
+        return true;
+      }
       navigation.invalidate(i);
       logFailure('跑团操作失败。', error);
       const content = error.message || '操作失败，请刷新面板。';
