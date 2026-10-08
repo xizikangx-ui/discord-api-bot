@@ -1,6 +1,6 @@
 'use strict';
 const C=require('./constants'),M=require('./model'),B=require('./combat'),U=require('./ui'),AM=require('./ammunition'),W=require('./weapons');
-function createAmmunitionPanel({snapshot,tx,needGM,publishBattle}) {
+function createAmmunitionPanel({snapshot,tx,needGM,publishBattle,actionPanel}) {
   function access(s,i,member,type,ref,actor){
     if(type==='p'){C.requireThat(ref===i.user.id,'只能管理自己的弹药。');const p=M.player(s,ref),b=M.battleFor(s,ref);C.requireThat(!b||b.status!=='active','战斗中请使用当前行动面板的弹夹管理。');AM.normalize(p);return {p};}
     C.requireThat(type==='b','弹药面板无效。');const b=s.battles[ref];C.requireThat(b&&b.status!=='ended','战斗已经结束。');const a=B.actorById(b,actor);
@@ -39,6 +39,7 @@ function createAmmunitionPanel({snapshot,tx,needGM,publishBattle}) {
     // args encode operation, weapon/magazine, ammo/magazine, character version, turn.
     const [,,,,,,opType,item,part,version,turn]=i.customId.split(':');
     const op=opType==='fill'?{type:'fill',magazine:item,ammo:part}:{type:opType,weapon:item,magazine:part==='_'?null:part};
+    if(x.b?.status==='active')return actionPanel.prepare(i,{battleId:x.b.id,actorId:x.a.id,turnId:turn,action:'ammo',params:{operation:op,ammoVersion:Number(version)}});
     await tx(i,st=>{const live=access(st,i,member,type,ref,actor);C.requireThat((live.p.ammoVersion||0)===Number(version)&&live.p.id===p.id,'弹药或角色已经变化，请刷新。');
       if(live.b?.status==='active')AM.battleOperation(st,live.b,turn,op);
       else {const user=type==='p'?ref:live.a.userId;for(const id of [op.weapon,op.magazine,op.ammo].filter(Boolean))if(user)C.requireThat(M.available(st,user,id)>0,'物品已被预留。');

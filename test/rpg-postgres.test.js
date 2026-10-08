@@ -76,6 +76,30 @@ test('PostgreSQL isolated integration, concurrency, disconnect and recovery', {s
    // Keep the outer store synchronized for the remaining recovery checks.
    await st.recover(seed.guildId);
   });
+  await t.test('RP drafts, events and image jobs recover through commit ambiguity without reroll',async()=>{
+   const Draft=require('../src/rpg/action-drafts');
+   const ref=await st.transact(seed.guildId,'rp-draft-seed','1',s=>{for(const b of Object.values(s.battles))if(b.status!=='ended')B.endBattle(s,b);const b=B.createBattle(s,'rp-isolation','GM','RP恢复');B.join(s,b,'1');B.join(s,b,'2');const w=weapon(s,{weightKg:0,damage:{physical:'2d6'}}),item=M.issue(s,'1',w.id)[0];M.equip(s,'1',item.id);B.start(s,b,null,minRng);return Draft.create(s,'1',{battleId:b.id,actorId:b.current.actorId,turnId:b.current.id,action:'attack',params:{abilityKey:item.id,targetId:b.actors[1].id,action:'formal'}}).id;});
+   const reload=createStore(h.deps);await reload.load(seed.guildId);assert.equal(reload.select(seed.guildId,s=>s.forms[ref].status),'ready');
+   const originalConnect=db.pool.connect.bind(db.pool);let disconnected=false,rolls=0;
+   db.pool.connect=async(...args)=>{const c=await originalConnect(...args),query=c.query.bind(c),release=c.release.bind(c);c.query=async(sql,...params)=>{const result=await query(sql,...params);if(sql==='COMMIT'&&!disconnected){disconnected=true;throw Error('isolated post-commit disconnect');}return result;};c.release=(...args)=>{c.query=query;c.release=release;return release(...args);};return c;};
+   try{await reload.transact(seed.guildId,'action:'+ref,'1',s=>Draft.execute(s,ref,'1','加密保存的角色叙述',(lo,hi)=>{rolls++;return hi-1;}));}finally{db.pool.connect=originalConnect;}
+   const calls=rolls,next=createStore(h.deps);await next.load(seed.guildId);await next.transact(seed.guildId,'action:'+ref,'1',()=>{throw Error('must not execute again');});
+   const saved=await db.load(seed.guildId),f=saved.forms[ref],b=saved.battles[f.battleId];assert.equal(rolls,calls);assert.ok(calls>0);assert.equal(f.status,'done');assert.equal(b.current.formal,0);assert.equal(b.publicEvents.find(e=>e.type==='attack').rpEntries[0].text,'加密保存的角色叙述');
+   const events=require('../src/rpg/battle-events').createEvents({snapshot:next.snapshot,store:next,client:h.deps.client,textChannel:async()=>h.ch,render:async(_,v)=>{delete v.rpgMap;return v;},logFailure:()=>{}});await events.publish(seed.guildId,b.id);
+   const delivered=await db.load(seed.guildId),e=delivered.battles[b.id].publicEvents.find(e=>e.type==='attack'),job='eventImage:'+b.id+'/player/'+e.id;assert.equal(e.publication.status,'sent');assert.equal(delivered.deliveryJobs[job].status,'pending');
+   await next.transact(seed.guildId,'rp-image-running','BOT',s=>{s.deliveryJobs[job].status='running';},'隔离任务状态',{delivery:false});const recovered=createStore(h.deps);await recovered.load(seed.guildId);assert.ok(['pending','running'].includes(recovered.select(seed.guildId,s=>s.deliveryJobs[job].status)));assert.equal(recovered.select(seed.guildId,s=>s.forms[ref].status),'done');await st.recover(seed.guildId);
+  });
+  await t.test('20 real RP action commits and 50 duplicate burst requests complete while animation is blocked',async()=>{
+   await st.recover(seed.guildId);const Draft=require('../src/rpg/action-drafts'),refs=await st.transact(seed.guildId,'rp-load-seed','GM',s=>{
+    for(const b of Object.values(s.battles))if(b.status!=='ended')B.endBattle(s,b);
+    return Array.from({length:20},(_,n)=>{const uid='rp-load-'+n,p=M.newCharacter('负载角色',{strength:5,constitution:5,mind:5,appearance:5,intelligence:5,agility:5,knowledge:5},1);p.userId=uid;s.players[uid]=p;h.members[uid]={...h.members['1'],id:uid,user:{id:uid,username:'隔离玩家'}};const b=B.createBattle(s,'rp-load-'+n,'GM','隔离负载');B.join(s,b,uid);B.start(s,b,null,minRng);const f=Draft.create(s,uid,{battleId:b.id,actorId:b.current.actorId,turnId:b.current.id,action:'move',params:{x:26,y:25}});return{uid,id:f.id,bid:b.id};});});
+   const samples={},metrics={observe:(k,v)=>(samples[k]||=[]).push(v),start:k=>{const at=performance.now();return()=>metrics.observe(k,performance.now()-at);},gauge(){},close(){}};let release;const blocked=new Promise(r=>{release=r;});h.deps.metrics=metrics;h.deps.renderer={decorate:async(_,v)=>{await blocked;delete v.rpgMap;return v;},close(){}};const rpg=require('../src/rpg').createRpg(h.deps);await rpg.start();
+   const p95=k=>{const a=[...samples[k]].sort((a,b)=>a-b);return a[Math.ceil(a.length*.95)-1];};
+   try{await Promise.all(refs.map(({uid,id})=>rpg.handle(h.interaction(uid,null,{},'rpg:act:submit:'+id,[],{rp:'并发行动测试'}))));assert.ok(p95('interaction.ack')<1000);assert.ok(p95('interaction.result')<3000);const firstAck=p95('interaction.ack'),firstResult=p95('interaction.result');
+    await Promise.all(Array.from({length:50},(_,n)=>{const f=refs[n%20];return rpg.handle(h.interaction(f.uid,null,{},'rpg:act:do:'+f.id));}));
+    const saved=await db.load(seed.guildId);for(const f of refs){assert.equal(saved.forms[f.id].status,'done');assert.equal(saved.battles[f.bid].actors[0].x,26);assert.equal(saved.battles[f.bid].publicEvents[0].rpEntries.length,1);assert.equal(saved.battles[f.bid].publicEvents.length,1);}console.log(JSON.stringify({test:'private-postgres-rp-blocked-animation-mocked-discord',clicks:20,ackP95Ms:Math.round(firstAck),resultP95Ms:Math.round(firstResult),duplicateBurst:50}));
+   }finally{release();rpg.stop();await rpg.drain();await st.recover(seed.guildId);}
+  });
   await t.test('encrypted logical backup restores exact state into a separate namespace',async()=>{
    const exported=await db.load(seed.guildId),packed=JSON.parse(st.pack(exported)),envelope=h.deps.decrypt(packed).value,copy=JSON.parse(require('node:zlib').gunzipSync(Buffer.from(envelope.body,'base64')));
    restored=createPostgres({connectionString:process.env.RPG_TEST_DATABASE_URL,schema:schema+'_restore',encrypt:h.deps.encrypt,decrypt:h.deps.decrypt});await restored.acquireLease('restore');await restored.importState(seed.guildId,copy,'isolated-recovery-drill');assert.equal(digest(await restored.load(seed.guildId)),digest(exported));

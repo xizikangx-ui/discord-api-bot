@@ -1,0 +1,116 @@
+{
+  "mode": "built-in imagegen",
+  "scope": "Red loot icons. Already generated gold assets retained; remaining gold assets not commissioned.",
+  "assets": [
+    {
+      "id": "watch",
+      "source": "generated_images/exec-709a98b0-fd0b-4492-a136-367be72dc08f.png",
+      "prompt": "Transparent antique brass wristwatch; wasteland tactical boardgame loot illustration."
+    },
+    {
+      "id": "gem",
+      "source": "generated_images/exec-0011eb56-c432-4ad9-b387-7598d876f254.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated an elegant faceted ruby and diamond brooch. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "cufflinks",
+      "source": "generated_images/exec-a54dae51-8541-477f-a847-92431f49e5fe.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated a pair of rare gold cufflinks in a small velvet presentation box. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "medal",
+      "source": "generated_images/exec-ff1f3f9a-d485-4ff7-b144-b98d2047d4b1.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated a collectible gold commemorative medal with abstract embossing. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "book",
+      "source": "generated_images/exec-1f3ef71f-0542-4ac4-8e64-7a4efa002d66.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated a rare leather-bound first-edition book, metal corners and aged pages. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "archive",
+      "source": "generated_images/exec-2bda0808-3f97-4e4d-b57c-88fb01a670e4.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated a precious original handwritten historical manuscript, rolled aged paper and a wax seal. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "telescope",
+      "source": "generated_images/exec-1a9dff49-955c-49d5-9cf9-daaeeede73ac.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated a limited precision brass observation telescope on a compact support. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "instrument",
+      "source": "generated_images/exec-c108ac2e-e8b7-48e6-9c9a-6f59a09f2e1e.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated a professional handheld electronic measurement instrument with probes. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "camera",
+      "source": "generated_images/exec-d2e20790-ef54-4660-95e4-8182dc24912b.png",
+      "prompt": "Use case: stylized-concept. Asset type: game loot icon. ONE isolated a collectible premium vintage camera with a large lens. Refined post-apocalyptic tactical tabletop inventory illustration, realistic hand-painted materials, subtle wear, crisp readable silhouette, three-quarter view, centered and fully contained, generous padding, genuinely transparent background. No scene, no floor, no writing, no logos, no watermark. Match a gold wristwatch loot icon in realistic brushed metal and warm directional light; legible at 96px."
+    },
+    {
+      "id": "tea",
+      "source": "generated_images/exec-25b6e202-c555-418e-8280-6919c449ef99.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated a premium compressed round tea cake wrapped in aged cream paper. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "necklace",
+      "source": "generated_images/exec-ce3977ee-7904-4314-aa27-790da96eb857.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated a rare sapphire and gold necklace curled into a compact arrangement. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "coins",
+      "source": "generated_images/exec-8e35673b-e108-406a-9ed9-d8e7876c3708.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated a velvet case holding three antique gold coins. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "painting",
+      "source": "generated_images/exec-e044a676-3bc9-481e-82c2-1acef04f46a3.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated a small framed original oil painting of a ruined city skyline, no words. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "jewelry",
+      "source": "generated_images/exec-ec2dafa1-8714-489c-8c4b-d2d28866adf2.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated an open jewelry casket containing a gem ring and earrings. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "sample",
+      "source": "generated_images/exec-201c6e29-d3d2-484f-8f21-2d07b12f5fab.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated a valuable research specimen vial secured in a protective laboratory case. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "heart",
+      "source": "generated_images/exec-77d77202-991c-4e3b-b7a1-b6ae1d5c0846.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated a luminous amber crystal heart containing tiny branching golden roots, the World Tree Heart. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "tear",
+      "source": "generated_images/exec-c2a672bd-c354-4ab5-9fd0-abcba376ea9b.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent game loot icon. ONE isolated a luminous turquoise teardrop crystal containing a delicate glowing root, the World Tree Tear. Premium post-apocalyptic tactical tabletop illustration, realistic hand-painted materials, rich details, subtle wear, crisp silhouette, warm soft light, three-quarter view, centered and fully contained with generous transparent padding. No scene, no floor, no text, no logos, no watermark. Readable at 96px, genuine alpha transparency."
+    },
+    {
+      "id": "goldbar",
+      "source": "generated_images/exec-cfdd697a-79e9-4dc1-9038-d7295ed2e54b.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent red-rarity treasure inventory icon. ONE isolated one heavy pristine gold reserve bullion bar, blank face, no serial text. Refined post-apocalyptic tactical tabletop loot illustration, realistic hand-painted materials, crisp silhouette, rich detail, subtle wear, soft warm directional light. Three-quarter view, centered, entire object in frame, generous padding. No environment, no floor, no text, no logo or watermark. Genuine transparent background. Legible at 96px."
+    },
+    {
+      "id": "diamond",
+      "source": "generated_images/exec-466cdf70-ad40-485c-975b-ace33877c145.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent red-rarity treasure inventory icon. ONE isolated one brilliant-cut museum-grade clear diamond with a faint icy blue glow. Refined post-apocalyptic tactical tabletop loot illustration, realistic hand-painted materials, crisp silhouette, rich detail, subtle wear, soft warm directional light. Three-quarter view, centered, entire object in frame, generous padding. No environment, no floor, no text, no logo or watermark. Genuine transparent background. Legible at 96px."
+    },
+    {
+      "id": "datacore",
+      "source": "generated_images/exec-874a42d9-f457-4618-9527-b8491d52c2ce.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent red-rarity treasure inventory icon. ONE isolated a unique dark metal master data cartridge with exposed gold contacts, sealed disaster-era core technology master. Refined post-apocalyptic tactical tabletop loot illustration, realistic hand-painted materials, crisp silhouette, rich detail, subtle wear, soft warm directional light. Three-quarter view, centered, entire object in frame, generous padding. No environment, no floor, no text, no logo or watermark. Genuine transparent background. Legible at 96px."
+    },
+    {
+      "id": "blueprint",
+      "source": "generated_images/exec-78b98246-5c0a-49b1-a51d-1983fc36b01d.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent red-rarity treasure inventory icon. ONE isolated a rolled original technical blueprint with geometric building sketches and drafting tools, abstract linework without words. Refined post-apocalyptic tactical tabletop loot illustration, realistic hand-painted materials, crisp silhouette, rich detail, subtle wear, soft warm directional light. Three-quarter view, centered, entire object in frame, generous padding. No environment, no floor, no text, no logo or watermark. Genuine transparent background. Legible at 96px."
+    },
+    {
+      "id": "bracelet",
+      "source": "generated_images/exec-31b18daa-c004-4aab-8133-ed30638e5f3c.png",
+      "prompt": "Use case: stylized-concept. Asset type: transparent red-rarity treasure inventory icon. ONE isolated one extremely rare gold and sapphire bracelet, compact oval shape. Refined post-apocalyptic tactical tabletop loot illustration, realistic hand-painted materials, crisp silhouette, rich detail, subtle wear, soft warm directional light. Three-quarter view, centered, entire object in frame, generous padding. No environment, no floor, no text, no logo or watermark. Genuine transparent background. Legible at 96px."
+    }
+  ]
+}

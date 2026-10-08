@@ -43,7 +43,7 @@ function definition(f, index) {
   const def=require('./forms').fields(f)[index];ok(['room','npc'].includes(f.kind) && f.field===index && ['randomRoom','fixedRoom'].includes(def?.type),'房间配置字段已变化。');return def;
 }
 function choices(s,f,def) {
-  if(def.type==='fixedRoom') return (f.data[def.refs] || []).map(ref=>({value:ref,label:def.source==='boxes' ? ref : s[def.source][ref]?.name || ref}));
+  if(def.type==='fixedRoom') return (f.data[def.refs] || []).filter(ref=>f.kind!=='npc'||s.catalog[ref]?.kind!=='杂物').map(ref=>({value:ref,label:def.source==='boxes' ? ref : s[def.source][ref]?.name || ref}));
   return def.source==='boxes' ? C.BOXES.map(value=>({value,label:value})) : Object.values(s[def.source]).filter(t=>t.published&&(!def.predicate||def.predicate(t))).map(t=>({value:t.id,label:t.name}));
 }
 function entries(f,def){return f.data[def.key] || [];}

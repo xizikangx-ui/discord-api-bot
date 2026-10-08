@@ -1,7 +1,7 @@
 'use strict';
 const C = require('./constants');
 // Delivery metadata never dirties a public projection. Business changes do.
-const omitted = new Set(['publication', 'publicationParts', 'messageId', 'auxiliaryMessages', 'notifiedTurn', 'notifiedPause', 'notified', 'defenseNotifications', 'npcCards', 'npcCardCleanup', 'boardPublication', 'notification', 'recruitAnnouncement', 'draft']);
+const omitted = new Set(['publication', 'publicationParts', 'messageId', 'auxiliaryMessages', 'notifiedTurn', 'notifiedPause', 'notified', 'defenseNotifications', 'npcCards', 'npcCardCleanup', 'boardPublication', 'notification', 'recruitAnnouncement', 'draft','imagePublication','operationContext']);
 const fingerprint = value => JSON.stringify(value, (key, v) => omitted.has(key) ? undefined : v);
 // PostgreSQL already records whether a projection is done, retrying or awaiting
 // GM review. A restart resumes that task; it must not recreate every task.
@@ -54,11 +54,12 @@ function createOutbox({ store, handlers, client, logFailure, metrics, concurrenc
     } catch (error) {
       if (!store.frozen(guild)) await store.transact(guild, 'outbox-error:' + C.id('j'), client.user.id, st => {
         const live = st.deliveryJobs[task.key]; if (!live) return;
-        live.attempts = (live.attempts || 0) + 1; live.status = live.attempts >= 3 ? 'failed' : 'pending';
+        live.attempts = error.code==='RPG_RENDER_BUSY'?(live.attempts||0):(live.attempts||0)+1; live.status = live.attempts >= 3 ? 'failed' : 'pending';
         live.availableAt = Date.now() + Math.min(30000, 1000 * 2 ** live.attempts);
       }, '后台公示任务等待处理', { delivery: false }).catch(() => {});
       // Never include record contents, credentials or interaction IDs in metrics.
-      logFailure('后台跑团公示未完成（' + task.kind + '）。', error);
+      if(error.code==='RPG_RENDER_BUSY')metrics?.count('render.busy');
+      else logFailure('后台跑团公示未完成（' + task.kind + '）。', error);
     } finally { active.delete(token); urgent.delete(token); end?.(); wake(); }
   }
   async function pump() {

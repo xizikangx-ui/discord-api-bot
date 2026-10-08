@@ -2,6 +2,7 @@
 const C = require('./constants'), M = require('./model'), U = require('./ui');
 const { requireThat: ok } = C;
 const MAX_TARGETS = 25, MAX_ITEMS = 25, MAX_QUANTITY = 100;
+const Categories = require('./item-categories');
 function owned(state, id, uid, version, editable = true) {
   const f = state.forms[id];
   ok(f?.kind === 'bulkissue' && f.owner === uid, '批量发放面板不属于你。');
@@ -19,6 +20,7 @@ function validate(state, f) {
     C.number(e.quantity, '每人发放数量', 1, MAX_QUANTITY);
     const template = state.catalog[e.ref];
     ok(template?.published && template.version === e.version, '物品模板已更新或移除，请重新选择物品。');
+    ok(template.kind !== '杂物', '发放清单不再包含杂物，请重新选择物品。');
   }
   ok(f.items.reduce((n, e) => n + e.quantity, 0) <= MAX_QUANTITY, '每人一次最多发放100件，请减少数量或分批操作。');
 }
@@ -56,16 +58,17 @@ function createBulkIssue({ snapshot, tx, needGM }) {
       U.button(route(f, 'preview'), '预览发放', U.D.ButtonStyle.Primary, !f.targets.length || !f.items.length),
       U.button(route(f, 'cancel'), '取消'))]);
   }
-  function options(s, field) {
+  function options(s, field, category = 'all') {
     return field === 'targets' ? Object.values(s.players).map(p => ({ value: p.userId, label: p.name,
       description: '玩家 ' + p.userId + ' · ' + C.kg(M.stats(p).carried) + '/' + C.kg(M.stats(p).limit) })) :
-      Object.values(s.catalog).filter(t => t.published).map(t => ({ value: t.id, label: t.name, description: t.kind + ' · v' + t.version + ' · ' + t.id }));
+      Object.values(s.catalog).filter(t => t.published && Categories.matches(t, category)).map(t => ({ value: t.id, label: t.name, description: t.kind + ' · v' + t.version + ' · ' + t.id }));
   }
   function list(s, f, field, page) {
-    const all = options(s, field), pages = Math.max(1, Math.ceil(all.length / 25));
+    const all = options(s, field, f.itemCategory), pages = Math.max(1, Math.ceil(all.length / 25));
     page = Math.max(0, Math.min(Number(page) || 0, pages - 1));
     const part = all.slice(page * 25, page * 25 + 25), selected = f[field].map(e => field === 'targets' ? e.uid : e.ref);
     return U.payload(field === 'targets' ? '选择目标玩家' : '选择发放物品', summary(f) + '\n\n第' + (page + 1) + '/' + pages + '页；本页可多选，其他页选择保留。' + (!part.length ? '\n暂无可选对象。' : ''), [
+      ...(field === 'items' ? [Categories.row(route(f, 'category'), f.itemCategory)] : []),
       ...(part.length ? [U.row(U.select(route(f, 'select' + field, String(page)), '下拉多选（最多25项）',
         part.map(o => ({ ...o, default: selected.includes(o.value) })), 0, part.length))] : []),
       U.row(U.button(route(f, field, String(page - 1)), '上一页', undefined, page === 0),
@@ -98,7 +101,7 @@ function createBulkIssue({ snapshot, tx, needGM }) {
       needGM(s, member);
       const uid = i.options.getUser('成员')?.id, ref = i.options.getString('物品');
       const p = uid ? M.player(s, uid) : null, t = ref ? s.catalog[ref] : null;
-      ok(!ref || t?.published, '物品模板未发布。');
+      ok(!ref || (t?.published && t.kind !== '杂物'), '请选择已发布的非杂物模板。');
       const f = { id: C.id('f'), kind: 'bulkissue', owner: i.user.id, version: 0, expiresAt: Date.now() + 14 * 60000,
         targets: p ? [{ uid, characterId: p.id }] : [], items: t ? [{ ref, version: t.version, name: t.name, quantity: i.options.getInteger('数量') || 1 }] : [] };
       s.forms[f.id] = f; return f;
@@ -127,8 +130,11 @@ function createBulkIssue({ snapshot, tx, needGM }) {
       needGM(st, member); const live = owned(st, id, i.user.id, version);
       if (action === 'confirm') { execute(st, live); return C.clone(live); }
       if (action === 'cancel') { live.done = true; return null; }
+      if (action === 'category') {
+        ok(Categories.valid(i.values[0]), '物品分类无效。'); live.itemCategory = i.values[0];
+      } else
       if (['selecttargets', 'selectitems'].includes(action)) {
-        const field = action.slice(6), page = C.number(arg, '页码', 0, 100000), pageIds = options(st, field).slice(page * 25, page * 25 + 25).map(o => o.value);
+        const field = action.slice(6), page = C.number(arg, '页码', 0, 100000), pageIds = options(st, field, live.itemCategory).slice(page * 25, page * 25 + 25).map(o => o.value);
         ok(i.values.every(v => pageIds.includes(v)) && new Set(i.values).size === i.values.length, '选择已变化，请重新打开。');
         const key = field === 'targets' ? 'uid' : 'ref', previous = live[field];
         live[field] = previous.filter(e => !pageIds.includes(e[key])).concat(i.values.map(v => {
@@ -146,6 +152,7 @@ function createBulkIssue({ snapshot, tx, needGM }) {
     if (!saved) return U.payload('已取消批量发放', '没有发放任何物品。');
     if (action === 'confirm') return result(saved);
     if (action === 'amountsave') return quantities(saved);
+    if (action === 'category') return list(snapshot(i.guildId), saved, 'items', 0);
     return list(snapshot(i.guildId), saved, action.slice(6), arg);
   }
   return { start, openModal, component };

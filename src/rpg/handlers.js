@@ -99,7 +99,10 @@ function createHandlers(context) {
       else if (action === 'formpage') { draft.page = num(args[1], '页', 0, Math.ceil(defs.length / 20) - 1); draft.field = draft.page * 20; }
       else if (action === 'formedit') F.set(draft.data, def.key, !F.get(draft.data, def.key));
       else if (action === 'formdelete') { delete st.forms[formId]; return '草稿已删除。'; }
-      else if (action === 'formchoicepage') draft.choicePage = num(args[1], '页', 0, Math.max(0, Math.ceil(F.options(st, def).length / 25) - 1));
+      else if (action === 'formcategory') {
+        const cat=require('./item-categories');ok(def.type==='refs'&&def.source==='catalog'&&['itemIds','supplyIds'].includes(def.key)&&cat.valid(i.values[0],def.key!=='itemIds'),'分类步骤已失效。');draft.itemCategories||={};draft.itemCategories[def.key]=i.values[0];draft.choicePage=0;
+      }
+      else if (action === 'formchoicepage') draft.choicePage = num(args[1], '页', 0, Math.max(0, Math.ceil(F.options(st, def, draft.itemCategories?.[def.key]).length / 25) - 1));
       else if (action === 'formchoice') F.setChoice(st, draft, num(args[1], '页', 0, 100000), i.values);
       else if (action === 'formroles') {
         ok(def.type === 'roles', '字段已变化。');
@@ -135,7 +138,7 @@ function createHandlers(context) {
     });
     if (action === 'formdelete') return payload('已删除草稿', formId);
     const next = snapshot(i.guildId), draft = F.owned(next, formId, i.user.id);
-    if (['formchoicepage', 'formchoice'].includes(action)) return F.choiceView(next, draft);
+    if (['formcategory', 'formchoicepage', 'formchoice'].includes(action)) return F.choiceView(next, draft);
     if (['formop', 'formremoveeffect', 'formeffectvalue','formeffectpage','formtargetpage'].includes(action)) return F.effectsView(next, draft);
     return F.view(next, draft);
   }
@@ -246,7 +249,8 @@ function createHandlers(context) {
       const next = snapshot(i.guildId); return U.offerView(next, offerAccess(next, args[0], member, uid), uid);
     }
     if(action==='zoom'){const b=battle(s,args[0]),v=U.battleView(s,b);v.components=[row(button('battle:'+b.id,'返回战场'))];v.rpgMap.zoom=true;return v;}
-    if (action === 'catalog') { needGM(s, member); return catalogView(s, args[0], Number(args[1])); }
+    if (action === 'catalog') { needGM(s, member); return catalogView(s, args[0], Number(args[1]), args[2]); }
+    if (action === 'catalogcategory') { needGM(s, member);ok(require('./item-categories').valid(i.values[0],true),'分类无效。');return catalogView(s,'物品',0,i.values[0]); }
     if (action === 'templateedit') {
       needGM(s, member);
       const source = args[0], ref = i.values[0], kind = { catalog: 'item', traits: 'trait', conditionTemplates: 'condition', npcTemplates: 'npc', checkSkillTemplates:'checkskill',skillTemplates:'skill' }[source];
@@ -256,7 +260,7 @@ function createHandlers(context) {
     }
     if (['battle', 'join', 'withdraw', 'start', 'personal', 'control', 'gmcontrol', 'gmstart', 'defense', 'defensepick', 'defend'].includes(action)) {
       const b = battle(s, args[0]);
-      if (action === 'battle') return U.battleView(s, b);
+      if (action === 'battle') return U.battleView(s, b, args[1], args[2]);
       if (action === 'control') { needGM(s, member); return context.gmUI.view(s, b); }
       if (action === 'start') { needGM(s, member); return context.gmUI.view(s, b); }
       if (action === 'personal') {
@@ -268,13 +272,7 @@ function createHandlers(context) {
       if (action === 'defense') return defenseView(s, b, args[1], member, uid);
       if (action === 'defend') {
         owner(i, args[2]); defenseView(s, b, args[1], member, uid);
-        const result = await tx(i, st => {
-          defenseView(st, battle(st, args[0]), args[1], member, uid);
-          return B.defend(st, battle(st, args[0]), args[1], args[3]);
-        });
-        await publishBattle(i.guildId, b.id);
-        return payload('防守已结算', (result.defaulted ? '响应已超时，按纯防御结算。\n' : '') + result.target + '：' +
-          (result.dodge?.success ? '成功闪避' : '受到' + result.total + '伤害') + '，HP ' + result.hp);
+        const hit=require('./aoe').hit(b,args[1]);return context.actionPanel.prepare(i,{battleId:b.id,actorId:hit.targetId,action:'defend',params:{hitId:hit.id,choice:args[3]}});
       }
       await tx(i, st => {
         const next = battle(st, args[0]);
@@ -424,40 +422,15 @@ function createHandlers(context) {
         ...items.map(item => ({ label: item.snapshot.name + ' ×' + item.quantity, value: item.id }))
       ], action + ':' + prefix, Number(args[4]));
     }
-    const result = await tx(i, st => {
-      const live = prefixContext(i, st, args, member, true), next = live.b;
-      if (action === 'movevalue') B.move(st, next, turnId, i.fields.getTextInputValue('x'), i.fields.getTextInputValue('y'));
-      else if (action === 'target') return B.attack(st,next,turnId,args[5],i.values[0],args[4],undefined,{mode:args[6]||'semi'});
-      else if(action==='firesubmit'){const f=F.owned(st,fireForm.id,uid);ok(!f.done&&f.expiresAt>Date.now(),'射击步骤已完成或过期。');const result=B.attack(st,next,turnId,args[5],args[6],args[4],undefined,{mode:'auto',count:i.fields.getTextInputValue('count')});f.done=true;return result;}
-      else if (action === 'reloadmag' || action === 'reloadmagpick') B.reload(st, next, turnId, args[4], i.values[0]);
-      else if (action === 'reloadclippick') B.reload(st, next, turnId, args[5], i.values[0], args[4]);
-      else if (action === 'weaponpick') B.switchWeapon(st, next, turnId, i.values[0] === 'none' ? null : i.values[0]);
-      else if (action === 'weaponhand') B.switchWeapon(st, next, turnId, args[4], i.values[0]);
-      else if(action==='repairpick')B.useItem(st,next,turnId,args[4],undefined,i.values[0]);
-      else if (action === 'itempick') B.useItem(st, next, turnId, i.values[0]);
-      else if (action === 'cast') B.confirmCasting(st, next, turnId);
-      else if (action === 'pass') B.pass(st, next, turnId, args[4]);
-      else if (action === 'finish') B.finish(st, next, turnId);
-      else if (action === 'flee') B.flee(st, next, turnId);
-      else throw new Error('操作未识别，请重新打开个人面板。');
-      B.nextOpportunity(st, next);
-      return { battleId: next.id };
-    });
-    await publishBattle(i.guildId, b.id);
-    const next = snapshot(i.guildId), liveBattle = battle(next, b.id), liveActor = B.actorById(liveBattle, a.id);
-    if (action === 'target'||action==='firesubmit') {
-      if (result.casting) return U.personalView(next, liveBattle, liveActor, uid, 'quick');
-      if(store.backgroundPublications)return U.personalView(next,liveBattle,liveActor,uid);
-      const target = B.actorById(liveBattle, result.targetId), ch = await context.textChannel(i.guildId, liveBattle.channelId);
-      const roles = target.userId ? [] : next.config.gmRoleIds;
-      const message = await ch.send({ content: (target.userId ? '<@' + target.userId + '>' : roles.map(r => '<@&' + r + '>').join(' ')) + ' 请为 **' + target.name + '** 选择防守方式。'+(result.shotCount>1?'（连射 '+result.shotCount+' 发，每发单独抵扣防御）':'')+(result.ammoEmpty?'\n⚠️ '+liveActor.name+'的弹夹已空：无弹药，请装填。':''),
-        components: [row(button('defense:' + b.id + ':' + result.id, '打开防守面板', D.ButtonStyle.Danger))],
-        allowedMentions: { parse: [], users: target.userId ? [target.userId] : [], roles } });
-      await store.transact(i.guildId, 'combat-prompt:' + message.id, uid, st => {
-        st.battles[b.id].auxiliaryMessages ||= []; st.battles[b.id].auxiliaryMessages.push(message.id);
-      }, '记录战斗防守面板');
-    }
-    return U.personalView(next, liveBattle, liveActor, uid);
+    let intent;
+    if(action==='movevalue')intent={action:'move',params:{x:i.fields.getTextInputValue('x'),y:i.fields.getTextInputValue('y')}};
+    else if(action==='target')intent={action:'attack',params:{abilityKey:args[5],targetId:i.values[0],action:args[4],firing:{mode:args[6]||'semi'}}};
+    else if(action==='firesubmit')intent={action:'attack',sourceFormId:fireForm.id,params:{abilityKey:args[5],targetId:args[6],action:args[4],firing:{mode:'auto',count:i.fields.getTextInputValue('count')}}};
+    else if(action==='weaponpick'||action==='weaponhand')intent={action:'switch',params:{weaponId:action==='weaponhand'?args[4]:i.values[0]==='none'?null:i.values[0],hand:action==='weaponhand'?i.values[0]:'auto'}};
+    else if(action==='itempick'||action==='repairpick')intent={action:'item',params:{itemId:action==='repairpick'?args[4]:i.values[0],targetId:action==='repairpick'?i.values[0]:undefined}};
+    else if(action==='cast'||action==='pass'||action==='finish'||action==='flee')intent={action,params:{type:args[4]}};
+    else throw new Error('操作未识别，请重新打开个人面板。');
+    return context.actionPanel.prepare(i,{battleId:b.id,actorId:a.id,turnId,...intent});
   }
   return { component, openModal, defenseView };
 }

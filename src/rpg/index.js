@@ -57,7 +57,7 @@ function createRpg(deps) {
   async function publishBattle(guild,battleId){if(store.backgroundPublications)return store.enqueue(guild,'battle',battleId,{priority:store.select(guild,s=>s.battles[battleId]?.pending)?0:5});return publishBattleNow(guild,battleId);}
   async function publishDefenseNow(guild, battleId) {
     const s=snapshot(guild),b=battle(s,battleId),ch=await textChannel(guild,b.channelId);
-    for(const hit of require('./aoe').hits(b).filter(h=>!h.notified&&(store.backgroundPublications||b.pending?.automatic||b.pending?.kind==='aoe')&&(!store.backgroundPublications||B.actorById(b,h.targetId).userId||AI.config(B.actorById(b,h.targetId).ai).mode!=='auto'))){
+    for(const hit of require('./aoe').hits(b).filter(h=>!h.notified&&(!store.backgroundPublications||B.actorById(b,h.targetId).userId||AI.config(B.actorById(b,h.targetId).ai).mode!=='auto'))){
       const target=B.actorById(b,hit.targetId),roles=target.userId?[]:s.config.gmRoleIds;
       const claimed=await store.transact(guild,'auto-defense:'+hit.id,client.user.id,st=>{const live=require('./aoe').hit(st.battles[b.id],hit.id);if(!live)return false;live.notified=true;st.battles[b.id].defenseNotifications||={};st.battles[b.id].defenseNotifications[hit.id]={status:'sending',targetId:hit.targetId,groupId:hit.groupId};return true;},'防守通知发送意图',{delivery:false});
       if(!claimed)continue;
@@ -86,6 +86,8 @@ function createRpg(deps) {
           ' 轮到 **' + a.name + '** 行动，请打开战场上的个人操作面板。';
         if(a.userId||AI.config(a.ai).mode!=='auto')await ch.send({ content, allowedMentions: { parse: [], users: a.userId ? [a.userId] : [], roles },nonce:turnId,enforceNonce:true });
       }
+      await battleEvents.publish(guild,b.id);
+      s=snapshot(guild);b=battle(s,battleId);
       if (b.messageId) {
         const message = await ch.messages.fetch(b.messageId).catch(e => { if (e.code === 10008) return null; throw e; });
         if (message) { const version=require('./outbox').fingerprint(b),rendered=await renderer.decorate(guild,U.battleView(s,b));
@@ -117,7 +119,7 @@ function createRpg(deps) {
       }
       if(!store.backgroundPublications)await exploration.publishCorpsesNow(guild, battleId).catch(e => logFailure('NPC掉落公示失败。', e));
       for (const a of b.actors.filter(a => a.userId && a.deathId)) await navigation.clearUser(guild, a.userId, a.finalCharacter.id);
-      await battleEvents.publish(guild,b.id);
+
 
     });
     publishing.set(key, job);
@@ -324,7 +326,7 @@ function createRpg(deps) {
     }
     const fromCatalog = i.commandName === 'gm' && ['发放', '批量发放', '修改模板'].includes(sub);
     if (fromCatalog && !U.gm(s, i.member)) { await i.respond([]); return; }
-    let entries = fromCatalog ? Object.values(s.catalog).filter(t => t.published) : Object.values(s.players[i.user.id]?.inventory || {});
+    let entries = fromCatalog ? Object.values(s.catalog).filter(t => t.published && (sub === '修改模板' || t.kind !== '杂物')) : Object.values(s.players[i.user.id]?.inventory || {});
     if (i.commandName === 'gm' && sub === '收购') {
       if (!U.gm(s, i.member)) { await i.respond([]); return; }
       const target = i.options.get('成员')?.value;
@@ -462,7 +464,7 @@ function createRpg(deps) {
     if (sub === '模板库') return catalogView(s, o.getString('类型') || '物品', 0);
     if (sub === '抽取公示') return activities.slash(i, member);
     if (sub === '草稿') {
-      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback','selection','fire','allocation','portrait','bulkissue','skillaward'].includes(f.kind));
+      const ref = o.getString('编号'), forms = Object.values(s.forms).filter(f => f.owner === uid && !f.done && !['drop', 'delete', 'buyback','selection','fire','aoe','battleAction','allocation','portrait','bulkissue','skillaward'].includes(f.kind));
       if (ref) return formView(s, ref, uid);
       return pickView('选择持久草稿', forms.map(f => ({ value: f.id, label: f.data?.name || f.data?.title || f.kind, description: f.id })), 'drafts', 0);
     }
@@ -506,15 +508,17 @@ function createRpg(deps) {
     return payload('GM' + sub + '已保存', '目标 <@' + target + '>\n' + (sub === '经验' ? '实得经验 ' + result.credited + '，等级 ' + result.before + '→' + result.level + '，获得自由点 ' + result.points :
       sub === '时运' ? '基础时运 '+result.luck : sub === '发放' ? result.map(item => item.name + ' · ' + item.id).join('\n') : sub === '次数' ? result.type + ' +' + result.amount : '自由点余额 ' + result.points));
   }
-  function catalogView(s, type, page) {
+  function catalogView(s, type, page, category = 'all') {
     const source = { '物品': 'catalog', '词条': 'traits', '异常': 'conditionTemplates', 'NPC': 'npcTemplates', '鉴定技能':'checkSkillTemplates','战斗技能':'skillTemplates' }[type] || 'catalog';
-    const entries = Object.values(s[source]||{}), total = Math.max(1, Math.ceil(entries.length / 12));
+    const entries = Object.values(s[source]||{}).filter(t=>source!=='catalog'||require('./item-categories').matches(t,category,true)), total = Math.max(1, Math.ceil(entries.length / 12));
     page = Math.max(0, Math.min(page, total - 1));
-    return payload('GM模板库 · ' + type, entries.slice(page * 12, page * 12 + 12).map(t => '**' + t.name + '** · ' + (t.kind || type) +
+    const result = payload('GM模板库 · ' + type, entries.slice(page * 12, page * 12 + 12).map(t => '**' + t.name + '** · ' + (t.kind || type) +
       '\n' + t.id + ' · v' + t.version).join('\n') + '\n\n' + (page + 1) + '/' + total, [
-      row(button('catalog:' + type + ':' + (page - 1), '上一页', undefined, page === 0), button('catalog:' + type + ':' + (page + 1), '下一页', undefined, page >= total - 1)),
+      ...(source==='catalog'?[require('./item-categories').row('catalogcategory',category,true)]:[]),
+      row(button('catalog:' + type + ':' + (page - 1)+':'+category, '上一页', undefined, page === 0), button('catalog:' + type + ':' + (page + 1)+':'+category, '下一页', undefined, page >= total - 1)),
       ...(entries.length ? [row(select('templateedit:' + source, '选择模板修改或查看', entries.slice(page * 12, page * 12 + 12).map(t => ({ label: t.name, value: t.id }))))] : []),
     ].filter(r => r.components.length));
+    return source==='catalog'?require('./loot-icons').grid(result,'GM目录 · '+category,entries.slice(page*12,page*12+12)):result;
   }
   async function battleSlash(i, member) {
     const s = snapshot(i.guildId), o = i.options, sub = o.getSubcommand();
@@ -587,11 +591,12 @@ function createRpg(deps) {
   const portraits=createPortraits({...deps,snapshot,tx,needGM,pickView});
   const renderer=deps.renderer||require('./map-image').createRenderer({portraits,logFailure,metrics});
   const battleEvents=require('./battle-events').createEvents({snapshot,store,client,textChannel,render:renderer.decorate,logFailure});
-  const aoePanel=require('./aoe').createAoePanel({snapshot,tx,publishBattle,canActor});
+  const actionPanel=require('./action-drafts').createPanel({snapshot,tx,store,canActor,publishBattle});
+  const aoePanel=require('./aoe').createAoePanel({snapshot,tx,publishBattle,canActor,actionPanel});
   const combatSkills=require('./skills').createSkills({snapshot,tx,needGM,pickView});
   const activities = createActivities({ snapshot, tx, store, textChannel, client, needGM, logFailure });
   const npcPanel=createNpcPanel({snapshot,tx,needGM,publishBattle});
-  const ammoPanel=createAmmunitionPanel({snapshot,tx,needGM,publishBattle});
+  const ammoPanel=createAmmunitionPanel({snapshot,tx,needGM,publishBattle,actionPanel});
   const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
   const boardRecovery=require('./board-recovery').createBoardRecovery({snapshot,store,tx,needGM,textChannel,busy:(g,r)=>publishing.has(g+':'+r)});
   const buyback = createBuyback({ snapshot, tx, needGM, announceOffer });
@@ -608,10 +613,10 @@ function createRpg(deps) {
     await store.transact(guild,'offer-intent:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:'sending'};},'交易通知意图',{delivery:false});
     try{const ch=await textChannel(guild,o.channelId),msg=await ch.send({content:'<@'+o.targetId+'> 有一份待确认的'+({trade:'交易',transfer:'转账',buyback:'GM收购报价'}[o.type])+'，5分钟内点击查看。',components:[row(button('offer:'+ref,'查看并操作交易',D.ButtonStyle.Primary))],allowedMentions:{parse:[],users:[o.targetId]},nonce:ref,enforceNonce:true});await store.transact(guild,'offer-sent:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:'sent',messageId:msg.id};},'交易通知送达',{delivery:false});}
     catch(e){if(!store.frozen(guild))await store.transact(guild,'offer-failed:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:typeof e.code==='number'&&e.code>=10000?'failed':'uncertain'};},'交易通知待核对',{delivery:false});throw e;}}
-  const outbox=require('./outbox').createOutbox({store,client,logFailure,metrics,handlers:{defense:publishDefenseNow,battle:publishBattleNow,map:async(g,r,f)=>{if(!store.select(g,s=>s.explorations[r]))return;await exploration.publishNow(g,r,f);},move:(g,r,f)=>exploration.publishMoveNow(g,...r.split('/'),f),corpses:(g,r,f)=>exploration.publishCorpsesNow(g,r,f),loot:(g,r,f)=>activities.publishNow(g,'loot',r,f),check:(g,r,f)=>activities.publishNow(g,'check',r,f),attempt:(g,r,f)=>activities.publishNow(g,'attempt',r,f),session:(g,r,f)=>activities.publishNow(g,'session',r,f),offer:publishOffer,rp:(g,r)=>rpPanel.publishQueued(g,...r.split('/')),rpDraft:(g,r,f)=>rpPanel.draft(g,r,f),reminder:(g,r)=>activities.remind(g,r)}});
+  const outbox=require('./outbox').createOutbox({store,client,logFailure,metrics,handlers:{eventImage:battleEvents.publishImage,defense:publishDefenseNow,battle:publishBattleNow,map:async(g,r,f)=>{if(!store.select(g,s=>s.explorations[r]))return;await exploration.publishNow(g,r,f);},move:(g,r,f)=>exploration.publishMoveNow(g,...r.split('/'),f),corpses:(g,r,f)=>exploration.publishCorpsesNow(g,r,f),loot:(g,r,f)=>activities.publishNow(g,'loot',r,f),check:(g,r,f)=>activities.publishNow(g,'check',r,f),attempt:(g,r,f)=>activities.publishNow(g,'attempt',r,f),session:(g,r,f)=>activities.publishNow(g,'session',r,f),offer:publishOffer,rp:(g,r)=>rpPanel.publishQueued(g,...r.split('/')),rpDraft:(g,r,f)=>rpPanel.draft(g,r,f),reminder:(g,r)=>activities.remind(g,r)}});
   store.onCommit(()=>outbox.wake());
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
-    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI,selections,aoePanel });
+    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI,selections,aoePanel,actionPanel });
   async function handle(i) {
     const receivedAt=performance.now();
     const ours = (i.isChatInputCommand?.() || i.isAutocomplete?.()) ? commandNames.has(i.commandName) : i.customId?.startsWith('rpg:');
@@ -633,7 +638,7 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await boardRecovery.openModal(i,s) || await variantPanel.openModal(i,s) || await mapExtra.openModal(i,s) || await rpPanel.openModal(i,s) || await aoePanel.openModal(i,s) || await npcPanel.openModal(i,s) || await checkSkills.openModal(i,s) || await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
+      if (i.customId && (await actionPanel.openModal(i,s) || await boardRecovery.openModal(i,s) || await variantPanel.openModal(i,s) || await mapExtra.openModal(i,s) || await rpPanel.openModal(i,s) || await aoePanel.openModal(i,s) || await npcPanel.openModal(i,s) || await checkSkills.openModal(i,s) || await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
       else await i.deferReply(publicResult ? {} : { flags: E });
@@ -644,6 +649,7 @@ function createRpg(deps) {
       const member = i.member?.id===i.user.id&&i.member?.guild?.id===i.guildId&&i.member?.roles?.cache&&i.member?.permissions?.has
         ? i.member : await i.guild.members.fetch({ user: i.user.id, force: true });
       const result = i.isChatInputCommand?.() ? await slash(i, member) :
+        i.customId.startsWith('rpg:act:') ? await actionPanel.component(i,member) :
         i.customId.startsWith('rpg:variant:') ? await variantPanel.component(i,member) :
         i.customId.startsWith('rpg:mapx:') ? await mapExtra.component(i,member) :
         i.customId.startsWith('rpg:rp:') ? await rpPanel.component(i,member) :
@@ -664,7 +670,7 @@ function createRpg(deps) {
         i.customId.startsWith('rpg:text:') ? await texts.component(i,member) :
         i.customId.startsWith('rpg:faction:') ? await factions.component(i, member) :
         i.customId.startsWith('rpg:gmui:') ? await gmUI.component(i, member) :
-        /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|hand:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
+        /^rpg:(choose|quote(?:items|coins|save|finish)?)(:|category:|hand:|amount:|submit:|part:|repair:|do:)/.test(i.customId) ? await selections.component(i,member) : await component(i, member);
       workDone();
       const raw=result||payload('已完成','操作已保存。');
       const delayed=store.backgroundPublications&&(raw.rpgMap||raw.rpgPortraits);

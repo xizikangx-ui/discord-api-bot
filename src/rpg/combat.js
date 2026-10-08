@@ -348,13 +348,15 @@ function finish(state, b, turnId, rng = randomInt) {
   ok(b.status === 'active' && b.current?.id === turnId, '行动已变化，请刷新。');
   const actor = actorById(b, b.current.actorId), p = actorCharacter(state, actor);
   ok(!b.pending, '请先完成待响应攻击。');
+  record(b,actor.name+'结束本次行动机会。',{actorId:actor.id,eventType:'finish'});
   completeOpportunity(b, b.current); endConditions(p, b, actor, rng); b.current = null;
   nextOpportunity(state, b, rng);
 }
 function pass(state, b, turnId, type, rng = randomInt) {
-  const { turn } = current(state, b, turnId);
+  const { turn,actor } = current(state, b, turnId);
   ok(!b.pending && ['quick', 'formal'].includes(type), '当前不能放弃该行动。');
   turn[type] = 0;
+  record(b,actor.name+'放弃'+(type==='quick'?'快速':'正式')+'行动。',{actorId:actor.id,eventType:'pass',action:type});
   if (!turn.quick && !turn.formal && turn.move <= 0) finish(state, b, turnId, rng);
 }
 function movementCost(b, from, to) {
@@ -426,7 +428,7 @@ function attackPlan(state,b,{actor,p,turn},abilityKey,targetId,action='formal',f
 function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng = randomInt, firing = {}) {
   const AM=require('./ammunition'),plan=attackPlan(state,b,current(state,b,turnId),abilityKey,targetId,action,firing);
   const {actor,p,turn,ability,t,area,targets,weapon,firearm,magazineWeapon,mode,count}=plan;
-  if(plan.castingStart){turn[action]--;actor.casting={key:abilityKey,name:t.name,required:t.casting,count:1,confirmed:false};record(b,actor.name+'开始吟唱'+t.name+'。',{actorId:actor.id,portrait:p.portraits?.avatar,ability:t.name});return {casting:true};}
+  if(plan.castingStart){turn[action]--;actor.casting={key:abilityKey,name:t.name,required:t.casting,count:1,confirmed:false,presentation:{kind:'skill',damageTypes:require('./combat-presentation').damageTypes(t.damage)}};record(b,actor.name+'开始吟唱'+t.name+'。',{actorId:actor.id,portrait:p.portraits?.avatar,ability:t.name,presentation:{kind:'skill',damageTypes:require('./combat-presentation').damageTypes(t.damage)}});return {casting:true};}
   const rounds=[];
   for(let n=0;n<count;n++){let round={};if(magazineWeapon){round=weapon.loaded.rounds?.shift()||{};weapon.loaded.current--;}
     else if(t.weaponType==='弓'){const ammo=Object.values(p.inventory).find(i=>i.snapshot.kind==='弹药'&&AM.ammoCompatible(t,i.snapshot)&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0));ok(ammo,'缺少对应箭矢。');round=AM.round(ammo.snapshot);ammo.quantity--;if(!ammo.quantity)delete p.inventory[ammo.id];}rounds.push(round);}
@@ -439,11 +441,11 @@ function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng =
       for(const ref of round.conditions||[]){const previous=conditions.find(c=>c.id===ref.id);if(!previous)conditions.push(clone(ref));else if(C.SEVERITIES.indexOf(ref.severity)>C.SEVERITIES.indexOf(previous.severity))Object.assign(previous,clone(ref));}
       shots.push({damage:part,rolls:shotRolls,hit:M.modify(stats.effects,'hit',t.hit)});if(shots.length===1)Object.assign(rolls,shotRolls);
     }
-    return {id:area?id('h'):groupId,groupId,turnId,attackerId:actor.id,attackerCharacterId:p.id,targetId:target.id,targetCharacterId:targetP.id,attackName:t.name,hit:shots[0]?.hit??t.hit,damage,rolls,shots,conditions,armorWeakening:clone(t.armorWeakening||{type:'physical',amount:0}),fireMode:mode,shotCount:count,ammoRemaining:magazineWeapon?weapon.loaded.current:null,ammoEmpty:empty,defenses:clone(targetStats.defenses),agility:M.signedModifier(targetStats.effects,'dodge',targetStats.attributes.agility),expiresAt};
+    return {id:area?id('h'):groupId,groupId,turnId,attackerId:actor.id,attackerCharacterId:p.id,targetId:target.id,targetCharacterId:targetP.id,attackName:t.name,presentation:{kind:t.kind==='技能'?'skill':'attack',weaponType:t.weaponType,damageTypes:require('./combat-presentation').damageTypes(t.damage),abilityKey},hit:shots[0]?.hit??t.hit,damage,rolls,shots,conditions,armorWeakening:clone(t.armorWeakening||{type:'physical',amount:0}),fireMode:mode,shotCount:count,ammoRemaining:magazineWeapon?weapon.loaded.current:null,ammoEmpty:empty,defenses:clone(targetStats.defenses),agility:M.signedModifier(targetStats.effects,'dodge',targetStats.attributes.agility),expiresAt};
   });
   if(weapon&&t.kind==='武器')Dur.drain(weapon,count);
   b.pending=area?{kind:'aoe',id:groupId,attackerId:actor.id,turnId,area:clone(area),hits:pendingHits,expiresAt}:pendingHits[0];
-  record(b,actor.name+'使用'+t.name+(firearm?'，'+(mode==='auto'?'全自动连射':'半自动')+count+'发':'')+'攻击'+targets.map(a=>a.name).join('、')+'，等待防守。'+(empty?' ⚠️ 弹夹已空：无弹药，请装填。':''),{actorId:actor.id,portrait:p.portraits?.avatar,groupId,children:area?pendingHits.map(h=>({id:h.id,targetId:h.targetId,name:actorById(b,h.targetId).name,shots:clone(h.shots)})):null,targetIds:targets.map(a=>a.id),ability:t.name,hit:pendingHits[0].hit,damage:pendingHits[0].damage,shots:pendingHits[0].shots,ammoEmpty:empty,ammoRemaining:magazineWeapon?weapon.loaded.current:null,shotCount:count,mode,area});
+  record(b,actor.name+'使用'+t.name+(firearm?'，'+(mode==='auto'?'全自动连射':'半自动')+count+'发':'')+'攻击'+targets.map(a=>a.name).join('、')+'，等待防守。'+(empty?' ⚠️ 弹夹已空：无弹药，请装填。':''),{actorId:actor.id,portrait:p.portraits?.avatar,groupId,presentation:pendingHits[0].presentation,children:area?pendingHits.map(h=>({id:h.id,targetId:h.targetId,name:actorById(b,h.targetId).name,shots:clone(h.shots)})):null,targetIds:targets.map(a=>a.id),ability:t.name,hit:pendingHits[0].hit,damage:pendingHits[0].damage,shots:pendingHits[0].shots,ammoEmpty:empty,ammoRemaining:magazineWeapon?weapon.loaded.current:null,shotCount:count,mode,area});
   return b.pending;
 }
 function defend(state, b, pendingId, choice, rng = randomInt) {
@@ -460,10 +462,10 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
     dodge = C.dice('1d20', 'disadvantage', rng);
     dodge.total += hit.agility; dodge.success = p.hp > 0 && dodge.total > hit.hit;
   }
-  let total = 0; const breakdown = {}; const saves = [];const armorDamage=[];
+  let total = 0; const breakdown = {}; const saves = [];const armorDamage=[],perShot=[];
   if (!dodge?.success) {
     const fraction = choice === 'both' ? 0.5 : choice === 'defend' ? 1 : 0;
-    let defenses=hit.defenses;for(const shot of hit.shots||[{damage:hit.damage}]){for(const [type,value] of Object.entries(shot.damage)){const amount=Math.max(0,Math.floor(value-defenses[type]*fraction));breakdown[type]=(breakdown[type]||0)+amount;total+=amount;}armorDamage.push(...Dur.weaken(p,hit.armorWeakening));defenses=M.stats(p).defenses;}
+    let defenses=hit.defenses;for(const shot of hit.shots||[{damage:hit.damage}]){const actual={},reduced={};let shotTotal=0;for(const [type,value] of Object.entries(shot.damage)){const amount=Math.max(0,Math.floor(value-defenses[type]*fraction));actual[type]=amount;reduced[type]=Math.max(0,value-amount);shotTotal+=amount;breakdown[type]=(breakdown[type]||0)+amount;total+=amount;}perShot.push({total:shotTotal,breakdown:actual,reduced,maxRoll:require('./combat-presentation').shotMax(shot)});armorDamage.push(...Dur.weaken(p,hit.armorWeakening));defenses=M.stats(p).defenses;}
     p.hp = Math.max(0, p.hp - total);
     for (const ref of hit.conditions) {
       const attacker = actorById(b, hit.attackerId), origin = actorCharacter(state, attacker);
@@ -471,14 +473,15 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
     }
   }
   M.syncHP(p);
+  if(dodge?.success)for(const shot of hit.shots||[])perShot.push({total:0,breakdown:{},reduced:{},maxRoll:false});
   record(b, target.name + (dodge?.success ? '成功闪避。' : '受到' + total + '伤害，剩余' + p.hp + 'HP。'),
-    {actorId:target.id,portrait:p.portraits?.avatar,attackerId:hit.attackerId,ability:hit.attackName,choice,dodge,breakdown,saves,armorDamage,hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,shots:hit.shots,rolls:hit.rolls,total,hitId:hit.id});
+    {actorId:target.id,portrait:p.portraits?.avatar,attackerId:hit.attackerId,ability:hit.attackName,choice,dodge,breakdown,saves,armorDamage,hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,shots:hit.shots,rolls:hit.rolls,total,perShot,presentation:hit.presentation,hitId:hit.id});
   if(armorDamage.length)record(b,'护甲削弱：'+armorDamage.map(d=>d.name+'耐久 -'+d.lost+'（剩余'+d.durability+'）').join('、'));
   M.syncHP(p);
-  hit.result={target:target.name,total,dodge,breakdown,saves,armorDamage,hp:p.hp,defaulted};
+  hit.result={target:target.name,total,dodge,breakdown,saves,armorDamage,hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,perShot,defaulted};
   require('./battle-events').settle(b,hit);
   if(group.kind!=='aoe'||!require('./aoe').hits(b).length)b.pending=null;
-  if (p.hp <= 0) require('./mortality').settle(state, b, target, hit.attackerId);
+  if (p.hp <= 0) {const death=require('./mortality').settle(state, b, target, hit.attackerId);if(death){Object.assign(hit.result,{deathId:death.id,killed:death.team==='enemy',reward:death.rewarded?.result||null});require('./battle-events').settle(b,hit);const event=b.publicEvents?.find(e=>e.details.hitId===hit.id);if(event){Object.assign(event.details,C.clone(hit.result));event.version++;const card=b.npcCards?.[event.actorId];if(card?.eventId===event.id){card.version++;card.publication.status='pending';}}}}
   const result = { target: target.name, total, dodge, breakdown, saves, armorDamage,hp: p.hp, defaulted };
   if (b.status === 'active' && b.current && !b.pending) {
     const active = actorById(b, b.current.actorId);
@@ -509,7 +512,7 @@ function confirmCasting(state, b, turnId) {
   const { actor, turn } = current(state, b, turnId);
   validateQuick(state,b,{actor,p:actorCharacter(state,actor),turn},{type:'cast'});
   turn.quick--; actor.casting.confirmed = true;
-  record(b, actor.name + '确认吟唱完成。',{actorId:actor.id,portrait:actorCharacter(state,actor).portraits?.avatar});
+  record(b, actor.name + '确认吟唱完成。',{actorId:actor.id,portrait:actorCharacter(state,actor).portraits?.avatar,ability:actor.casting.name,presentation:actor.casting.presentation});
 }
 function reload() { throw new Error('旧直接装填已停用，请使用弹夹管理：先填弹夹，再更换弹夹。'); }
 function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
@@ -539,7 +542,7 @@ function flee(state, b, turnId, rng = randomInt) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.formal > 0, '正式行动不可用。');
   turn.formal--; actor.retreated = true;
-  record(b, actor.name + '离开战斗。');
+  record(b, actor.name + '离开战斗。',{actorId:actor.id,eventType:'flee'});
   completeOpportunity(b, turn); endConditions(p, b, actor, rng); b.current = null;
   nextOpportunity(state, b, rng);
 }

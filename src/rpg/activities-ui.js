@@ -44,7 +44,7 @@ function lootView(record) {
       (record.result.pending ? '⚠️ 总重量超限：整批未入包、未扣次数；再次开启仍是这一批物品。' : record.result.free ? '✅ 整批已入包，探索领取不消耗次数。' : '✅ 整批已入包，只消耗一次开箱次数。'));
     view.embeds[0].addFields(field('总重量', C.kg(items.reduce((sum, item) => sum + require('./model').itemWeight(item), 0)), true),
       field('物品总价值', items.reduce((sum, item) => sum + item.snapshot.value * item.quantity, 0), true));
-    view.embeds[0].setFooter({ text: '批次 ' + record.result.batchId + ' · 抽取记录 ' + record.id }); return view;
+    view.embeds[0].setFooter({ text: '批次 ' + record.result.batchId + ' · 抽取记录 ' + record.id }); const icon=items.find(i=>require('./loot-icons').resolve(i));return icon?require('./loot-icons').decorate(view,icon):view;
   }
   const t = record.result.item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity);
   const view = payload(record.result.pending ? '抽取结果 · 待领取' : '抽取结果 · 已入包',
@@ -52,11 +52,11 @@ function lootView(record) {
     '\n\n' + (record.result.pending ? '⚠️ 超重：未入包、未扣次数，再次开启仍是此物品。' : record.result.free ? '✅ 已保存到背包，探索领取不消耗次数。' : '✅ 已保存到背包，本次消耗一次抽取次数。'), [], r?.color);
   view.embeds[0].addFields(field('稀有度 / 分类', (r?.name || '未知') + ' / ' + t.kind, true),
     field('重量', C.kg(require('./model').itemWeight(record.result.item)), true), field('价值', t.value, true));
-  view.embeds[0].setFooter({ text: record.result.item.id + (record.result.batchId ? ' · 批次 ' + record.result.batchId : '') + ' · 抽取记录 ' + record.id }); return view;
+  view.embeds[0].setFooter({ text: record.result.item.id + (record.result.batchId ? ' · 批次 ' + record.result.batchId : '') + ' · 抽取记录 ' + record.id }); return require('./loot-icons').decorate(view,record.result.item);
 }
 function lootMessages(record) {
   if (!(record.result.items?.length > 1)) return [lootView(record)];
-  const messages = [lootView(record)]; let embeds = [], size = 0;
+  const messages = [lootView(record)]; let embeds = [], files = [], size = 0;
   for (const [n, item] of record.result.items.entries()) {
     const t = item.snapshot, r = C.RARITIES.find(r => r.id === t.rarity);
     const e = U.embed('开箱物品 ' + (n + 1) + '/' + record.result.items.length + ' · ' + t.name, t.description || '暂无描述', r?.color)
@@ -64,10 +64,10 @@ function lootMessages(record) {
         field('价值', t.value, true), field('开箱者 / 状态', '<@' + record.userId + '> · ' + (record.result.pending ? '整批待领取' : '已入包')))
       .setFooter({ text: item.id + ' · 批次 ' + record.result.batchId });
     const j = e.toJSON(), length = j.title.length + j.description.length + j.footer.text.length + j.fields.reduce((s, f) => s + f.name.length + f.value.length, 0);
-    if (embeds.length && size + length > 5500) { messages.push({ embeds, components: [], allowedMentions: { parse: [] } }); embeds = []; size = 0; }
-    embeds.push(e); size += length;
+    if (embeds.length && size + length > 5500) { messages.push({ embeds, files, components: [], allowedMentions: { parse: [] } }); embeds = []; files = []; size = 0; }
+    embeds.push(e);const decorated=require('./loot-icons').decorate({embeds,files},item,embeds.length-1);files=decorated.files;size += length;
   }
-  if (embeds.length) messages.push({ embeds, components: [], allowedMentions: { parse: [] } });
+  if (embeds.length) messages.push({ embeds, files, components: [], allowedMentions: { parse: [] } });
   return messages;
 }
 function createActivities(context) {

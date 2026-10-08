@@ -1,6 +1,7 @@
 'use strict';
 const C = require('./constants'), M = require('./model'), B = require('./combat'), U = require('./ui');
 const R = require('./room-settings');
+const Categories = require('./item-categories');
 const { requireThat: ok } = C;
 const get = (data, path) => path.split('.').reduce((v, k) => v?.[k], data);
 function set(data, path, value) {
@@ -60,7 +61,7 @@ function fields(form) {
     {key:'randomSupplies',label:'随机散落物资 · 0—6件概率',type:'randomRoom',source:'catalog',max:6,limit:25,predicate:t=>t.kind!=='技能'},
     {key:'randomNpcs',label:'随机NPC · 0—10个概率',type:'randomRoom',source:'npcTemplates',max:10,limit:25},...(form.variantParent?[]:[field('variants','十种环境变种','variants')])];
   if (kind === 'npc') return [...common, field('humanoid', '人形NPC（死亡掉落实物）', 'bool'), field('baseXP', '基础击杀经验（默认0）', 'number'),enumField('anomalyRank','异常等级',require('./npc-strength').LEVELS),field('randomStrength','随机等级强度','bool'),field('levelMin','生成最低等级','number'),field('levelMax','生成最高等级','number'), ...Object.entries(C.ATTRIBUTES).map(([k, n]) => field('attributes.' + k, n, 'number')),
-    field('hpMax', '生命上限', 'number'), refField('itemIds', '随身实物（装备另设槽位）', 'catalog', 25,t=>t.kind!=='技能'),refField('skillIds','NPC战斗技能','skillTemplates',25),
+    field('hpMax', '生命上限', 'number'), refField('itemIds', '随身实物（装备另设槽位）', 'catalog', 25,t=>!['技能','杂物'].includes(t.kind)),refField('skillIds','NPC战斗技能','skillTemplates',25),
     {key:'quantities',label:'初始物品数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'itemIds',max:100}];
   if (kind === 'rolepanel') return [field('title', '面板标题'), field('description', '面板说明', 'long'),
     field('roleIds', '领取身份组', 'roles'), field('exclusive', '互斥单选', 'bool'), field('allowCancel', '允许取消领取', 'bool'),
@@ -170,16 +171,16 @@ function view(state, form, preview = false) {
   ]);
   if(form.kind==='npc')result.components.push(U.row(U.button('npcui:f:'+form.id+':_:home','NPC自动操作 / 装备槽位',U.D.ButtonStyle.Primary)));
   if(form.kind==='npc')result.rpgPortraits=form.data.portraits || {};
-  return result;
+  return form.kind==='item'?require('./loot-icons').decorate(result,{templateId:form.existingId,snapshot:form.data}):result;
 }
-function options(state, def) {
+function options(state, def, category) {
   if (def.type === 'conditions') return Object.values(state.conditionTemplates).filter(t => t.published).flatMap(t =>
     C.SEVERITIES.filter(s => t.levels[s]).map(s => ({ label: t.name + '·' + s, value: t.id + '|' + s })));
-  if (def.type === 'refs') return Object.values(state[def.source]).filter(t => t.published && (!def.predicate || def.predicate(t))).map(t => ({ label: t.name, value: t.id }));
+  if (def.type === 'refs') return Object.values(state[def.source]).filter(t => t.published && (!def.predicate || def.predicate(t)) && (!category || def.source !== 'catalog' || Categories.matches(t, category, def.key !== 'itemIds'))).map(t => ({ label: t.name, value: t.id }));
   return (def.values || []).map(v => typeof v === 'string' ? { label: v, value: v } : v);
 }
 function choiceView(state, form) {
-  const def = fields(form)[form.field], values = options(state, def);
+  const def = fields(form)[form.field], categorized = def.type === 'refs' && def.source === 'catalog' && ['itemIds','supplyIds'].includes(def.key), category = form.itemCategories?.[def.key] || (def.key === 'itemIds' ? 'all' : undefined), values = options(state, def, category);
   const page = Math.max(0, Math.min(form.choicePage, Math.ceil(values.length / 25) - 1));
   const part = values.slice(page * 25, page * 25 + 25);
   const selected = get(form.data, def.key);
@@ -187,6 +188,7 @@ function choiceView(state, form) {
     Array.isArray(selected) ? selected : [selected];
   const multi = ['multi', 'refs', 'conditions'].includes(def.type);
   return U.payload(def.label, '选择后立即保存到草稿。多页多选保留其他页的选择。\n当前：' + display(selected, def, state), [
+    ...(categorized ? [Categories.row('formcategory:' + form.id, category, def.key !== 'itemIds')] : []),
     ...(part.length ? [U.row(U.select('formchoice:' + form.id + ':' + page, def.label, part.map(o => ({ ...o, default: selectedValues.includes(o.value) })),
       multi ? 0 : 1, multi ? Math.min(part.length, def.limit || 10) : 1))] : []),
     U.row(U.button('formchoicepage:' + form.id + ':' + (page - 1), '上一页', undefined, page <= 0),
@@ -195,7 +197,7 @@ function choiceView(state, form) {
   ]);
 }
 function setChoice(state, form, page, selected) {
-  const def = fields(form)[form.field], all = options(state, def), currentPage = all.slice(page * 25, page * 25 + 25).map(o => o.value);
+  const def = fields(form)[form.field], all = options(state, def, form.itemCategories?.[def.key] || (def.key === 'itemIds' ? 'all' : undefined)), currentPage = all.slice(page * 25, page * 25 + 25).map(o => o.value);
   ok(selected.every(x => currentPage.includes(x)), '选择已失效。');
   if (['multi', 'refs', 'conditions'].includes(def.type)) {
     let values = get(form.data, def.key) || [];

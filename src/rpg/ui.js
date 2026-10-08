@@ -96,7 +96,7 @@ function inventoryView(state, userId, viewerId, page = 0) {
   result.embeds[0].addFields(field('负重', C.kg(s.carried) + ' / ' + C.kg(s.limit) + (s.overloaded ? ' · 超重' : s.burdened ? ' · 减速' : ''), true),
     field('可用游戏币', p.balance - reserve.coins, true), field('抽取次数', '卡牌 ' + p.tickets.card + '\n' +
       (Object.entries(p.tickets.boxes).map(([k, v]) => k + ' ' + v).join('／') || '暂无箱子次数'), true));
-  return result;
+  return require('./loot-icons').grid(result, p.name + ' · 背包藏品', pageItems);
 }
 function itemView(state, userId, viewerId, ref, page = 0) {
   const p = M.player(state, userId), item = p.inventory[ref]; C.requireThat(item, '物品已不存在。');
@@ -137,9 +137,10 @@ function itemView(state, userId, viewerId, ref, page = 0) {
     '\n解除：' + ((t.clearConditions || []).map(id => state.conditionTemplates[id]?.name || id).join('、') || '无') +
     (t.duration && t.effects.length ? '\n持续 ' + t.duration.count + (t.duration.kind === 'minutes' ? '分钟' : '次自身行动') : '')));
   result.embeds[0].setFooter({ text: item.id + ' · 模板v' + item.version + ' · ' + (page + 1) + '/' + pages.length });
-  return result;
+  return require('./loot-icons').decorate(result, item);
 }
-function battleView(state, b) {
+function battleView(state, b, page = 0, layout = 'portrait') {
+  const pages = Math.max(1, Math.ceil(b.actors.length / 10)); page = Math.max(0, Math.min(Number(page) || 0, pages - 1));
   const actorAt = {};
   b.actors.forEach((a, i) => { const key = Math.floor(a.x / 50) + ',' + Math.floor(a.y / 50); actorAt[key] = actorAt[key] ? '**' : String(i + 1).padStart(2, '0'); });
   let grid = '';
@@ -156,7 +157,8 @@ function battleView(state, b) {
     '\n当前：' + (current?.name || '等待GM') + (b.current ? ' · 快速' + b.current.quick + ' 正式' + b.current.formal + ' 移动' + b.current.move + '米' : '') +
     (b.pauseReason ? '\n' + b.pauseReason : '') + '\n\n' + '🟦 友方　🟥 敌方　🟨 当前行动　🟫 困难地形　⬛ 阻挡' +
     (b.roomObstacles ? '\n障碍：' + require('./encounter-layout').describe({obstacles:b.roomObstacles}) : '');
-  const details = b.actors.map((a, n) => {
+  const details = b.actors.slice(page * 10, page * 10 + 10).map((a, offset) => {
+      const n = page * 10 + offset;
       const p = B.actorCharacter(state, a), s = M.stats(p);
       return (n + 1) + '. ' + a.name.slice(0, 24) + ' [' + (a.team === 'ally' ? '友方' : '敌方') + '] HP ' + p.hp + '/' + s.maxHP +
         ' AP ' + p.ap + ' (' + a.x + ',' + a.y + ') ' + (a.deathId ? '💀 已死亡' : a.retreated ? '离场' : '') +
@@ -167,13 +169,14 @@ function battleView(state, b) {
     button('withdraw:' + b.id, '撤回报名'), button('start:' + b.id, 'GM正式开战', D.ButtonStyle.Primary),
     button('battle:' + b.id, '查看战场'))] : [row(button('personal:' + b.id, '开始行动／个人面板', D.ButtonStyle.Primary),
       button('battle:' + b.id, '刷新战场'), button('control:' + b.id, 'GM操作'))];
-  if(b.status!=='ended')rows.push(row(button('zoom:'+b.id,'私有放大战场'),button('event:'+b.id+':retry:0','GM核对后补发操作卡')));
+  if(b.status!=='ended')rows.push(row(button('battle:'+b.id+':'+page+':'+(layout==='wide'?'portrait':'wide'),layout==='wide'?'手机竖版':'横版大图'),button('event:'+b.id+':retry:0','GM核对后补发操作卡')));
+  if (pages > 1 && b.status!=='ended') rows.push(row(button('battle:'+b.id+':'+(page-1)+':'+layout,'上一页名单',undefined,!page),button('battle:'+b.id+':'+(page+1)+':'+layout,'下一页名单',undefined,page===pages-1)));
   if (b.pending) rows.push(row(button('defense:' + b.id + ':' + b.pending.id, '打开防守面板', D.ButtonStyle.Danger)));
   const color = b.status === 'ended' ? 0x95a5a6 : 0x5865f2;
   const result = payload('战场 · ' + b.name, header, rows, color);
-  result.embeds.push(embed('参战者与记录', details, color));
+  result.embeds.push(embed('参战者与记录 · '+(page+1)+'/'+pages, details, color));
   result.embeds[0].setFooter({ text: '战斗 ' + b.id + ' · ' + status });
-  return require('./map-image').prepare(result,{kind:'battle',state,b});
+  return require('./map-image').prepare(result,{kind:'battle',state,b,page,layout});
 }
 function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   require('./ammunition').normalize(B.actorCharacter(state,a));
@@ -226,7 +229,7 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const v = payload('个人行动面板 · ' + a.name, body, rows);
   v.rpgPortraits = p.portraits || {};
   v.embeds[0].addFields(...characterView(p, true, statusPage).embeds[0].data.fields);
-  return v;
+  return require('./map-image').prepare(v,{kind:'personal',state,b,a});
 }
 function offerView(state, offer, viewer) {
   const body = '交易编号 ' + offer.id + ' · ' + ({ editing: '等待报价', ready: '等待确认', completed: '已完成', cancelled: '已取消', expired: '已过期' }[offer.status]) +
@@ -236,11 +239,15 @@ function offerView(state, offer, viewer) {
       '\n游戏币 ' + side.coins + '\n' + (side.items.map(e => (state.players[uid]?.inventory[e.id]?.snapshot.name || e.id) + ' ×' + e.quantity).join('、') || '无物品') +
       '\n' + (offer.confirmations[uid] === offer.revision ? '已确认' : '未确认')).join('\n\n');
   const active = M.activeOffer(offer);
-  return payload('资产交换 · 仅交易双方和GM可见', body, [row(
+  const result = payload('资产交换 · 仅交易双方和GM可见', body, [row(
     button('quote:' + offer.id + ':' + viewer, '填写自己的报价', D.ButtonStyle.Primary, !active || offer.type !== 'trade' || !offer.sides[viewer]),
     button('offerconfirm:' + offer.id + ':' + viewer + ':' + offer.revision, '确认当前报价', D.ButtonStyle.Success, !active || offer.status !== 'ready'),
     button('offercancel:' + offer.id + ':' + viewer, '取消', D.ButtonStyle.Danger, !active),
     button('offer:' + offer.id, '刷新'))]);
+  const items = Object.entries(offer.sides).flatMap(([uid,side])=>side.items.map(e=>{
+    const item=state.players[uid]?.inventory[e.id]; return item && {...item, quantity:e.quantity};
+  })).filter(Boolean);
+  return require('./loot-icons').grid(result, '交易物品预览', items.slice(0,12));
 }
 module.exports = { D, E, row, button, select, embed, payload, modal, gm, playerRole, memberRoles,
   characterView, draftView, inventoryView, itemView, battleView, personalView, offerView, field, bar, effectsText, temporaryText };

@@ -51,7 +51,7 @@ function settle(state, b, a, sourceReference = null) {
     for (const map of Object.values(state.explorations || {})) if (map.participants?.[a.userId]?.characterId === p.id) {delete map.participants[a.userId];require('./map-links').releaseEmpty(state,map);}
     delete state.players[a.userId]; delete state.characterDrafts[a.userId];
   } else if (a.team === 'enemy' && killerUserId && state.players[killerUserId]?.id === killerCharacterId && state.players[killerUserId].hp > 0) reward(state, b, d, killerUserId);
-  record(b, a.name + (a.userId ? '死亡，角色及资产已清空，可重新建卡。' : '死亡。'), { deathId: d.id,actorId:a.id });
+  record(b, a.name + (a.userId ? '死亡，角色及资产已清空，可重新建卡。' : '死亡。'), { deathId:d.id,actorId:a.id,killed:d.team==='enemy',sourceId,sourceName:source?.name,reward:d.rewarded?.result||null });
   return d;
 }
 // Catch non-attack HP changes at the transaction boundary; historical zero HP is untouched.
