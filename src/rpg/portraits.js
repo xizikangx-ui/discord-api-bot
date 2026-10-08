@@ -82,7 +82,7 @@ function createPortraits({client,channel,encrypt,decrypt,fetcher=fetch,snapshot,
     const uploads={};for(const [slot,a]of files)uploads[slot]=await upload(i.guildId,i.user.id,a);
     const f=await tx(i,st=>{if(npc)needGM(st,member);const p=npc?null:M.player(st,i.user.id);
       ok(!p||p.id===s.players[i.user.id].id,'角色已经变化，请重新上传。');
-      const f={id:C.id('f'),kind:'portrait',owner:i.user.id,targetType:npc?'npc':'player',targetId:p?.id,uploads,clear,expiresAt:Date.now()+14*60000};st.forms[f.id]=f;return f;},'准备角色图片');
+      const f={id:C.id('f'),kind:'portrait',owner:i.user.id,targetType:npc?'npc':'player',targetId:p?.id,uploads,clear,expiresAt:C.confirmationDeadline(14*60000)};st.forms[f.id]=f;return f;},'准备角色图片');
     return npc?list(snapshot(i.guildId),f):preview(snapshot(i.guildId),f);
   }
   async function component(i,member) {

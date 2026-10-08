@@ -481,7 +481,7 @@ test('defense deadline forces pure defense, equality fails dodge, condition pena
   s.players['1'].conditions.push({ modifiers: [{ target: 'resist:mental', op: 'add', value: -3 }] });
   assert.equal(M.stats(s.players['1']).resist.mental, -3);
 });
-test('a full battle button flow supports move modal, attack selection, private defense and stale click', async () => {
+test('a full battle button flow supports map movement, attack selection, private defense and stale click', async () => {
   const h = harness(), rpg = createRpg(h.deps); await rpg.start();
   try {
     const ref = await rpg.store.transact(C.DEFAULT_GUILD_ID, 'setup', 'GM', st => {
@@ -489,8 +489,8 @@ test('a full battle button flow supports move modal, attack selection, private d
       const b = B.createBattle(st, 'channel', 'GM', 'test'); B.join(st, b, '1'); B.join(st, b, '2'); B.start(st, b, null, minRng); return b.id;
     });
     let s = rpg.store.snapshot(C.DEFAULT_GUILD_ID), b = s.battles[ref], a = b.actors[0], prefix = [b.id, a.id, '1', b.current.id].join(':');
-    const openMove = h.interaction('1', null, {}, 'rpg:move:' + prefix); await rpg.handle(openMove); assert.ok(openMove.modal); openMove.modal.toJSON();
-    const move = h.interaction('1', null, {}, 'rpg:movevalue:' + prefix, [], { x: '26', y: '25' }); await rpg.handle(move); validateMessage(move.result); await click(h,rpg,'1',move,'直接执行');
+    const openMove = h.interaction('1', null, {}, 'rpg:move:' + prefix); await rpg.handle(openMove); assert.ok(openMove.result.components.length);assert.equal(openMove.modal,undefined);
+    const move = h.interaction('1', null, {}, 'rpg:movement:point:'+b.id+':'+a.id+':0:0:11'); await rpg.handle(move); validateMessage(move.result); await click(h,rpg,'1',move,'直接执行');
     const choices = h.interaction('1', null, {}, 'rpg:attackpick:' + prefix + ':formal:0'); await rpg.handle(choices); validateMessage(choices.result);
     const selectAttack = h.interaction('1', null, {}, 'rpg:attackpick:' + prefix + ':formal:select', [rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'].equipped.weapon]); await rpg.handle(selectAttack); validateMessage(selectAttack.result);
     const target = h.interaction('1', null, {}, 'rpg:target:' + prefix + ':formal:'+s.players['1'].equipped.weapon, [b.actors[1].id]); await rpg.handle(target); validateMessage(target.result); await click(h,rpg,'1',target,'直接执行');
@@ -1006,7 +1006,7 @@ test('upgrade cards and commands meet full Discord limits with long real IDs and
   validateMessage(U.characterView(p)); validateMessage(U.inventoryView(s, '1', '1234567890123456789'));
   validateMessage(AU.checkView(A.createCheck(s, 'GM', 'channel', { name: '鉴定', description: '字'.repeat(2000), rule: 'd20', threshold: 10 })));
   validateMessage(AU.sessionView(A.createSession(s, 'GM', 'channel', { name: '开团', description: '字'.repeat(2000), startsAt: Date.now() + 100000 })));
-  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 35); assert.equal(new Set(all.map(c => c.name)).size, all.length);
+  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 36); assert.equal(new Set(all.map(c => c.name)).size, all.length);
   function validOptions(options) {
     let optional = false;
     for (const o of options || []) { if (o.type > 2) { if (!o.required) optional = true; else assert.equal(optional, false, o.name); }
@@ -1029,7 +1029,7 @@ test('restart preserves minute deadlines, action duration and published template
     return { deadline: p.temporaryEffects[0].expiresAt, oldRef: old.id };
   });
   const restore = createStore(h.deps); await restore.load(C.DEFAULT_GUILD_ID); const saved = restore.snapshot(C.DEFAULT_GUILD_ID);
-  assert.equal(saved.upgrade, 7); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
+  assert.equal(saved.upgrade, 8); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
   assert.equal(saved.players['1'].temporaryEffects[1].skipTurnId, 'use-turn');
   assert.equal(saved.players['1'].temporaryEffects[1].remaining, 2);
   assert.equal(saved.catalog[data.oldRef].description, C.seedCatalog()[data.oldRef].description);
@@ -1629,7 +1629,7 @@ test('simultaneous corpse claims transfer each bundle at most once and recreated
 test('upgrade 4 only initializes new fields and never awards historical kills or deletes zero-HP saved players', () => {
   const s=state(),b=B.createBattle(s,'c','GM','历史');const a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s).id,'enemy');s.upgrade=3;s.players['1'].hp=0;n.character.hp=0;
   delete s.explorations;delete s.mapCategories;delete s.roomTemplates;delete s.deaths;delete s.corpses;delete n.humanoid;delete n.baseXP;delete a.characterId;
-  const old=JSON.stringify(s.players),report=A.migrate(s);assert.ok(report.maps);assert.equal(s.upgrade,7);assert.equal(s.players['1'].hp,0);assert.ok(require('../src/rpg/health').downed(s.players['1']));assert.equal(s.players['1'].balance,JSON.parse(old)['1'].balance);assert.equal(n.baseXP,0);assert.equal(n.humanoid,false);assert.equal(Object.keys(s.deaths).length,0);assert.equal(A.migrate(s),null);
+  const old=JSON.stringify(s.players),report=A.migrate(s);assert.ok(report.maps);assert.equal(s.upgrade,8);assert.equal(s.players['1'].hp,0);assert.ok(require('../src/rpg/health').downed(s.players['1']));assert.equal(s.players['1'].balance,JSON.parse(old)['1'].balance);assert.equal(n.baseXP,0);assert.equal(n.humanoid,false);assert.equal(Object.keys(s.deaths).length,0);assert.equal(A.migrate(s),null);
 });
 test('fatal condition preserves original caster identity after actor removal and never rewards a replacement card', () => {
   for (const replacement of [false, true]) {
@@ -1924,7 +1924,7 @@ test('map batch uses first opener luck and retains probabilities after transferr
   const c=m.cells['2,0'].room.containers[0],first=X.open(s,m,'1',c.id,minRng);assert.equal(first.result.luck,11);assert.deepEqual(first.result.rates,L.adjustedRates(s,c.box,11));assert.ok(first.result.pending);m.status='paused';X.transfer(s,m,'2,0',c.id,'2');m.status='active';const claim=X.open(s,m,'2',c.id,()=>{throw Error('reroll');});assert.equal(claim.result.luck,11);assert.deepEqual(claim.result.rates,first.result.rates);assert.deepEqual(claim.result.items,first.result.items);assert.equal(claim.result.pending,false);
 });
 test('upgrade failure preserves canonical balances and successful recovery persists the reset only once',async()=>{
-  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);await store.transact(C.DEFAULT_GUILD_ID,'pre-upgrade','GM',s=>{Object.assign(s.players,state().players);s.players['1'].balance=333;s.upgrade=4;});const upgraded=createStore(h.deps);h.fail('before');await assert.rejects(upgraded.load(C.DEFAULT_GUILD_ID));const fresh=createStore(h.deps);await fresh.load(C.DEFAULT_GUILD_ID);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,0);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).economyMigration.version,1);await fresh.transact(C.DEFAULT_GUILD_ID,'new-money','GM',s=>{s.players['1'].balance=10;});const again=createStore(h.deps);await again.load(C.DEFAULT_GUILD_ID);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,10);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).events.filter(e=>e.id==='rpg-upgrade-7').length,1);
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);await store.transact(C.DEFAULT_GUILD_ID,'pre-upgrade','GM',s=>{Object.assign(s.players,state().players);s.players['1'].balance=333;s.upgrade=4;});const upgraded=createStore(h.deps);h.fail('before');await assert.rejects(upgraded.load(C.DEFAULT_GUILD_ID));const fresh=createStore(h.deps);await fresh.load(C.DEFAULT_GUILD_ID);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,0);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).economyMigration.version,1);await fresh.transact(C.DEFAULT_GUILD_ID,'new-money','GM',s=>{s.players['1'].balance=10;});const again=createStore(h.deps);await again.load(C.DEFAULT_GUILD_ID);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,10);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).events.filter(e=>e.id==='rpg-upgrade-8').length,1);
 });
 test('NPC image edits are preserved when a previously opened statistics draft publishes later',()=>{
   const s=state(),t=npcTemplate(s),f=F.create(s,'GM','npc',null,t.id);s.npcTemplates[t.id].portraits={avatar:{id:'image'}};s.npcTemplates[t.id].version++;f.data.name='改名字';const result=F.publish(s,f);assert.deepEqual(result.portraits,{avatar:{id:'image'}});

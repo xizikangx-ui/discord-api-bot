@@ -47,7 +47,8 @@ function migrateMaps(state) {
 function migrate(state) {
   const maps = migrateMaps(state), roles = require('./upgrade').migrate(state), actions = require('./action-rules-upgrade').migrate(state);
   const features = require('./features-upgrade').migrate(state);
-  return maps || roles || actions || features ? { ...(maps || {}), ...(roles || {}), ...(actions || {}), ...(features || {}) } : null;
+  const interaction = require('./interaction-upgrade').migrate(state);
+  return maps || roles || actions || features || interaction ? { ...(maps || {}), ...(roles || {}), ...(actions || {}), ...(features || {}), ...(interaction || {}) } : null;
 }
 function parseBeijing(value, now = Date.now()) {
   const m = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/);

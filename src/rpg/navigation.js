@@ -29,22 +29,26 @@ function createNavigation(snapshot, selector = (guild, fn) => fn(snapshot(guild)
       groups.set(g.id, g);
     }
     g.generation++; g.modal = null; g.busy = false;
-    g.expiresAt = Date.now() + 14 * 60000; g.handle = i;
+    const original=i.customId||'',form=/^rpg:form[^:]*:([^:]+)/.exec(original),offer=/^rpg:offer:([^:]+)/.exec(original),map=/^rpg:map[^:]*:[^:]*:(m[\da-f]{12})/.exec(original);
+    g.context=result.rpgPanel||(form?{kind:'form',formId:form[1]}:offer?{kind:'offer',offerId:offer[1]}:map?{kind:'map',mapId:map[1]}:null)||g.context||{kind:i.commandName||'home'};
+    g.expiresAt ||= C.confirmationDeadline(14 * 60000); g.handle = i;
     i.rpgResponseGroup=g.id;
     const out = { content: '', ...result };
+    delete out.rpgPanel;
     out.components = (result.components || []).map(r => {
       const json = typeof r.toJSON === 'function' ? r.toJSON() : C.clone(r);
-      for (const c of json.components || []) if (c.custom_id?.startsWith('rpg:')) c.custom_id = add(g, c.custom_id);
+      for (const c of json.components || []) if (c.custom_id?.startsWith('rpg:')&&!c.custom_id.startsWith('rpg:reopen:')) c.custom_id = add(g, c.custom_id);
       return U.D.ActionRowBuilder.from(json);
     });
     return out;
   }
   function resolve(i) {
-    clean();
     if (!i.customId?.startsWith('rpg:n:')) return null;
     const r = routes.get(i.customId), g = r && groups.get(r.group);
+    if(g&&g.owner===i.user.id&&g.guild===i.guildId)i.rpgRecovery=g.context;
+    clean();
     C.requireThat(g && g.owner === i.user.id && g.guild === i.guildId && r.generation === g.generation &&
-      (!r.modal || g.modal === i.customId), '该步骤已失效，请重新打开个人面板或持久草稿。');
+      g.expiresAt>Date.now()&&(!r.modal || g.modal === i.customId), '该步骤已失效，正在恢复最新面板；原操作没有重试。');
     C.requireThat(!g.characterId || selector(g.guild,s=>s.players[g.owner]?.id) === g.characterId, '角色已死亡或已更换，请重新打开面板。');
     if(g.busy)throw Object.assign(new Error('上一项操作仍在处理，完成后面板会自动更新。'),{code:'RPG_PANEL_BUSY'});
     if (r.form) {

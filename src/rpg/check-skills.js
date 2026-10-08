@@ -50,7 +50,7 @@ function createCheckSkills({snapshot,tx,needGM,pickView}){
         needGM(st,member);const p=M.player(st,uid);ok(p.id===cid,'角色已变化。');ok(['发放','经验'].includes(mode),'技能操作无效。');
         const ref=i.values[0],t=mode==='发放'?st.checkSkillTemplates?.[ref]:p.checkSkills?.[ref];ok(t&& (mode==='经验'||t.published),'技能未发布或尚未学习。');
         ok(mode!=='发放'||!p.checkSkills?.[ref],'目标已经学习此技能，不会重置已有等级。');
-        const f={id:C.id('f'),kind:'skillaward',owner:i.user.id,target:uid,characterId:cid,mode,ref,skillVersion:t.version||1,amount:100,version:0,expiresAt:Date.now()+14*60000};
+        const f={id:C.id('f'),kind:'skillaward',owner:i.user.id,target:uid,characterId:cid,mode,ref,skillVersion:t.version||1,amount:100,version:0,expiresAt:C.confirmationDeadline(14*60000)};
         st.forms[f.id]=f;return f;
       },'准备GM鉴定技能操作');return preview(snapshot(i.guildId),f);
     }

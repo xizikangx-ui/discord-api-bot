@@ -19,7 +19,7 @@ function grant(s,id,targets) {
 function preview(s,uid,id,selected,now=Date.now()) {
   const p=M.player(s,uid),v=pool(s,id);H.requireAction(p);ok(!M.battleFor(s,uid),'战斗结束后才能兑换，包括暂停和招募中的战斗。');ok((p.couponBalances?.[id]||0)>0,'没有该兑换券。');
   const entries=v.mode==='bundle'?v.entries:v.entries.filter(e=>e.ref===selected);ok(entries.length,'请选择池内一种物品。');
-  const f={id:C.id('f'),kind:'couponRedeem',owner:uid,characterId:p.id,poolId:id,poolVersion:v.version,entries:entries.map(e=>{const t=s.catalog[e.ref];ok(t?.published&&t.kind!=='技能','池内模板已失效，请联系GM。');return {...e,version:t.version};}),status:'ready',expiresAt:now+300000};s.forms[f.id]=f;return f;
+  const f={id:C.id('f'),kind:'couponRedeem',owner:uid,characterId:p.id,poolId:id,poolVersion:v.version,entries:entries.map(e=>{const t=s.catalog[e.ref];ok(t?.published&&t.kind!=='技能','池内模板已失效，请联系GM。');return {...e,version:t.version};}),status:'ready',expiresAt:C.confirmationDeadline(300000,now)};s.forms[f.id]=f;return f;
 }
 function redeem(s,uid,id,now=Date.now()) {
   const f=s.forms[id];ok(f?.kind==='couponRedeem'&&f.owner===uid,'兑换确认不属于你。');if(f.status==='done')return C.clone(s.couponRedemptions[id]);

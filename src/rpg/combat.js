@@ -441,7 +441,7 @@ function attack(state, b, turnId, abilityKey, targetId, action = 'formal', rng =
   for(let n=0;n<count;n++){let round={};if(magazineWeapon){round=weapon.loaded.rounds?.shift()||{};weapon.loaded.current--;}
     else if(t.weaponType==='弓'){const ammo=Object.values(p.inventory).find(i=>i.snapshot.kind==='弹药'&&AM.ammoCompatible(t,i.snapshot)&&(actor.userId?M.available(state,actor.userId,i.id)>0:i.quantity>0));ok(ammo,'缺少对应箭矢。');round=AM.round(ammo.snapshot);ammo.quantity--;if(!ammo.quantity)delete p.inventory[ammo.id];}rounds.push(round);}
   if(magazineWeapon)p.ammoVersion=(p.ammoVersion||0)+1;turn[action]--;if(t.kind==='技能'&&t.casting)actor.casting=null;
-  const empty=magazineWeapon&&weapon.loaded.current===0,groupId=id('h'),expiresAt=Date.now()+60000;
+  const empty=magazineWeapon&&weapon.loaded.current===0,groupId=id('h'),expiresAt=C.confirmationDeadline(60000);
   const pendingHits=targets.map(target=>{const targetP=actorCharacter(state,target),targetStats=M.stats(targetP),shots=[],damage={},rolls={},conditions=clone(t.conditions||[]);
     for(const round of rounds){const stats=M.stats(p,round.effects||[]),part={},shotRolls={};
       for(const type of Object.keys(C.DAMAGE_TYPES)){const expr=t.damage[type],extra=round.damage?.[type];if(!expr&&!extra)continue;const roll=expr?C.dice(expr,'normal',rng):null,bonus=extra?C.dice(extra,'normal',rng):null;
@@ -533,18 +533,21 @@ function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
   validateQuick(state,b,{actor,p,turn},{type:'switch',item:itemId,hand});
   W.set(p, itemId, hand); turn.quick--; M.syncHP(p);record(b,actor.name+'切换武器：'+(itemId?p.inventory[itemId].snapshot.name:'卸下武器'),{actorId:actor.id,portrait:p.portraits?.avatar});
 }
-function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget, recipientId) {
+function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget, recipientId, quantity=1) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');
   validateQuick(state,b,{actor,p,turn},{type:'heal',item:itemId});
   const item = p.inventory[itemId];
+  quantity=C.number(quantity,'使用数量',1,100);ok(turn.quick>=quantity,'快速行动不足，每件道具消耗一次快速行动。');
+  if(item?.snapshot.kind==='修复道具')ok(quantity===1,'修复道具使用专用单件入口。');
   ok([...C.CONSUMABLES,'修复道具'].includes(item?.snapshot.kind), '该道具没有已录入的使用效果。');
   if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '道具已预留。');
   if(p.inventory[itemId]?.snapshot.kind==='修复道具'){if(actor.userId)ok(M.available(state,actor.userId,repairTarget)>0,'装备已被预留。');const result=Dur.repair(p,itemId,repairTarget);turn.quick--;M.syncHP(p);turn.move=Math.max(0,C.round2(M.stats(p).move-(turn.moveSpent||0)));record(b,actor.name+'使用'+result.name+'修复'+result.target+' '+result.repaired+'点耐久。',{...result,actorId:actor.id,portrait:p.portraits?.avatar});return result;}
   const recipient = recipientId ? require('./treatment').battle(state,b,actor,recipientId).p : p;
-  const result = M.consume(p, itemId, rng, recipient === p ? turnId : null, Date.now(), recipient);
+  if(actor.userId)ok(M.available(state,actor.userId,itemId)>=quantity,'道具数量不足或已预留。');
+  const result = M.consumeMany(p, itemId, quantity, rng, recipient === p ? turnId : null, Date.now(), recipient);
   turn.move = Math.max(0, C.round2(M.stats(p).move - (turn.moveSpent || 0)));
-  turn.quick--; record(b, actor.name + '使用' + result.name + '治疗'+recipient.name+'，恢复正常HP '+result.healed+'、倒地HP '+(result.reserveHealed||0)+'。', {...result,hp:recipient.hp,maxHP:M.stats(recipient).maxHP,targetName:recipient.name,healthBefore:result.before,healthAfter:require('./health').snapshot(recipient),eventType:'item',actorId:actor.id,portrait:p.portraits?.avatar});
+  turn.quick-=quantity; record(b, actor.name + '使用' + result.name+' ×'+quantity + '治疗'+recipient.name+'，恢复正常HP '+result.healed+'、倒地HP '+(result.reserveHealed||0)+'。', {...result,children:result.results?.map((r,n)=>({name:'第'+(n+1)+'件',shots:[{rolls:{heal:r.roll},damage:{heal:r.roll.total}}],result:{...r,healthBefore:r.before,healthAfter:r.after}})),hp:recipient.hp,maxHP:M.stats(recipient).maxHP,targetName:recipient.name,healthBefore:result.before,healthAfter:require('./health').snapshot(recipient),eventType:'item',actorId:actor.id,portrait:p.portraits?.avatar});
   return result;
 }
 function flee(state, b, turnId, rng = randomInt) {

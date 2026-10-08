@@ -459,6 +459,14 @@ function consume(p, itemId, rng = randomInt, turnId = null, now = Date.now(), re
   return { name: t.name, roll, ...healing, hpChange: recipient.hp - before, hp: recipient.hp, cleared,
     effects: clone(t.duration ? t.effects || [] : []), duration: clone(t.duration || null) };
 }
+function consumeMany(p,itemId,quantity=1,rng=randomInt,turnId=null,now=Date.now(),recipient=p){
+  quantity=num(quantity,'使用数量',1,100);if(quantity===1)return {...consume(p,itemId,rng,turnId,now,recipient),quantity:1};
+  const owner=clone(p),target=recipient===p?owner:clone(recipient),results=[];
+  ok(C.CONSUMABLES.includes(owner.inventory[itemId]?.snapshot.kind)&&owner.inventory[itemId].quantity>=quantity,'道具数量不足或不支持批量使用。');
+  for(let n=0;n<quantity;n++)results.push(consume(owner,itemId,rng,turnId,now,target));
+  Object.assign(p,owner);if(recipient!==p)Object.assign(recipient,target);const last=results.at(-1);
+  return {...last,quantity,results,before:results[0].before,after:last.after,healed:results.reduce((n,r)=>n+r.healed,0),reserveHealed:results.reduce((n,r)=>n+r.reserveHealed,0),revived:results.some(r=>r.revived),cleared:[...new Set(results.flatMap(r=>r.cleared))]};
+}
 function createOffer(state, creatorId, targetId, type = 'trade', itemId, quantity = 1, price = 0) {
   require('./health').requireAction(player(state, targetId));
   if (type === 'trade' || type === 'transfer') {
@@ -570,4 +578,4 @@ function deleteCharacter(state, userId) {
 module.exports = { player, newCharacter, rollCharacter, confirmCharacter, equippedIds, isAttached, sourceEffects,
   modify, signedModifier, weight, stats, syncHP, allocate, grantXP, normalizeEffects, validateTemplate, publishTemplate, makeItem,
   activeOffer, reserved, available, transferable, receive, issue, openLoot, drop, battleFor, equip, attach, useSpecial,
-  createOffer, updateOffer, confirmOffer, cancelOffer, expireOffers, deleteCharacter, bundleItems, itemWeight, equipCharacter, attachCharacter, consume, expireEffects, finishEffects };
+  createOffer, updateOffer, confirmOffer, cancelOffer, expireOffers, deleteCharacter, bundleItems, itemWeight, equipCharacter, attachCharacter, consume, consumeMany, expireEffects, finishEffects };

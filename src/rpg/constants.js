@@ -30,7 +30,8 @@ const ACCESSORY_LIMITS = { head: [1, 4], body: [3, 10], ring: [1, 10] };
 const ACCESSORY_NAMES = { head: '头部', body: '身体', ring: '戒指' };
 const SEVERITIES = ['一般', '严重', '致命'];
 const MAX_MONEY = 1000000000000;
-const OFFER_TTL = 5 * 60 * 1000;
+const confirmationDeadline = (base, now = Date.now()) => now + base + 60000;
+const OFFER_TTL = 6 * 60 * 1000;
 const id = (prefix = '') => prefix + randomBytes(6).toString('hex');
 const clone = value => structuredClone(value);
 function requireThat(condition, message) { if (!condition) throw new Error(message); }
@@ -137,13 +138,13 @@ function seedCatalog() {
   return Object.assign(catalog, require('./modern-props').catalog());
 }
 function newState(guildId) {
-  return { kind: 'tabletop-rpg', schema: 1, upgrade: 7, guildId, revision: 0,
+  return { kind: 'tabletop-rpg', schema: 1, upgrade: 8, guildId, revision: 0,
     config: { gmRoleIds: [], playerRoleIds: [], announcementChannelId: null },
     players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(), skillTemplates: {}, checkSkillTemplates: {}, checks: {}, sessions: {}, lootPublications: {},
     traits: { neutral: { id: 'neutral', version: 1, published: true, name: '无附加效果', description: '只展示，不修改数值。', effects: [] } }, conditionTemplates: {},
-    mapCategories: {}, roomTemplates: {}, explorations: {}, deaths: {}, corpses: {}, npcTemplates: {}, battles: {}, offers: {}, rolePanels: {}, couponPools: {}, couponRedemptions: {}, glossaryTerms: {}, bossPools: {}, receipts: {}, events: [] };
+    mapCategories: {}, roomTemplates: {}, explorations: {}, deaths: {}, corpses: {}, npcTemplates: {}, battles: {}, offers: {}, rolePanels: {}, couponPools: {}, couponRedemptions: {}, glossaryTerms: {}, bossPools: {}, merchantTemplates: {}, merchantTrades: {}, receipts: {}, events: [] };
 }
 module.exports = { DEFAULT_GUILD_ID, ATTRIBUTES, DAMAGE_TYPES, RARITIES, BOXES, QUALITIES, WEAPON_TYPES,
   FIREARMS, ORIGINS, ITEM_KINDS, CONSUMABLES, ARMOR_COVERAGE, ACCESSORY_LIMITS, ACCESSORY_NAMES, SEVERITIES,
-  MAX_MONEY, OFFER_TTL, EFFECT_TARGETS, CONDITION_TARGETS, id, clone, requireThat, number, text,
+  MAX_MONEY, OFFER_TTL, confirmationDeadline, EFFECT_TARGETS, CONDITION_TARGETS, id, clone, requireThat, number, text,
   dice, rarity, title, targetLabel, kg, round2, seedCatalog, newState };

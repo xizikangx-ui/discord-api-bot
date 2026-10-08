@@ -73,7 +73,7 @@ function createCharacterPanel({snapshot,tx}) {
     }
     if(action==='allocate') {
       const f=await tx(i,st=>{const p=own(st,args[0],args[1],uid);ok(p.points>0,'没有剩余自由属性点。');
-        const f={id:C.id('f'),kind:'allocation',owner:uid,characterId:p.id,fingerprint:fingerprint(p),amount:1,expiresAt:Date.now()+14*60000};st.forms[f.id]=f;return f;},'打开加点面板');return view(snapshot(i.guildId),f,uid);
+        const f={id:C.id('f'),kind:'allocation',owner:uid,characterId:p.id,fingerprint:fingerprint(p),amount:1,expiresAt:C.confirmationDeadline(14*60000)};st.forms[f.id]=f;return f;},'打开加点面板');return view(snapshot(i.guildId),f,uid);
     }
     if(action==='confirm') {const result=await tx(i,st=>commitAllocation(st,args[0],uid),'确认自由点分配');const p=M.player(snapshot(i.guildId),uid),out=home(p);out.content='✅ '+C.ATTRIBUTES[result.attribute]+'增加'+result.amount+'点，已保存。';return out;}
     if(action==='cancel') {await tx(i,st=>{allocation(st,st.forms[args[0]],uid);st.forms[args[0]].done=true;return null;},'取消未提交加点');return home(M.player(snapshot(i.guildId),uid));}

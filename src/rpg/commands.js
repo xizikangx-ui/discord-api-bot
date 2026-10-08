@@ -32,7 +32,7 @@ function commands() {
     cmd('地图', '创建、管理或参与带迷雾的探索地图'),
     cmd('势力', '查看世界背景、势力介绍并选择角色归属'),
     user(cmd('背包', '私密查看自己的资产；GM可查看他人'), false),
-    user(item(cmd('使用', '使用本人道具；可治疗同格同伴'), '物品', false), false, '目标'),
+    int(user(item(cmd('使用', '使用本人道具；可治疗同格同伴'), '物品', false), false, '目标'),'数量','同一种消耗品件数，每件耗一次快速行动',false,1,100),
     cmd('兑换券','查看自己的兑换券并选择奖励'),
     user(cmd('收藏柜','公开查看选中的金色和红色收藏'),false),
     str(cmd('名词解释','搜索GM发布的名词解释'),'关键词','搜索名称或解释',false),
@@ -85,6 +85,8 @@ function commands() {
   gm.addSubcommand(s => s.setName('抽取公示').setDescription('查看与补发已存抽取结果，不重新抽取'));
   gm.addSubcommand(s=>s.setName('兑换券').setDescription('编辑兑换池、批量发券及查看兑换审计'));
   gm.addSubcommand(s=>s.setName('名词').setDescription('录入、预览发布、修改或停用名词'));
+  gm.addSubcommand(s=>s.setName('行商').setDescription('编辑行商模板、出售与收购分类'));
+  list.push(cmd('行商','打开当前探索格的行商货单'));
   list.push(gm);
   const battle = cmd('战斗', 'GM招募、战斗操作与玩家个人面板');
   battle.addSubcommand(s => str(int(int(str(s.setName('招募').setDescription('在当前频道发布战斗招募'), '名称', '战斗名称'),

@@ -284,7 +284,7 @@ function createRpg(deps) {
   async function announceOffer(i, offer) {
     if(store.backgroundPublications){await store.transact(i.guildId,'offer-channel:'+offer.id+':'+i.id,i.user.id,st=>{st.offers[offer.id].channelId=i.channelId;},'安排交易通知');return store.enqueue(i.guildId,'offer',offer.id,{priority:2});}
     await i.channel.send({ content: '<@' + offer.targetId + '> 有一份待确认的' + ({ trade: '交易', transfer: '转账', buyback: 'GM收购报价' }[offer.type]) +
-      '，5分钟内点击查看。', components: [row(button('offer:' + offer.id, '查看并操作交易', D.ButtonStyle.Primary))],
+      '，6分钟内点击查看。', components: [row(button('offer:' + offer.id, '查看并操作交易', D.ButtonStyle.Primary))],
       allowedMentions: { parse: [], users: [offer.targetId] } });
   }
   function pickView(title, options, base, page = 0) {
@@ -344,6 +344,7 @@ function createRpg(deps) {
   async function slash(i, member) {
     const s = snapshot(i.guildId), uid = i.user.id, name = i.commandName;
     const o = i.options, target = () => o.getUser('成员')?.id || uid;
+    if(name==='行商')return merchant.slash(i,member);
     if(['兑换券','收藏柜','名词解释'].includes(name))return features.slash(i,member);
     if (name === '地图配置') { needGM(s, member); return exploration.config(s); }
     if (name === '地图') return exploration.home(s, member);
@@ -390,6 +391,7 @@ function createRpg(deps) {
         [row(button('activity:loot:menu:0', '查看公示记录'), button('bag:' + uid + ':' + uid + ':0', '查看个人背包'))]);
     }
     if (name === '使用') {
+      const quantity=o.getInteger('数量')||1;if(quantity>1&&!o.getString('物品'))return U.payload('请选择批量道具','打开背包，选择同一种消耗品，再点批量使用设置数量。',[row(button('reopen:bag','打开背包'))]);if(quantity>1&&o.getString('物品'))return bulkUse.prepare(i,o.getString('物品'),quantity,o.getUser('目标')?.id||uid);
       if(o.getUser('目标')&&!o.getString('物品'))return treatment.list(i,o.getUser('目标').id);
       if(!o.getString('物品'))return selections.list(s,uid,'使用');
       if(M.player(s,uid).inventory[o.getString('物品')]?.snapshot.kind==='修复道具')return selections.repairStart(i,o.getString('物品'));
@@ -408,7 +410,7 @@ function createRpg(deps) {
       if(!o.getString('物品'))return selections.list(s,uid,'丢弃');
       const item = M.transferable(s, uid, o.getString('物品'), o.getInteger('数量') || 1);
       const token = await tx(i, st => {
-        const f = { id: C.id('x'), owner: uid, kind: 'drop', itemId: item.id, quantity: o.getInteger('数量') || 1, expiresAt: Date.now() + 60000 };
+        const f = { id: C.id('x'), owner: uid, kind: 'drop', itemId: item.id, quantity: o.getInteger('数量') || 1, expiresAt: C.confirmationDeadline(60000) };
         st.forms[f.id] = f; return f.id;
       });
       return payload('确认丢弃', item.snapshot.name + ' ×' + (o.getInteger('数量') || 1) + '\n不可恢复，请确认。', [row(button('dropconfirm:' + token, '确认丢弃', D.ButtonStyle.Danger))]);
@@ -461,6 +463,7 @@ function createRpg(deps) {
   async function gmSlash(i, member) {
     const s = snapshot(i.guildId); needGM(s, member);
     const o = i.options, sub = o.getSubcommand(), uid = i.user.id, target = o.getUser('成员')?.id;
+    if(sub==='行商')return merchant.slash(i,member);
     if(['兑换券','名词'].includes(sub))return features.slash(i,member);
     if (sub === '批量发放' || (sub === '发放' && !target)) return bulkIssue.start(i, member);
     if(sub==='技能')return combatSkills.manage(s);
@@ -486,7 +489,7 @@ function createRpg(deps) {
     if (sub === '销卡') {
       M.player(s, target);
       const f = await tx(i, st => {
-        const form = { id: C.id('x'), owner: uid, kind: 'delete', target, characterId: M.player(st, target).id, expiresAt: Date.now() + 60000 };
+        const form = { id: C.id('x'), owner: uid, kind: 'delete', target, characterId: M.player(st, target).id, expiresAt: C.confirmationDeadline(60000) };
         st.forms[form.id] = form; return form;
       });
       return payload('确认GM销卡', '将清空 <@' + target + '> 的角色、财产、次数和槽位扩展，取消交易并移出暂停的战斗。审计保留。', [
@@ -601,14 +604,18 @@ function createRpg(deps) {
   const activities = createActivities({ snapshot, tx, store, textChannel, client, needGM, logFailure });
   const npcPanel=createNpcPanel({snapshot,tx,needGM,publishBattle});
   const ammoPanel=createAmmunitionPanel({snapshot,tx,needGM,publishBattle,actionPanel});
+  const merchant=require('./merchant-panel').createMerchant({snapshot,tx,store,needGM});
   const features=require('./feature-panels').createPanels({snapshot,tx,store,needGM});
   const story=require('./gm-story').createStory({snapshot,tx,store,client,needGM,textChannel,features});
-  const treatment=require('./treatment').createTreatment({snapshot,tx,use,actionPanel,canActor});
+  const bulkUse=require('./bulk-use').createBulkUse({snapshot,tx,store,actionPanel});
+  const treatment=require('./treatment').createTreatment({snapshot,tx,use,actionPanel,canActor,bulkUse});
+  const movement=require('./movement-panel').createMovement({snapshot,tx,canActor,actionPanel});
   const gmUI = createBattleGM({ snapshot, tx, needGM, battle, publishBattle, pickView });
   const boardRecovery=require('./board-recovery').createBoardRecovery({snapshot,store,tx,needGM,textChannel,busy:(g,r)=>publishing.has(g+':'+r)});
   const buyback = createBuyback({ snapshot, tx, needGM, announceOffer });
   const factions = createFactions({ snapshot, tx });
   const exploration = createExploration({ snapshot, tx, store, textChannel, client, needGM, activities, publishBattle, gmUI, logFailure,render:renderer.decorate });
+  const panelRecovery=require('./panel-recovery').createRecovery({snapshot,store,canActor,features,exploration});
   const variantPanel=require('./room-variants').controller({snapshot,tx,needGM});
   const mapExtra=require('./exploration-extra').controller({snapshot,tx,store,client,textChannel,needGM,manage:exploration.manage,publishMap:exploration.publish,logFailure});
   const rpPanel=require('./rp').controller({snapshot,tx,store,client,textChannel,needGM,publishMap:exploration.publish,logFailure});
@@ -618,12 +625,12 @@ function createRpg(deps) {
   const checkSkills=createCheckSkills({snapshot,tx,needGM,pickView});
   async function publishOffer(guild,ref){const o=store.select(guild,s=>s.offers[ref]);if(!o||o.status!=='ready'||o.expiresAt<=Date.now())return;if(['sent','sending','uncertain'].includes(o.notification?.status))return;
     await store.transact(guild,'offer-intent:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:'sending'};},'交易通知意图',{delivery:false});
-    try{const ch=await textChannel(guild,o.channelId),msg=await ch.send({content:'<@'+o.targetId+'> 有一份待确认的'+({trade:'交易',transfer:'转账',buyback:'GM收购报价'}[o.type])+'，5分钟内点击查看。',components:[row(button('offer:'+ref,'查看并操作交易',D.ButtonStyle.Primary))],allowedMentions:{parse:[],users:[o.targetId]},nonce:ref,enforceNonce:true});await store.transact(guild,'offer-sent:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:'sent',messageId:msg.id};},'交易通知送达',{delivery:false});}
+    try{const ch=await textChannel(guild,o.channelId),msg=await ch.send({content:'<@'+o.targetId+'> 有一份待确认的'+({trade:'交易',transfer:'转账',buyback:'GM收购报价'}[o.type])+'，6分钟内点击查看。',components:[row(button('offer:'+ref,'查看并操作交易',D.ButtonStyle.Primary))],allowedMentions:{parse:[],users:[o.targetId]},nonce:ref,enforceNonce:true});await store.transact(guild,'offer-sent:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:'sent',messageId:msg.id};},'交易通知送达',{delivery:false});}
     catch(e){if(!store.frozen(guild))await store.transact(guild,'offer-failed:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:typeof e.code==='number'&&e.code>=10000?'failed':'uncertain'};},'交易通知待核对',{delivery:false});throw e;}}
   const outbox=require('./outbox').createOutbox({store,client,logFailure,metrics,handlers:{gmNotice:story.notice,eventImage:battleEvents.publishImage,defense:publishDefenseNow,battle:publishBattleNow,map:async(g,r,f)=>{if(!store.select(g,s=>s.explorations[r]))return;await exploration.publishNow(g,r,f);},move:(g,r,f)=>exploration.publishMoveNow(g,...r.split('/'),f),corpses:(g,r,f)=>exploration.publishCorpsesNow(g,r,f),loot:(g,r,f)=>activities.publishNow(g,'loot',r,f),check:(g,r,f)=>activities.publishNow(g,'check',r,f),attempt:(g,r,f)=>activities.publishNow(g,'attempt',r,f),session:(g,r,f)=>activities.publishNow(g,'session',r,f),offer:publishOffer,rp:(g,r)=>rpPanel.publishQueued(g,...r.split('/')),rpDraft:(g,r,f)=>rpPanel.draft(g,r,f),reminder:(g,r)=>activities.remind(g,r)}});
   store.onCommit(()=>outbox.wake());
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
-    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI,selections,aoePanel,actionPanel,treatment });
+    configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI,selections,aoePanel,actionPanel,treatment,bulkUse });
   async function handle(i) {
     const receivedAt=performance.now();
     const ours = (i.isChatInputCommand?.() || i.isAutocomplete?.()) ? commandNames.has(i.commandName) : i.customId?.startsWith('rpg:');
@@ -645,7 +652,7 @@ function createRpg(deps) {
       originalShowModal = i.showModal;
       i.showModal = value => originalShowModal.call(i, navigation.modal(i, value));
       // Modal opening itself is the initial response. Mutation is deferred on submit.
-      if (i.customId && (await story.openModal(i,s) || await features.openModal(i,s) || await actionPanel.openModal(i,s) || await boardRecovery.openModal(i,s) || await variantPanel.openModal(i,s) || await mapExtra.openModal(i,s) || await rpPanel.openModal(i,s) || await aoePanel.openModal(i,s) || await npcPanel.openModal(i,s) || await checkSkills.openModal(i,s) || await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
+      if (i.customId && (await merchant.openModal(i,s) || await bulkUse.openModal(i,s) || await story.openModal(i,s) || await features.openModal(i,s) || await actionPanel.openModal(i,s) || await boardRecovery.openModal(i,s) || await variantPanel.openModal(i,s) || await mapExtra.openModal(i,s) || await rpPanel.openModal(i,s) || await aoePanel.openModal(i,s) || await npcPanel.openModal(i,s) || await checkSkills.openModal(i,s) || await bulkIssue.openModal(i,s) || await characterPanel.openModal(i,s) || await exploration.openModal(i, s) || await activities.openModal(i, s) || await gmUI.openModal(i, s) || await buyback.openModal(i, s) || await selections.openModal(i,s) || await texts.openModal(i,s) || await openModal(i, s))) return true;
       const publicResult = i.isChatInputCommand?.() && ['rd', '角色卡'].includes(i.commandName);
       if (privateSource && i.deferUpdate) await i.deferUpdate();
       else await i.deferReply(publicResult ? {} : { flags: E });
@@ -656,6 +663,10 @@ function createRpg(deps) {
       const member = i.member?.id===i.user.id&&i.member?.guild?.id===i.guildId&&i.member?.roles?.cache&&i.member?.permissions?.has
         ? i.member : await i.guild.members.fetch({ user: i.user.id, force: true });
       const result = i.isChatInputCommand?.() ? await slash(i, member) :
+        /^rpg:(movement|move):/.test(i.customId) ? await movement.component(i,member) :
+        i.customId.startsWith('rpg:bulkuse:') ? await bulkUse.component(i,member) :
+        i.customId.startsWith('rpg:reopen:') ? await panelRecovery.component(i,member) :
+        i.customId.startsWith('rpg:merchant:') ? await merchant.component(i,member) :
         i.customId.startsWith('rpg:features:') ? await features.component(i,member) :
         i.customId.startsWith('rpg:gmstory:') ? await story.component(i,member) :
         i.customId.startsWith('rpg:treat:') ? await treatment.component(i,member) :
@@ -702,18 +713,18 @@ function createRpg(deps) {
         metrics.observe('interaction.busy',performance.now()-receivedAt);
         // The first request owns the operation and will update this same panel.
         // A repeated click only acknowledges receipt; it must not execute again.
-        await i.deferUpdate().catch(e=>logFailure('跑团重复点击确认失败，原操作仍会继续。',e));return true;
+        await i.deferUpdate().catch(e=>logFailure('跑团重复点击确认失败，原操作仍会继续。',e));if(i.followUp)await i.followUp({content:'上一项操作仍在处理，完成后面板会自动更新。',flags:E,allowedMentions:{parse:[]}}).catch(()=>{});return true;
       }
       if(error.recoverable&&privateSource&&i.deferred){
         metrics.observe('interaction.validation',performance.now()-receivedAt);
         await i.editReply({content:error.message,allowedMentions:{parse:[]}}).catch(()=>{});
         return true;
       }
-      navigation.invalidate(i);
       logFailure('跑团操作失败。', error);
-      const content = error.message || '操作失败，请刷新面板。';
-      if (i.deferred || i.replied) await i.editReply({ content, embeds: [], components: [], allowedMentions: { parse: [] } }).catch(() => {});
-      else await i.reply({ content, flags: E, allowedMentions: { parse: [] } }).catch(() => {});
+      const recovered=await panelRecovery.recover(i,error).catch(()=>({...panelRecovery.home(),content:error.message||'操作未完成，请重新打开面板。'}));
+      const response=ready.has(i.guildId)?navigation.wrap(i,recovered):recovered;delete response.rpgMap;delete response.rpgPortraits;response.attachments=[];response.files=[];response.allowedMentions={parse:[]};
+      if (i.deferred || i.replied) await i.editReply(response).catch(() => {});
+      else await i.reply({...response,flags:E}).catch(() => {});
     } finally {
       release?.(); if (originalShowModal) i.showModal = originalShowModal;
     }
@@ -722,6 +733,6 @@ function createRpg(deps) {
   function stop(){clearInterval(timer);clearInterval(backupTimer);outbox.stop();renderer.close();metrics.close();}
   async function drain(){await Promise.allSettled([...interactions,...tickJobs]);await outbox.drain();await Promise.allSettled([...mediaJobs]);await store.drain();}
   async function trackedHandle(i){const job=handle(i);interactions.add(job);try{return await job;}finally{interactions.delete(job);}}
-  return { features,story,treatment,start, handle:trackedHandle, stop, drain, store, activities, exploration, tickGuild, portraits, outbox,metrics };
+  return { merchant,features,story,treatment,bulkUse,movement,start, handle:trackedHandle, stop, drain, store, activities, exploration, tickGuild, portraits, outbox,metrics };
 }
 module.exports = { createRpg, commands, dangerBits };

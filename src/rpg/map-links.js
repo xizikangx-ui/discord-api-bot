@@ -9,7 +9,7 @@ function check(state,m,r){const dest=destination(state,m,r.kind,r.from);ok(dest&
  for(const uid of r.members){const {p,part}=X.participant(state,m,uid);ok(part.cell===r.from&&!M.stats(p).overloaded,'队伍需集合且不能超重。');ok(!Object.values(state.explorations).some(other=>other.id!==m.id&&other.participants?.[uid]),'参与者在其他地图，不能切换。');}
 }
 function propose(state,m,uid,kind,now=Date.now()){const Team=require('./team-movement');Team.expire(state,m,now);ok(m.moves?.[m.moveRequestId]?.status!=='pending','已有全队移动或切换申请。');const {part}=X.participant(state,m,uid),dest=destination(state,m,kind,part.cell);ok(dest,'未绑定内部地图。');const members=Object.keys(m.participants);
- const r={id:C.id('v'),kind,owner:uid,from:part.cell,to:kind==='enter'?dest.entrance:m.parentContext.returnCell,destination:dest.id,destinationName:dest.name,destinationVersion:dest.version,members,characters:Object.fromEntries(members.map(id=>[id,m.participants[id].characterId])),roster:Team.roster(m),layout:Team.layout(m),yes:[uid],status:'pending',createdAt:now,expiresAt:now+180000,publication:{status:'pending'}};
+ const r={id:C.id('v'),kind,owner:uid,from:part.cell,to:kind==='enter'?dest.entrance:m.parentContext.returnCell,destination:dest.id,destinationName:dest.name,destinationVersion:dest.version,members,characters:Object.fromEntries(members.map(id=>[id,m.participants[id].characterId])),roster:Team.roster(m),layout:Team.layout(m),yes:[uid],status:'pending',createdAt:now,expiresAt:C.confirmationDeadline(180000,now),publication:{status:'pending'}};
  Team.checks(state,m,r);m.moves||={};m.moves[r.id]=r;m.moveRequestId=r.id;if(members.length===1)Team.complete(state,m,r);return clone(r);
 }
 function complete(state,m,r){check(state,m,r);const target=state.explorations[r.destination];

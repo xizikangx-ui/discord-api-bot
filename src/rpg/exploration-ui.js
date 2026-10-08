@@ -87,7 +87,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       row(button('map:toggle:' + m.id + ':' + m.version, m.status === 'paused' ? '恢复探索' : '暂停探索', undefined, !['active', 'paused'].includes(m.status)),
         button('map:gmroom:' + m.id + ':0', '房间 / 遭遇 / 待领取'), button('map:players:' + m.id + ':0', '队员 / 位置'),
         button('map:endpreview:' + m.id, '结束探索', D.ButtonStyle.Danger, m.status === 'ended')),
-      row(button('rp:toggle:'+m.id,m.rpEnabled?'关闭RP':'开启RP'),button('rp:home:'+m.id+':'+(m.rpPendingId||'_'),'环境草稿 / 等待',undefined,!m.rpPendingId),button('mapx:layout:'+m.id+':'+m.version,'重新随机布局',undefined,m.status!=='draft'||m.mode==='fixed'),button('gmstory:bossassign:'+m.id,'分配BOSS房',undefined,!['draft','paused'].includes(m.status))),
+      row(button('rp:toggle:'+m.id,m.rpEnabled?'关闭RP':'开启RP'),button('rp:home:'+m.id+':'+(m.rpPendingId||'_'),'环境草稿 / 等待',undefined,!m.rpPendingId),button('mapx:layout:'+m.id+':'+m.version,'重新随机布局',undefined,m.status!=='draft'||m.mode==='fixed'),button('gmstory:bossassign:'+m.id,'分配BOSS房',undefined,!['draft','paused'].includes(m.status)),button('merchant:assign:'+m.id,'行商节点',undefined,!['draft','paused'].includes(m.status))),
       ...(m.moveRequestId?[row(button('map:moveinfo:'+m.id+':'+m.moveRequestId+':0','当前移动申请'),button('map:moverepost:'+m.id+':'+m.moveRequestId,'核对后补发移动确认'))]:[]),
       row(button('map:manage:' + m.id, '刷新'), button('map:repost:' + m.id, '核对后补发地图', undefined, m.status === 'draft'), button('map:home', '返回地图列表'), button('map:celldraft:' + m.id, '继续格子草稿', undefined, !Object.keys(m.cellDrafts || {}).length),button('map:mapview:'+m.id+':wide:gm','横版完整图'))
     ]);
@@ -107,12 +107,13 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       if(m.parentContext&&part.cell===m.entrance)components.push(row(button('map:portal:'+m.id+':exit','全队离开建筑',D.ButtonStyle.Success)));
       const request=m.moves?.[m.moveRequestId];if(request)components.push(row(button('map:moveinfo:'+m.id+':'+request.id+':0','当前 / 最近移动申请')));
     }
-    if(tab==='room'){components.push(row(button('map:containers:'+m.id+':0','房间容器（免费）',D.ButtonStyle.Primary,!r||r.encounter!=='resolved'||!r.containers.some(c=>c.status!=='claimed')),button('map:supplies:'+m.id+':0','散落物资',undefined,!r||r.encounter!=='resolved'||!r.supplies.length)));
+    if(tab==='room'){if(r?.merchant)components.push(row(button('merchant:node:'+m.id+':'+part.cell+':0','行商交易',D.ButtonStyle.Success)));components.push(row(button('map:containers:'+m.id+':0','房间容器（免费）',D.ButtonStyle.Primary,!r||r.encounter!=='resolved'||!r.containers.some(c=>c.status!=='claimed')),button('map:supplies:'+m.id+':0','散落物资',undefined,!r||r.encounter!=='resolved'||!r.supplies.length)));
       body+='\n容器剩余 '+(r?.containers.filter(c=>c.status!=='claimed').length||0)+' · 物资剩余 '+(r?.supplies.length||0);}
     if(tab==='team'){const members=Object.entries(m.participants);page=Math.max(0,Math.min(Number(page)||0,Math.max(0,Math.ceil(members.length/15)-1)));body+='\n\n'+members.slice(page*15,page*15+15).map(([id,p])=>'<@'+id+'> · '+place(m,p.cell)).join('\n');components.push(row(button('map:personalpage:'+m.id+':team:'+(page-1),'上一页',undefined,!page),button('map:personalpage:'+m.id+':team:'+(page+1),'下一页',undefined,(page+1)*15>=members.length)));}
     if(tab==='map'&&m.mapType!=='region'){page=Math.max(0,Math.min(Number.isFinite(Number(page))?Number(page):X.xy(part.cell)[1],m.floors-1));components.push(row(select('map:floor:'+m.id,'选择楼层',Array.from({length:m.floors},(_,n)=>({value:String(n),label:(n+1)+'F',default:page===n})))));}
     components.push(row(button('map:personalpage:'+m.id+':'+tab+':'+page,'刷新当前页'),button('map:leave:'+m.id,'退出探索')));
     const v=payload('探索操作 · '+p.name,body,components,0x1abc9c);v.embeds[0].setFooter({text:m.id+' · 私有操作面板 · 资产不会写入公共地图'});
+    v.rpgPanel={kind:'map',mapId:m.id,tab};
     return tab==='map'?require('./map-image').prepare(v,{kind:'exploration',m,floor:page}):v;
   }
   async function publish(guild,ref,force=false){if(store.backgroundPublications&&!force)return store.enqueue(guild,'map',ref);return publishNow(guild,ref,force);}
@@ -397,7 +398,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       '\n随机生成记录：'+((r.randomResults || []).map(e=>(e.kind==='container' ? e.ref : [...(r.snapshot.randomSupplies || []),...(r.snapshot.randomNpcs || [])].find(t=>t.ref===e.ref)?.template?.name || e.ref)+' ×'+e.quantity).join('、') || '旧实例或未配置'), [
       row(button('map:roster:' + m.id + ':' + cell, '确认玩家 / 开战', D.ButtonStyle.Primary, r.encounter !== 'pending'),
         button('map:resolve:' + m.id + ':' + cell, r.remainingNpcs?.length && r.battleId ? '结束本轮 / 继续遭遇' : 'GM解除遭遇', undefined, r.encounter === 'resolved'), button('map:transferpick:' + m.id + ':' + cell + ':0', '转交待领取容器')),
-      row(button('map:roomauto:'+m.id+':'+cell,(r.autoStart??r.snapshot.autoStart)?'自动开战：开启（切换）':'自动开战：关闭（切换）'),button('map:manage:' + m.id, '返回地图'))
+      row(...(r.merchant?[button('merchant:restock:'+m.id+':_:0','行商补货'),button('merchant:clear:'+m.id+':'+cell,'移除未进入行商',undefined,!['draft','paused'].includes(m.status)||X.touched(m,cell))]:[]),button('map:roomauto:'+m.id+':'+cell,(r.autoStart??r.snapshot.autoStart)?'自动开战：开启（切换）':'自动开战：关闭（切换）'),button('map:manage:' + m.id, '返回地图'))
     ]);
   }
   async function recover(guild) {

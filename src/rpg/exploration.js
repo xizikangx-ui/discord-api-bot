@@ -55,6 +55,7 @@ function touched(m, ref) {
 function editCell(state, m, x, y, type, categoryId, templateId, variantId = null) {
   editable(m); x = num(x, '列', 1, 20) - 1; y = num(y, '楼层', 1, 20) - 1;
   ok(cellTypes(m)[type] || type === 'empty', '格子类型无效。'); const ref = key(x, y), old = m.cells[ref];
+  ok(!old?.room?.merchant,'请通过行商入口移除尚未进入的节点。');
   ok(!old?.room?.boss,'请先通过BOSS配置移除尚未进入的BOSS房。');
   if(touched(m,ref)){ok(old.type===type&&old.categoryId===(categoryId||m.categoryId)&&(old.templateId||null)===(templateId||null),'该格有人或已有交互记录，不能替换或删除。');m.version++;return ref;}
   if (type === 'empty') delete m.cells[ref];
@@ -115,7 +116,7 @@ function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=nu
 }
 function generate(state, m, rng = randomInt) {
   ok(m.status === 'draft', '已发布地图不能重新随机生成。'); validateMap(m);
-  for (const c of Object.values(m.cells)) if ((c.type === 'room'||c.hasContents) && !c.room?.boss) c.room = instantiate(state, selectRoom(state, m, c, rng), rng,m.maxRank??10,c.variantId);
+  for (const c of Object.values(m.cells)) if ((c.type === 'room'||c.hasContents) && !c.room?.boss && !c.room?.merchant) c.room = instantiate(state, selectRoom(state, m, c, rng), rng,m.maxRank??10,c.variantId);
   m.generated = true; m.version++; return m;
 }
 function publish(state, m) {

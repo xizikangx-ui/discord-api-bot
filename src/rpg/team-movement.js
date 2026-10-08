@@ -9,7 +9,7 @@ function valid(state,m,r,now=Date.now()){
   if(r.kind&&r.kind!=='move'){const target=state.explorations[r.destination];if(!target||target.status!=='active'||target.version!==r.destinationVersion)return false;}
   return r.members.every(uid=>state.players[uid]?.id===r.characters[uid]&&state.players[uid].hp>0&&!M.battleFor(state,uid));
 }
-function expire(state,m,now=Date.now()) {const r=m.moves?.[m.moveRequestId];if(r?.status==='pending'&&!valid(state,m,r,now)){r.status=r.expiresAt<=now?'expired':'cancelled';r.reason=r.status==='expired'?'三分钟内未全员确认':'地图、队伍或角色状态已经变化';return r;}return null;}
+function expire(state,m,now=Date.now()) {const r=m.moves?.[m.moveRequestId];if(r?.status==='pending'&&!valid(state,m,r,now)){r.status=r.expiresAt<=now?'expired':'cancelled';r.reason=r.status==='expired'?'四分钟内未全员确认':'地图、队伍或角色状态已经变化';return r;}return null;}
 function checks(state,m,r){require('./rp').check(m);ok(valid(state,m,r),'移动申请已过期或队伍状态变化，请重新发起。');
   for(const uid of r.members){const {p,part}=X.participant(state,m,uid);ok(part.cell===r.from,'全队必须在同一格。');ok(!M.stats(p).overloaded,p.name+'超重，无法移动。');}
   if(r.kind&&r.kind!=='move'){require('./map-links').check(state,m,r);return;}
@@ -24,7 +24,7 @@ function complete(state,m,r){checks(state,m,r);if(r.kind&&r.kind!=='move'){requi
 function propose(state,m,uid,to,keyId,now=Date.now()){
   expire(state,m,now);ok(!m.moves?.[m.moveRequestId]||m.moves[m.moveRequestId].status!=='pending','已有全队移动申请，请先确认或取消。');
   const {part}=X.participant(state,m,uid),members=Object.keys(m.participants);
-  const r={id:C.id('v'),owner:uid,from:part.cell,to,keyId:keyId||null,members,characters:Object.fromEntries(members.map(id=>[id,m.participants[id].characterId])),roster:roster(m),layout:layout(m),yes:[uid],status:'pending',createdAt:now,expiresAt:now+180000,publication:{status:'pending'}};
+  const r={id:C.id('v'),owner:uid,from:part.cell,to,keyId:keyId||null,members,characters:Object.fromEntries(members.map(id=>[id,m.participants[id].characterId])),roster:roster(m),layout:layout(m),yes:[uid],status:'pending',createdAt:now,expiresAt:C.confirmationDeadline(180000,now),publication:{status:'pending'}};
   checks(state,m,r);m.moves||={};m.moves[r.id]=r;m.moveRequestId=r.id;
   if(members.length===1)complete(state,m,r);return clone(r);
 }

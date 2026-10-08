@@ -40,10 +40,7 @@ function createHandlers(context) {
     }
     if(action==='firecount'){const f=F.owned(s,args[0],i.user.id);ok(f.kind==='fire'&&!f.done&&f.expiresAt>Date.now(),'射击步骤已失效。');const values=[f.battleId,f.actorId,i.user.id,f.turnId];const {p}=prefixContext(i,s,values,i.member,true);const w=p.inventory[f.abilityKey];ok(w?.loaded?.current>0,'无弹药，请装填。');await i.showModal(modal('firesubmit:'+f.id,'全自动连射',[{key:'count',label:'连射发数（剩余 '+w.loaded.current+' 发）',value:Math.min(3,w.loaded.current)}]));return true;}
     if (action === 'move') {
-      const { a, prefix } = prefixContext(i, s, args, i.member, true);
-      await i.showModal(modal('movevalue:' + prefix, '移动（米）', [
-        { key: 'x', label: '横向米数', value: a.x }, { key: 'y', label: '纵向米数', value: a.y }]));
-      return true;
+      return false;
     }
     return false;
   }
@@ -54,7 +51,7 @@ function createHandlers(context) {
     if (target.userId) ok(target.userId === uid, '防守由被攻击玩家本人选择。'); else needGM(s, member);
     return payload('免费防守反应 · ' + target.name, hit.attackName + '，固定命中 ' + hit.hit +
       '\n伤害分量：' + Object.entries(hit.damage).map(([k, v]) => C.DAMAGE_TYPES[k] + ' ' + v).join('、') +
-      '\n截止 <t:' + Math.floor(hit.expiresAt / 1000) + ':R>；60秒未响应默认纯防御。\n闪避：2d20取低＋有效敏捷及修正，严格大于命中成功；同时防守且闪避失败时防御减半。', [
+      '\n截止 <t:' + Math.floor(hit.expiresAt / 1000) + ':R>；120秒未响应默认纯防御。\n闪避：2d20取低＋有效敏捷及修正，严格大于命中成功；同时防守且闪避失败时防御减半。', [
       row(...[['defend', '防御'], ['dodge', '闪避'], ['both', '同时'], ['none', '放弃']].map(([choice, label]) =>
         button('defend:' + b.id + ':' + hit.id + ':' + uid + ':' + choice, label, choice === 'none' ? D.ButtonStyle.Danger : D.ButtonStyle.Primary)))
     ]);
@@ -218,6 +215,7 @@ function createHandlers(context) {
       owner(i, args[1]); if (args[0] !== uid) needGM(s, member);
       return U.itemView(s, args[0], uid, action === 'bagitem' ? i.values[0] : args[2], action === 'itempage' ? Number(args[3]) : 0);
     }
+    if(action==='bagbulk'){owner(i,args[0]);return context.bulkUse.prepare(i,args[1]);}
     if (action === 'baguse') {
       owner(i,args[0]);if(M.player(s,uid).inventory[args[1]]?.snapshot.kind==='修复道具')return context.selections.repairStart(i,args[1]);
       owner(i, args[0]); const result = await context.use(i, args[1]);
@@ -359,7 +357,7 @@ function createHandlers(context) {
       }
       return pickView('选择武器／技能',abilities.map(x=>({label:x.attack.name,value:x.key})),'attackpick:'+prefix+':'+type,Number(args[5]));
     }
-    if(action==='target'&&args[6]==='auto'){const target=B.actorById(b,i.values[0]);const f=await tx(i,st=>{prefixContext(i,st,args,member,true);const f={id:C.id('f'),kind:'fire',owner:uid,battleId:b.id,actorId:a.id,turnId,action:args[4],abilityKey:args[5],targetId:target.id,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});return payload('全自动连射 · '+target.name,'选择连射发数，一次行动只消耗一次行动预算。',[row(button('firecount:'+f.id,'填写连射发数'),button('view:'+prefix+':overview','取消选择'))]);}
+    if(action==='target'&&args[6]==='auto'){const target=B.actorById(b,i.values[0]);const f=await tx(i,st=>{prefixContext(i,st,args,member,true);const f={id:C.id('f'),kind:'fire',owner:uid,battleId:b.id,actorId:a.id,turnId,action:args[4],abilityKey:args[5],targetId:target.id,expiresAt:C.confirmationDeadline(300000)};st.forms[f.id]=f;return f;});return payload('全自动连射 · '+target.name,'选择连射发数，一次行动只消耗一次行动预算。',[row(button('firecount:'+f.id,'填写连射发数'),button('view:'+prefix+':overview','取消选择'))]);}
     const W = require('./weapons');
     function reloadAmmo(weaponId, page = 0) {
       ok(W.equipped(p).includes(weaponId) && p.inventory[weaponId]?.loaded, '请选择已装备的枪械。');
@@ -424,7 +422,7 @@ function createHandlers(context) {
       ], action + ':' + prefix, Number(args[4]));
     }
     let intent;
-    if(action==='movevalue')intent={action:'move',params:{x:i.fields.getTextInputValue('x'),y:i.fields.getTextInputValue('y')}};
+    if(action==='movevalue')throw Error('坐标移动入口已停用，请在移动页点选地图位置。');
     else if(action==='target')intent={action:'attack',params:{abilityKey:args[5],targetId:i.values[0],action:args[4],firing:{mode:args[6]||'semi'}}};
     else if(action==='firesubmit')intent={action:'attack',sourceFormId:fireForm.id,params:{abilityKey:args[5],targetId:args[6],action:args[4],firing:{mode:'auto',count:i.fields.getTextInputValue('count')}}};
     else if(action==='weaponpick'||action==='weaponhand')intent={action:'switch',params:{weaponId:action==='weaponhand'?args[4]:i.values[0]==='none'?null:i.values[0],hand:action==='weaponhand'?i.values[0]:'auto'}};

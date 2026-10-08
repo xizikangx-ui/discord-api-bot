@@ -61,7 +61,7 @@ function createBuyback({ snapshot, tx, needGM, announceOffer }) {
       const f = await tx(i, st => {
         needGM(st, member); const p = M.player(st, ref), itemId = i.values[0]; M.transferable(st, ref, itemId, 1);
         const f = { id: C.id('f'), kind: 'buyback', owner: uid, target: ref, characterId: p.id, itemId, page: Number(arg) || 0,
-          quantity: 1, price: 0, priced: false, version: 1, expiresAt: Date.now() + 15 * 60000 };
+          quantity: 1, price: 0, priced: false, version: 1, expiresAt: C.confirmationDeadline(15 * 60000) };
         st.forms[f.id] = f; return f;
       }, '选择GM收购物品'); return view(snapshot(i.guildId), f);
     }

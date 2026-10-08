@@ -35,7 +35,7 @@ function place(b,a) {
 }
 function deathPreview(s,b,owner,id,version,reason) {
   pending(s,b,id,version);reason=C.text(reason,'裁决理由',1000);ok(players(s,b).every(a=>H.downed(s.players[a.userId])),'已经有人起身，不能使用旧全队死亡裁决。');
-  const f={id:C.id('f'),kind:'partyDeath',owner,battleId:b.id,judgmentId:id,version:Number(version),reason,signature:rosterSignature(s,b),expiresAt:Date.now()+300000,status:'ready'};s.forms[f.id]=f;return f;
+  const f={id:C.id('f'),kind:'partyDeath',owner,battleId:b.id,judgmentId:id,version:Number(version),reason,signature:rosterSignature(s,b),expiresAt:C.confirmationDeadline(300000),status:'ready'};s.forms[f.id]=f;return f;
 }
 function kill(s,owner,id) {
   const f=s.forms[id];ok(f?.kind==='partyDeath'&&f.owner===owner,'裁决确认不属于你。');if(f.status==='done')return C.clone(f.result);ok(f.status==='ready'&&f.expiresAt>Date.now(),'确认已过期。');const b=s.battles[f.battleId],j=pending(s,b,f.judgmentId,f.version);ok(f.signature===rosterSignature(s,b),'生命或队伍已变化，请重新预览。');

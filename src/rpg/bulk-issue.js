@@ -102,7 +102,7 @@ function createBulkIssue({ snapshot, tx, needGM }) {
       const uid = i.options.getUser('成员')?.id, ref = i.options.getString('物品');
       const p = uid ? M.player(s, uid) : null, t = ref ? s.catalog[ref] : null;
       ok(!ref || (t?.published && t.kind !== '杂物'), '请选择已发布的非杂物模板。');
-      const f = { id: C.id('f'), kind: 'bulkissue', owner: i.user.id, version: 0, expiresAt: Date.now() + 14 * 60000,
+      const f = { id: C.id('f'), kind: 'bulkissue', owner: i.user.id, version: 0, expiresAt: C.confirmationDeadline(14 * 60000),
         targets: p ? [{ uid, characterId: p.id }] : [], items: t ? [{ ref, version: t.version, name: t.name, quantity: i.options.getInteger('数量') || 1 }] : [] };
       s.forms[f.id] = f; return f;
     }, '打开GM批量发放面板');

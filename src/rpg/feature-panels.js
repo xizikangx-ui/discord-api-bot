@@ -4,7 +4,7 @@ const ok=C.requireThat, PAGE=20;
 const prefix=(type,action,...args)=>['features',type,action,...args].join(':');
 function createPanels({snapshot,tx,store,needGM}) {
   function owned(s,id,uid,version) {const f=s.forms[id];ok(f&&f.owner===uid&&f.expiresAt>Date.now(),'草稿已过期或不属于你。');if(version!==undefined)ok(f.version===Number(version),'面板已更新，请重新打开。');return f;}
-  function fresh(s,uid,kind,data={}) {const f={id:C.id('f'),kind,owner:uid,version:0,expiresAt:Date.now()+86400000,...data};s.forms[f.id]=f;return f;}
+  function fresh(s,uid,kind,data={}) {const f={id:C.id('f'),kind,owner:uid,version:0,expiresAt:C.confirmationDeadline(86400000),...data};s.forms[f.id]=f;return f;}
   const poolSource=(s,type)=>type==='boss'?s.bossPools:s.couponPools;
   function home(s,type,page=0) {
     const pools=Object.values(poolSource(s,type)||{}),part=pools.slice(page*PAGE,page*PAGE+PAGE);

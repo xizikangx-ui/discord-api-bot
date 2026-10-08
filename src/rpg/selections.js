@@ -87,7 +87,7 @@ function createSelections(context) {
       const category=arg==='发放'&&Categories.valid(step)?step:'all',selectionStep=arg==='发放'&&Categories.valid(step)?extra:step;
       if(selectionStep!=='select')return list(s,uid,arg,selectionStep,target,category);
       const ref=i.values[0],options=arg==='发放'?Object.values(s.catalog).filter(t=>t.published&&Categories.matches(t,category)).map(t=>({value:t.id})):entries(s,uid,arg);ok(options.some(o=>o.value===ref),'物品已不可用，请重新选择。');
-      const f=await tx(i,st=>{const t=arg==='发放'?st.catalog[ref]:M.player(st,uid).inventory[ref].snapshot;const f={id:C.id('f'),owner:uid,kind:'selection',operation:arg,ref,target,returnEquipment:target==='equipment',name:t.name,templateVersion:t.version,characterId:M.player(st,arg==='发放'?target:uid).id,weapon:t.kind==='武器',hands:t.kind==='武器'?W.hands(t):null,hand:'main',quantity:1,expiresAt:Date.now()+300000};st.forms[f.id]=f;return f;});
+      const f=await tx(i,st=>{const t=arg==='发放'?st.catalog[ref]:M.player(st,uid).inventory[ref].snapshot;const f={id:C.id('f'),owner:uid,kind:'selection',operation:arg,ref,target,returnEquipment:target==='equipment',name:t.name,templateVersion:t.version,characterId:M.player(st,arg==='发放'?target:uid).id,weapon:t.kind==='武器',hands:t.kind==='武器'?W.hands(t):null,hand:'main',quantity:1,expiresAt:C.confirmationDeadline(300000)};st.forms[f.id]=f;return f;});
       if(['发放','丢弃'].includes(arg))return U.payload('数量 · '+f.name,'选择物品完成，请填写数量。',[U.row(U.button('chooseamount:'+f.id,'填写数量'),U.button('choose:'+arg+':'+target+':0','返回物品列表'))]);
       if(['装配','拆下'].includes(arg))return parts(s,uid,f);
       if(M.player(s,uid).inventory[f.ref]?.snapshot.kind==='修复道具')return repairTargets(s,uid,f);
@@ -110,7 +110,7 @@ function createSelections(context) {
     const v=pickView('选择配件 · '+f.name,options,'choosepart:'+f.id,Number(page)||0);v.components.push(U.row(U.button('choose:home','取消')));return v;
   }
   function repairTargets(s,uid,f,page=0){const Dur=require('./durability'),p=M.player(s,uid),tool=p.inventory[f.ref];ok(tool?.snapshot.kind==='修复道具','修复道具已不存在。');return pickView('选择要修复的装备',Object.values(p.inventory).filter(item=>tool.snapshot.repairKinds.includes(item.snapshot.kind)&&Dur.current(item)<Dur.maximum(item)&&M.available(s,uid,item.id)>0).map(item=>({value:item.id,label:item.snapshot.name,description:'耐久 '+Dur.current(item)+'/'+Dur.maximum(item)+' · '+item.id})),'chooserepair:'+f.id,Number(page)||0);}
-  async function repairStart(i,ref){const f=await tx(i,s=>{const item=M.player(s,i.user.id).inventory[ref];ok(item?.snapshot.kind==='修复道具'&&M.available(s,i.user.id,ref)>0,'修复道具已不可用。');const f={id:C.id('f'),owner:i.user.id,kind:'selection',operation:'使用',ref,name:item.snapshot.name,quantity:1,characterId:M.player(s,i.user.id).id,expiresAt:Date.now()+300000};s.forms[f.id]=f;return f;});return repairTargets(snapshot(i.guildId),i.user.id,f);}
+  async function repairStart(i,ref){const f=await tx(i,s=>{const item=M.player(s,i.user.id).inventory[ref];ok(item?.snapshot.kind==='修复道具'&&M.available(s,i.user.id,ref)>0,'修复道具已不可用。');const f={id:C.id('f'),owner:i.user.id,kind:'selection',operation:'使用',ref,name:item.snapshot.name,quantity:1,characterId:M.player(s,i.user.id).id,expiresAt:C.confirmationDeadline(300000)};s.forms[f.id]=f;return f;});return repairTargets(snapshot(i.guildId),i.user.id,f);}
   return {list,home,quote,openModal,component,repairStart};
 }
 module.exports={createSelections};

@@ -96,6 +96,7 @@ function inventoryView(state, userId, viewerId, page = 0) {
   result.embeds[0].addFields(field('负重', C.kg(s.carried) + ' / ' + C.kg(s.limit) + (s.overloaded ? ' · 超重' : s.burdened ? ' · 减速' : ''), true),
     field('可用游戏币', p.balance - reserve.coins, true), field('抽取次数', '卡牌 ' + p.tickets.card + '\n' +
       (Object.entries(p.tickets.boxes).map(([k, v]) => k + ' ' + v).join('／') || '暂无箱子次数'), true));
+  result.rpgPanel={kind:'bag'};result.embeds[0].setFooter({text:'入口 bag '+p.id});
   return require('./loot-icons').grid(result, p.name + ' · 背包藏品', pageItems);
 }
 function itemView(state, userId, viewerId, ref, page = 0) {
@@ -123,7 +124,7 @@ function itemView(state, userId, viewerId, ref, page = 0) {
     row(button('itempage:' + userId + ':' + viewerId + ':' + ref + ':' + (page - 1), '上一页', undefined, page === 0),
       button('itempage:' + userId + ':' + viewerId + ':' + ref + ':' + (page + 1), '下一页', undefined, page === pages.length - 1),
       button('bag:' + userId + ':' + viewerId + ':0', '返回背包'),
-      ...(userId === viewerId && [...C.CONSUMABLES,'修复道具'].includes(t.kind) ? [button('baguse:' + userId + ':' + ref, '使用一件', D.ButtonStyle.Success, M.available(state, userId, ref) < 1)] : []))
+      ...(userId === viewerId && [...C.CONSUMABLES,'修复道具'].includes(t.kind) ? [button('baguse:' + userId + ':' + ref, '使用一件', D.ButtonStyle.Success, M.available(state, userId, ref) < 1),...(C.CONSUMABLES.includes(t.kind)?[button('bagbulk:'+userId+':'+ref,'批量使用')]:[])] : []))
   ], r.color);
   result.embeds[0].addFields(field('分类 / 稀有度', t.kind + ' / ' + r.name, true),
     field('数量 / 重量', item.quantity + ' / ' + C.kg(M.itemWeight(item)), true), field('参考价值', t.value, true));
@@ -211,7 +212,7 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
     ['overview', '概览'], ['move', '移动'], ['quick', '快速行动'], ['formal', '正式行动'], ['status', '装备与状态']
   ].map(([value, label]) => ({ value, label, default: value === tab }))))];
   const enabled = require('./health').canAct(p) && !!turn && b.status === 'active' && !b.pending;
-  if (tab === 'move') rows.push(row(button('move:' + prefix, '输入移动位置', D.ButtonStyle.Primary, !enabled || s.overloaded)));
+  if (tab === 'move') rows.push(row(button('move:' + prefix, '点地图移动', D.ButtonStyle.Primary, !enabled || s.overloaded),button('movement:shortcuts:'+b.id+':'+a.id,'靠近 / 远离敌人',undefined,!enabled||s.overloaded)));
   if (tab === 'quick') rows.push(row(button('attackpick:' + prefix + ':quick:0', '快捷技能／超凡攻击', D.ButtonStyle.Primary, !enabled || !turn.quick),
     button('ammo:b:'+b.id+':'+a.id+':home', '更换弹夹 / 填弹', undefined, !enabled || !turn.quick), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick),
     button('itempick:' + prefix + ':0', '使用道具', undefined, !enabled || !turn.quick), button('cast:' + prefix, '确认吟唱', undefined, !enabled || !turn.quick)));
@@ -227,6 +228,7 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   rows.push(row(button('view:' + prefix + ':' + tab + ':' + statusPage, '刷新'), button('battle:' + b.id, '查看战场')));
   if(a.userId===viewer)rows[rows.length-1].addComponents(button('profile:home:'+a.userId+':'+p.id,'角色设置 / 自由点'));
   const v = payload('个人行动面板 · ' + a.name, body, rows);
+  v.rpgPanel={kind:'battle',battleId:b.id,actorId:a.id,tab};v.embeds[0].setFooter({text:'面板 '+b.id+' '+a.id+' '+p.id+' '+tab});
   v.rpgPortraits = p.portraits || {};
   v.embeds[0].addFields(...characterView(p, true, statusPage).embeds[0].data.fields);
   return require('./map-image').prepare(v,{kind:'personal',state,b,a});
