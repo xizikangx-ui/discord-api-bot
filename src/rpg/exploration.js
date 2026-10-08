@@ -55,6 +55,7 @@ function touched(m, ref) {
 function editCell(state, m, x, y, type, categoryId, templateId, variantId = null) {
   editable(m); x = num(x, '列', 1, 20) - 1; y = num(y, '楼层', 1, 20) - 1;
   ok(cellTypes(m)[type] || type === 'empty', '格子类型无效。'); const ref = key(x, y), old = m.cells[ref];
+  ok(!old?.room?.boss,'请先通过BOSS配置移除尚未进入的BOSS房。');
   if(touched(m,ref)){ok(old.type===type&&old.categoryId===(categoryId||m.categoryId)&&(old.templateId||null)===(templateId||null),'该格有人或已有交互记录，不能替换或删除。');m.version++;return ref;}
   if (type === 'empty') delete m.cells[ref];
   else {
@@ -91,7 +92,7 @@ function validateMap(m) {
 function selectRoom(state, m, c, rng = randomInt) {
   if (c.templateId) { const t = state.roomTemplates[c.templateId]; ok(t?.published, '房间模板不存在。'); return t; }
   ok(m.mode === 'random', '固定地图每个房间格都需要选择模板。');
-  const pool = Object.values(state.roomTemplates).filter(r => r.published && r.categoryIds.includes(c.categoryId));
+  const pool = Object.values(state.roomTemplates).filter(r => r.published && !r.manualOnly && r.categoryIds.includes(c.categoryId));
   ok(pool.length, '该大类尚未录入房间。'); return pool[rng(0, pool.length)];
 }
 function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=null) {
@@ -114,7 +115,7 @@ function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=nu
 }
 function generate(state, m, rng = randomInt) {
   ok(m.status === 'draft', '已发布地图不能重新随机生成。'); validateMap(m);
-  for (const c of Object.values(m.cells)) if (c.type === 'room'||c.hasContents) c.room = instantiate(state, selectRoom(state, m, c, rng), rng,m.maxRank??10,c.variantId);
+  for (const c of Object.values(m.cells)) if ((c.type === 'room'||c.hasContents) && !c.room?.boss) c.room = instantiate(state, selectRoom(state, m, c, rng), rng,m.maxRank??10,c.variantId);
   m.generated = true; m.version++; return m;
 }
 function publish(state, m) {
@@ -180,11 +181,12 @@ function transfer(state, m, cell, containerId, uid) {
   ok(c?.status === 'pending' && m.participants[uid]?.characterId === p.id, '选择待领取容器及本地图有效玩家。');
   c.owner = { userId: uid, characterId: p.id }; m.version++;
 }
-function encounter(state, m, ref, users, rng = randomInt) {
+function encounter(state, m, ref, users, rng = randomInt, approval = null) {
   require('./rp').check(m);
   ok(m.status === 'active', '恢复地图后才能开始遭遇。'); const c = m.cells[ref];
   ok(c?.room?.encounter === 'pending' && m.revealed[ref], '房间没有待处理遭遇。');
   ok(users.length && users.every(uid => m.participants[uid]?.cell === ref && state.players[uid]?.id === m.participants[uid].characterId), '请选择在该房间且有有效角色的玩家。');
+  if(c.room.boss)require('./boss').authorized(state,m,ref,approval);
   const remaining=c.room.remainingNpcs || clone(c.room.snapshot.npcs), slots=20-users.length;
   ok(slots>0,'每场最多20名参战者，请为NPC预留位置。');
   const Layout = require('./encounter-layout'), layout = Layout.validateLayout(c.room.tacticalLayout || Layout.generate(c.room.snapshot, rng));
@@ -201,6 +203,7 @@ function encounter(state, m, ref, users, rng = randomInt) {
 function resolve(state, m, ref) {
   const r = m.cells[ref]?.room; ok(r && r.encounter !== 'resolved', '遭遇已经解除。');
   ok(!r.battleId || state.battles[r.battleId]?.status === 'ended', '先结束关联战斗。');
+  if(r.boss)ok(r.battleId&&state.battles[r.battleId]?.outcome==='victory','BOSS房须实际获胜后才能解除遭遇。');
   if(r.battleId && r.remainingNpcs?.length) {r.encounter='pending';r.battleId=null;} else r.encounter = 'resolved';
   m.cells[ref].touched = true; m.version++;
 }

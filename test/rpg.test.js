@@ -755,7 +755,9 @@ test('use command and bag detail are self-only, reject reserved goods, paused ba
     const battleId = Object.keys(rpg.store.snapshot(C.DEFAULT_GUILD_ID).battles)[0];
     await rpg.store.transact(C.DEFAULT_GUILD_ID, 'resume', 'GM', s => B.pause(s.battles[battleId], true));
     const used = h.interaction('1', '使用', { 物品: ref }); await rpg.handle(used);
-    const b = rpg.store.snapshot(C.DEFAULT_GUILD_ID).battles[battleId]; assert.equal(b.current.quick, 0); assert.ok(!used.result.content);
+    assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).battles[battleId].current.quick, 1);
+    const confirmed = await click(h, rpg, '1', used, '直接执行');
+    const b = rpg.store.snapshot(C.DEFAULT_GUILD_ID).battles[battleId]; assert.equal(b.current.quick, 0); assert.match(confirmed.result.content, /已保存/);
   } finally { rpg.stop(); }
 });
 
@@ -1004,7 +1006,7 @@ test('upgrade cards and commands meet full Discord limits with long real IDs and
   validateMessage(U.characterView(p)); validateMessage(U.inventoryView(s, '1', '1234567890123456789'));
   validateMessage(AU.checkView(A.createCheck(s, 'GM', 'channel', { name: '鉴定', description: '字'.repeat(2000), rule: 'd20', threshold: 10 })));
   validateMessage(AU.sessionView(A.createSession(s, 'GM', 'channel', { name: '开团', description: '字'.repeat(2000), startsAt: Date.now() + 100000 })));
-  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 32); assert.equal(new Set(all.map(c => c.name)).size, all.length);
+  const all = commands().map(c => c.toJSON()); assert.equal(all.length, 35); assert.equal(new Set(all.map(c => c.name)).size, all.length);
   function validOptions(options) {
     let optional = false;
     for (const o of options || []) { if (o.type > 2) { if (!o.required) optional = true; else assert.equal(optional, false, o.name); }
@@ -1027,7 +1029,7 @@ test('restart preserves minute deadlines, action duration and published template
     return { deadline: p.temporaryEffects[0].expiresAt, oldRef: old.id };
   });
   const restore = createStore(h.deps); await restore.load(C.DEFAULT_GUILD_ID); const saved = restore.snapshot(C.DEFAULT_GUILD_ID);
-  assert.equal(saved.upgrade, 6); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
+  assert.equal(saved.upgrade, 7); assert.equal(saved.players['1'].temporaryEffects[0].expiresAt, data.deadline);
   assert.equal(saved.players['1'].temporaryEffects[1].skipTurnId, 'use-turn');
   assert.equal(saved.players['1'].temporaryEffects[1].remaining, 2);
   assert.equal(saved.catalog[data.oldRef].description, C.seedCatalog()[data.oldRef].description);
@@ -1533,14 +1535,14 @@ test('humanoid equipped attachments, magazine, ammo and keys drop once retaining
 test('player death cancels offers, removes exploration and turn, freezes history, clears all assets and lets new card start', () => {
   const {s,m}=mapFixture();X.join(s,m,'1');const p=s.players['1'];p.balance=100;p.tickets.card=10;M.issue(s,'1',Object.keys(s.catalog)[0]);
   const offer=M.createOffer(s,'1','2','trade'),b=B.createBattle(s,'f','GM','死亡');const a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s).id,'enemy');B.start(s,b,null,minRng);
-  p.hp=0;const d=DT.settle(s,b,a,n.id);assert.ok(d.snapshot.inventory);assert.equal(s.players['1'],undefined);assert.equal(s.offers[offer.id].status,'cancelled');assert.equal(m.participants['1'],undefined);assert.ok(a.finalCharacter);assert.ok(!b.current || b.current.actorId!==a.id);
+  require('../src/rpg/health').forceDeath(p);const d=DT.settle(s,b,a,n.id);assert.ok(d.snapshot.inventory);assert.equal(s.players['1'],undefined);assert.equal(s.offers[offer.id].status,'cancelled');assert.equal(m.participants['1'],undefined);assert.ok(a.finalCharacter);assert.ok(!b.current || b.current.actorId!==a.id);
   M.rollCharacter(s,'1','新卡',false,minRng);s.characterDrafts['1'].gender='female';const fresh=M.confirmCharacter(s,'1');assert.notEqual(fresh.id,d.characterId);assert.equal(fresh.balance,0);assert.equal(fresh.tickets.card,0);assert.equal(Object.keys(fresh.inventory).length,0);assert.equal(M.battleFor(s,'1'),undefined);
   assert.equal(B.actorCharacter(s,a).id,d.characterId);assert.equal(DT.settle(s,b,a),null);
 });
-test('HP transaction reconciliation clears new noncombat deaths but preserves historical zero characters', async () => {
+test('HP reconciliation downs zero-HP characters and explicit noncombat death clears assets once', async () => {
   const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
   await store.transact(C.DEFAULT_GUILD_ID,'seed','GM',st=>Object.assign(st.players,state().players));
-  await store.transact(C.DEFAULT_GUILD_ID,'zero','GM',st=>{st.players['1'].hp=0;});assert.equal(store.snapshot(C.DEFAULT_GUILD_ID).players['1'],undefined);
+  await store.transact(C.DEFAULT_GUILD_ID,'zero','GM',st=>{st.players['1'].hp=0;});assert.ok(require('../src/rpg/health').downed(store.snapshot(C.DEFAULT_GUILD_ID).players['1']));await store.transact(C.DEFAULT_GUILD_ID,'explicit-death','GM',st=>require('../src/rpg/health').forceDeath(st.players['1']));assert.equal(store.snapshot(C.DEFAULT_GUILD_ID).players['1'],undefined);
   await store.transact(C.DEFAULT_GUILD_ID,'historical','GM',st=>{st.players['1']=state().players['1'];st.players['1'].hp=0;});
   await store.transact(C.DEFAULT_GUILD_ID,'noop','GM',()=>null);assert.equal(store.snapshot(C.DEFAULT_GUILD_ID).players['1'].hp,0);
   const copy=createStore(h.deps);await copy.load(C.DEFAULT_GUILD_ID);assert.equal(Object.keys(copy.snapshot(C.DEFAULT_GUILD_ID).deaths).length,1);
@@ -1568,14 +1570,18 @@ test('runtime map configuration authenticates GM and supports category, map crea
     const update=h.interaction('GM',null,{},'rpg:mapx:gradesubmit:gold',undefined,{values:'100 0 0 0 0 0'});await rpg.handle(update);assert.deepEqual(L.rates(rpg.store.snapshot(C.DEFAULT_GUILD_ID),'保险箱'),[0,0,0,0,0,100]);
   }finally{rpg.stop();}
 });
-test('GM setting player zero HP requires explicit confirmation and dead historical actor cannot be revived', async () => {
+test('GM normal HP zero downs player; explicit reason and fresh preview are required for actual death', async () => {
   const h=harness(),rpg=createRpg(h.deps);await rpg.start();try{
     const data=await rpg.store.transact(C.DEFAULT_GUILD_ID,'seed','GM',st=>{Object.assign(st.players,state().players);st.config.gmRoleIds=['gm'];const b=B.createBattle(st,'channel','GM','死亡');const a=B.join(st,b,'1');return {b:b.id,a:a.id,char:st.players['1'].id};});
-    const zero=h.interaction('GM','战斗',{sub:'生命',角色:data.a,数值:0});await rpg.handle(zero);assert.ok(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1']);assert.match(zero.result.embeds[0].data.title,/确认/);
-    const confirm=h.interaction('GM',null,{},'rpg:gmui:'+data.b+':deathconfirm:'+data.a+':'+data.char);await rpg.handle(confirm);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'],undefined);
-    const duplicate=h.interaction('GM',null,{},'rpg:gmui:'+data.b+':deathconfirm:'+data.a+':'+data.char);await rpg.handle(duplicate);assert.match(duplicate.result.content,/死亡/);
+    const zero=h.interaction('GM','战斗',{sub:'生命',角色:data.a,数值:0});await rpg.handle(zero);assert.ok(require('../src/rpg/health').downed(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1']));
+    const old=h.interaction('GM',null,{},'rpg:gmui:'+data.b+':deathconfirm:'+data.a+':'+data.char);await rpg.handle(old);assert.match(old.result.content,/旧判死/);assert.ok(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1']);
+    await rpg.store.transact(C.DEFAULT_GUILD_ID,'pause','GM',st=>{st.battles[data.b].status='paused';});
+    const preview=h.interaction('GM',null,{},'rpg:gmstory:singlepreview:'+data.b+':'+data.a,[],{reason:'GM测试明确裁决'});await rpg.handle(preview);
+    const confirmId=control(preview.result,'确认死亡'),confirm=h.interaction('GM',null,{},confirmId);await rpg.handle(confirm);assert.equal(rpg.store.snapshot(C.DEFAULT_GUILD_ID).players['1'],undefined);
+    const duplicate=h.interaction('GM',null,{},confirmId);await rpg.handle(duplicate);assert.equal(Object.keys(rpg.store.snapshot(C.DEFAULT_GUILD_ID).deaths).length,1);
   }finally{rpg.stop();}
 });
+
 test('large fog cards and redesigned public/private character data obey Discord limits and hide assets', () => {
   const s=state(),{m}=mapFixture(s);m.width=20;m.floors=20;validateMessage(XU.board(m));
   const p=s.players['1'];p.balance=12345678;p.tickets.card=87654321;const pub=U.characterView(p);validateMessage(pub);assert.ok(!JSON.stringify(pub).includes('12345678'));assert.ok(!JSON.stringify(pub).includes('87654321'));
@@ -1611,7 +1617,7 @@ test('death on action condition advances current actor safely and minute HP clam
   const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);
   const refs=await store.transact(C.DEFAULT_GUILD_ID,'setup','GM',st=>{Object.assign(st.players,state().players);const b=B.createBattle(st,'c','GM','毒素');B.join(st,b,'1');B.join(st,b,'2');
     const t=B.validateCondition({...F.defaults('condition'),name:'毒',levels:{一般:{difficulty:100,duration:{kind:'actions',count:3},worsenAfter:0,effects:[{target:'hp',amount:'100'}]}}});t.id='poison';t.version=1;t.published=true;st.conditionTemplates.poison=t;B.applyCondition(st,st.players['1'],{id:t.id,severity:'一般'},minRng,b.actors[1].id);return b.id;});
-  await store.transact(C.DEFAULT_GUILD_ID,'start','GM',st=>B.start(st,st.battles[refs],null,minRng));const s=store.snapshot(C.DEFAULT_GUILD_ID);assert.equal(s.players['1'],undefined);assert.notEqual(s.battles[refs].current?.actorId,s.battles[refs].actors[0].id);assert.ok(s.battles[refs].actors[0].deathId);
+  await store.transact(C.DEFAULT_GUILD_ID,'start','GM',st=>B.start(st,st.battles[refs],null,minRng));const s=store.snapshot(C.DEFAULT_GUILD_ID);assert.ok(require('../src/rpg/health').downed(s.players['1']));assert.notEqual(s.battles[refs].current?.actorId,s.battles[refs].actors[0].id);assert.ok(!s.battles[refs].actors[0].deathId);
   await store.transact(C.DEFAULT_GUILD_ID,'restore-base','GM',st=>{const p=st.players['2'];p.attributes.constitution=0;p.temporaryEffects=[{id:'buff',name:'生命增益',templateId:'a',modifiers:[{target:'hpMax',op:'add',value:30}],duration:{kind:'minutes',count:1},expiresAt:1}];});
   await store.transact(C.DEFAULT_GUILD_ID,'expire','BOT',st=>A.expireAll(st,100));assert.equal(store.snapshot(C.DEFAULT_GUILD_ID).players['2'],undefined);
 });
@@ -1623,7 +1629,7 @@ test('simultaneous corpse claims transfer each bundle at most once and recreated
 test('upgrade 4 only initializes new fields and never awards historical kills or deletes zero-HP saved players', () => {
   const s=state(),b=B.createBattle(s,'c','GM','历史');const a=B.join(s,b,'1'),n=B.addNPC(s,b,npcTemplate(s).id,'enemy');s.upgrade=3;s.players['1'].hp=0;n.character.hp=0;
   delete s.explorations;delete s.mapCategories;delete s.roomTemplates;delete s.deaths;delete s.corpses;delete n.humanoid;delete n.baseXP;delete a.characterId;
-  const old=JSON.stringify(s.players),report=A.migrate(s);assert.ok(report.maps);assert.equal(s.upgrade,6);assert.equal(JSON.stringify(s.players),old);assert.equal(n.baseXP,0);assert.equal(n.humanoid,false);assert.equal(Object.keys(s.deaths).length,0);assert.equal(A.migrate(s),null);
+  const old=JSON.stringify(s.players),report=A.migrate(s);assert.ok(report.maps);assert.equal(s.upgrade,7);assert.equal(s.players['1'].hp,0);assert.ok(require('../src/rpg/health').downed(s.players['1']));assert.equal(s.players['1'].balance,JSON.parse(old)['1'].balance);assert.equal(n.baseXP,0);assert.equal(n.humanoid,false);assert.equal(Object.keys(s.deaths).length,0);assert.equal(A.migrate(s),null);
 });
 test('fatal condition preserves original caster identity after actor removal and never rewards a replacement card', () => {
   for (const replacement of [false, true]) {
@@ -1918,7 +1924,7 @@ test('map batch uses first opener luck and retains probabilities after transferr
   const c=m.cells['2,0'].room.containers[0],first=X.open(s,m,'1',c.id,minRng);assert.equal(first.result.luck,11);assert.deepEqual(first.result.rates,L.adjustedRates(s,c.box,11));assert.ok(first.result.pending);m.status='paused';X.transfer(s,m,'2,0',c.id,'2');m.status='active';const claim=X.open(s,m,'2',c.id,()=>{throw Error('reroll');});assert.equal(claim.result.luck,11);assert.deepEqual(claim.result.rates,first.result.rates);assert.deepEqual(claim.result.items,first.result.items);assert.equal(claim.result.pending,false);
 });
 test('upgrade failure preserves canonical balances and successful recovery persists the reset only once',async()=>{
-  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);await store.transact(C.DEFAULT_GUILD_ID,'pre-upgrade','GM',s=>{Object.assign(s.players,state().players);s.players['1'].balance=333;s.upgrade=4;});const upgraded=createStore(h.deps);h.fail('before');await assert.rejects(upgraded.load(C.DEFAULT_GUILD_ID));const fresh=createStore(h.deps);await fresh.load(C.DEFAULT_GUILD_ID);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,0);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).economyMigration.version,1);await fresh.transact(C.DEFAULT_GUILD_ID,'new-money','GM',s=>{s.players['1'].balance=10;});const again=createStore(h.deps);await again.load(C.DEFAULT_GUILD_ID);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,10);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).events.filter(e=>e.id==='rpg-upgrade-6').length,1);
+  const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);await store.transact(C.DEFAULT_GUILD_ID,'pre-upgrade','GM',s=>{Object.assign(s.players,state().players);s.players['1'].balance=333;s.upgrade=4;});const upgraded=createStore(h.deps);h.fail('before');await assert.rejects(upgraded.load(C.DEFAULT_GUILD_ID));const fresh=createStore(h.deps);await fresh.load(C.DEFAULT_GUILD_ID);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,0);assert.equal(fresh.snapshot(C.DEFAULT_GUILD_ID).economyMigration.version,1);await fresh.transact(C.DEFAULT_GUILD_ID,'new-money','GM',s=>{s.players['1'].balance=10;});const again=createStore(h.deps);await again.load(C.DEFAULT_GUILD_ID);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).players['1'].balance,10);assert.equal(again.snapshot(C.DEFAULT_GUILD_ID).events.filter(e=>e.id==='rpg-upgrade-7').length,1);
 });
 test('NPC image edits are preserved when a previously opened statistics draft publishes later',()=>{
   const s=state(),t=npcTemplate(s),f=F.create(s,'GM','npc',null,t.id);s.npcTemplates[t.id].portraits={avatar:{id:'image'}};s.npcTemplates[t.id].version++;f.data.name='改名字';const result=F.publish(s,f);assert.deepEqual(result.portraits,{avatar:{id:'image'}});
@@ -2092,7 +2098,7 @@ test('selective AOE respects exact metre boundary and excludes self and allies b
 test('indiscriminate AOE includes caster and friends and invalid radius or centre fails before debit',()=>{const {s,b,caster,ability,learned}=areaFight('all');const preview=AOE.preview(s,b,caster,ability,{x:50,y:25});assert.equal(preview.targets.length,4);assert.equal(preview.friendly.length,2);assert.throws(()=>AOE.validate({mode:'all',radius:0}),/半径/);const before=JSON.stringify(s);assert.throws(()=>B.attack(s,b,b.current.id,learned.id,caster.id,'formal',minRng,{aoe:{center:{x:450,y:25}}}),/射程/);assert.equal(JSON.stringify(s),before);});
 test('AOE creates independently rolled child attacks, spends action once, defends in parallel and deduplicates',()=>{const {s,b,caster,enemy,second,ability,learned}=areaFight('selective',{damage:{physical:'1d6'}});let rolls=0;const rng=(min,max)=>{rolls++;return min;},area=AOE.preview(s,b,caster,ability,{x:50,y:25},[enemy.id,second.id]);B.attack(s,b,b.current.id,learned.id,enemy.id,'formal',rng,{aoe:area});assert.equal(rolls,2);assert.equal(b.current.formal,0);assert.equal(AOE.hits(b).length,2);const [one,two]=AOE.hits(b);B.defend(s,b,two.id,'defend',minRng);assert.equal(AOE.hits(b).length,1);assert.throws(()=>B.defend(s,b,two.id,'defend'),/结算/);B.defend(s,b,one.id,'defend',minRng);assert.equal(b.pending,null);assert.equal(B.actorCharacter(s,enemy).hp,99);assert.equal(B.actorCharacter(s,second).hp,99);});
 test('AOE firearm burst consumes rounds and durability per shot once, not per target',()=>{const {s,b,caster,enemy,second}=areaFight(),{gun}=gunFixture(s,{aoe:{mode:'selective',radius:50}}),w=M.issue(s,'1',gun.id)[0];M.equip(s,'1',w.id);const area=AOE.preview(s,b,caster,w.snapshot,{x:50,y:25},[enemy.id,second.id]);B.attack(s,b,b.current.id,w.id,enemy.id,'formal',minRng,{mode:'auto',count:2,aoe:area});assert.equal(w.loaded.current,2);assert.equal(w.durability,98);assert.equal(AOE.hits(b)[0].shots.length,2);for(const hit of [...AOE.hits(b)])B.defend(s,b,hit.id,'none',minRng);assert.equal(B.actorCharacter(s,enemy).hp,90);assert.equal(B.actorCharacter(s,second).hp,90);});
-test('AOE self death preserves already committed child attacks, reward and deaths settle once',()=>{const {s,b,caster,enemy,ability,learned}=areaFight('all',{damage:{physical:'1000'}}),area=AOE.preview(s,b,caster,ability,{x:50,y:25});B.attack(s,b,b.current.id,learned.id,enemy.id,'formal',minRng,{aoe:area});const self=AOE.hits(b).find(h=>h.targetId===caster.id);B.defend(s,b,self.id,'none',minRng);assert.equal(s.players['1'],undefined);assert.equal(AOE.hits(b).length,3);for(const h of [...AOE.hits(b)])B.defend(s,b,h.id,'none',minRng);assert.equal(b.pending,null);assert.equal(Object.keys(s.deaths).length,4);assert.throws(()=>B.defend(s,b,self.id,'none'),/结算/);});
+test('AOE self death preserves already committed child attacks, reward and deaths settle once',()=>{const {s,b,caster,enemy,ability,learned}=areaFight('all',{damage:{physical:'1000'}}),area=AOE.preview(s,b,caster,ability,{x:50,y:25});B.attack(s,b,b.current.id,learned.id,enemy.id,'formal',minRng,{aoe:area});const self=AOE.hits(b).find(h=>h.targetId===caster.id);B.defend(s,b,self.id,'none',minRng);assert.ok(require('../src/rpg/health').downed(s.players['1']));assert.equal(AOE.hits(b).length,3);for(const h of [...AOE.hits(b)])B.defend(s,b,h.id,'none',minRng);assert.equal(b.pending,null);assert.equal(Object.keys(s.deaths).length,2);assert.ok(require('../src/rpg/health').downed(s.players['2']));assert.throws(()=>B.defend(s,b,self.id,'none'),/结算/);});
 test('AOE timed out defense is per target and frozen damage survives encrypted restart',async()=>{const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);const data=await store.transact(C.DEFAULT_GUILD_ID,'aoe','1',s=>{const d=areaFight();Object.assign(s,d.s);const area=AOE.preview(s,d.b,d.caster,d.ability,{x:50,y:25});B.attack(s,d.b,d.b.current.id,d.learned.id,d.enemy.id,'formal',minRng,{aoe:area});d.b.pending.hits[0].expiresAt=Date.now()-1;return {b:d.b.id,pending:C.clone(d.b.pending)};});const restored=createStore(h.deps);await restored.load(C.DEFAULT_GUILD_ID);assert.deepEqual(restored.snapshot(C.DEFAULT_GUILD_ID).battles[data.b].pending,data.pending);const one=AOE.hits(restored.snapshot(C.DEFAULT_GUILD_ID).battles[data.b])[0];const result=await restored.transact(C.DEFAULT_GUILD_ID,'defend','1',s=>B.defend(s,s.battles[data.b],one.id,'none',minRng));assert.equal(result.defaulted,true);assert.equal(AOE.hits(restored.snapshot(C.DEFAULT_GUILD_ID).battles[data.b]).length,1);});
 test('saving AOE fails without committing ammo, actions or generated attacks',async()=>{const h=harness(),store=createStore(h.deps);await store.load(C.DEFAULT_GUILD_ID);const data=await store.transact(C.DEFAULT_GUILD_ID,'seed','1',s=>{const d=areaFight();Object.assign(s,d.s);return {b:d.b.id,a:d.caster.id,key:d.learned.id,t:d.ability.id};});const before=store.snapshot(C.DEFAULT_GUILD_ID);h.fail('before');await assert.rejects(store.transact(C.DEFAULT_GUILD_ID,'fail','1',s=>{const b=s.battles[data.b],area=AOE.preview(s,b,B.actorById(b,data.a),s.skillTemplates[data.t],{x:50,y:25});B.attack(s,b,b.current.id,data.key,area.targets[0],'formal',minRng,{aoe:area});}));assert.deepEqual(store.snapshot(C.DEFAULT_GUILD_ID),before);});
 test('smart NPC immediately chooses the highest legal damage without wasting quick actions',()=>{const {s,b,a}=automaticFight();a.ai.strategy='smart';const low=skill(s,{action:'quick',damage:{physical:'2'}}),high=skill(s,{action:'formal',damage:{physical:'10'}});SK.grant(a.character,low);SK.grant(a.character,high);let rolls=0;AI.step(s,b,(min,max)=>{rolls++;return min;});assert.equal(b.pending.attackName,high.name);assert.equal(b.current.quick,1);assert.equal(b.current.formal,0);assert.match(a.aiDecision.reason,/最高/);});

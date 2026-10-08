@@ -32,7 +32,10 @@ function commands() {
     cmd('地图', '创建、管理或参与带迷雾的探索地图'),
     cmd('势力', '查看世界背景、势力介绍并选择角色归属'),
     user(cmd('背包', '私密查看自己的资产；GM可查看他人'), false),
-    item(cmd('使用', '使用自己的食物、药品或消耗品'), '物品', false),
+    user(item(cmd('使用', '使用本人道具；可治疗同格同伴'), '物品', false), false, '目标'),
+    cmd('兑换券','查看自己的兑换券并选择奖励'),
+    user(cmd('收藏柜','公开查看选中的金色和红色收藏'),false),
+    str(cmd('名词解释','搜索GM发布的名词解释'),'关键词','搜索名称或解释',false),
     cmd('开团', 'GM创建跑团报名及定时提及，管理已有开团'),
     int(item(cmd('丢弃', '确认后丢弃自己的未装备物品'), '物品', false), '数量', '丢弃数量', false, 1, 100000),
     item(item(str(cmd('装备', '下拉选择装备、配件及槽位操作'), '操作', '操作类型', false,
@@ -80,6 +83,8 @@ function commands() {
   gm.addSubcommand(s => s.setName('恢复存档').setDescription('重新读取加密存档，核对不明确写入结果'));
   gm.addSubcommand(s => s.setName('文本编辑').setDescription('下拉编辑背景、势力、部门与规则正文'));
   gm.addSubcommand(s => s.setName('抽取公示').setDescription('查看与补发已存抽取结果，不重新抽取'));
+  gm.addSubcommand(s=>s.setName('兑换券').setDescription('编辑兑换池、批量发券及查看兑换审计'));
+  gm.addSubcommand(s=>s.setName('名词').setDescription('录入、预览发布、修改或停用名词'));
   list.push(gm);
   const battle = cmd('战斗', 'GM招募、战斗操作与玩家个人面板');
   battle.addSubcommand(s => str(int(int(str(s.setName('招募').setDescription('在当前频道发布战斗招募'), '名称', '战斗名称'),

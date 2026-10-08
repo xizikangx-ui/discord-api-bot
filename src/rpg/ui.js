@@ -35,9 +35,9 @@ function temporaryText(p, page = 0) {
 function modal(id, title, fields) {
   return new D.ModalBuilder().setCustomId('rpg:' + id).setTitle(title.slice(0, 45)).addComponents(...fields.map(f => row(
     new D.TextInputBuilder().setCustomId(f.key).setLabel(f.label.slice(0, 45))
-      .setStyle(f.long ? D.TextInputStyle.Paragraph : D.TextInputStyle.Short)
-      .setRequired(f.required !== false).setMaxLength(f.max || 2000)
-      .setValue(String(f.value ?? '').slice(0, f.max || 2000)))));
+      .setStyle(f.long||f.paragraph||f.style===D.TextInputStyle.Paragraph ? D.TextInputStyle.Paragraph : D.TextInputStyle.Short)
+      .setRequired(f.required !== false).setMaxLength(f.max || f.maxLength || 2000)
+      .setValue(String(f.value ?? '').slice(0, f.max || f.maxLength || 2000)))));
 }
 const memberRoles = member => member.roles?.cache ? [...member.roles.cache.keys()] : member.roles || [];
 function gm(state, member) { return state.config.gmRoleIds.some(r => memberRoles(member).includes(r)); }
@@ -45,7 +45,7 @@ function playerRole(state, member) { return state.config.playerRoleIds.some(r =>
 function characterView(p, privateView = false, page = 0) {
   const s = M.stats(p), faction = require('./factions'), color = faction.FACTIONS[p.faction?.id]?.color || 0x3498db;
   const v = payload('角色卡 · ' + p.name, '**Lv.' + p.level + ' · ' + C.title(p.level) + '**\n' + faction.label(p.faction) +
-    '\n性别：' + ({male:'男性',female:'女性'}[p.gender]||'未设置') + ' · 年龄：'+(p.age == null ? '未设置' : p.age+'岁')+' · 时运 **'+(p.luck??1)+' → '+s.luck+'**' + '\n\n**HP ' + p.hp + '/' + s.maxHP + '**\n' + bar(p.hp, s.maxHP) + '\n**经验 ' + (p.xpCenti / 100).toFixed(2) +
+    '\n性别：' + ({male:'男性',female:'女性'}[p.gender]||'未设置') + ' · 年龄：'+(p.age == null ? '未设置' : p.age+'岁')+' · 时运 **'+(p.luck??1)+' → '+s.luck+'**' + '\n\n**'+require('./health').text(p)+'**\n'+bar(p.hp,s.maxHP)+(p.userId?'\n🟧 '+bar(p.life?.reserveHP??s.maxHP,s.maxHP):'') + '\n**经验 ' + (p.xpCenti / 100).toFixed(2) +
     (p.level === 100 ? ' · 满级' : '/' + p.level * 1000) + '**\n' + bar(p.xpCenti / 100, p.level * 1000), [], color);
   const attr = Object.entries(C.ATTRIBUTES).map(([k, label]) => label + ' **' + p.attributes[k] + '**' + (s.attributes[k] !== p.attributes[k] ? ' → **' + s.attributes[k] + '**' : ''));
   v.embeds[0].addFields(field('身体属性', attr.filter((_, n) => [0,1,3,5].includes(n)).join('\n'), true),
@@ -62,7 +62,7 @@ function characterView(p, privateView = false, page = 0) {
   const pages = Math.max(1+profilePages.length, Math.ceil(p.conditions.length / 8), Math.ceil((p.temporaryEffects || []).length / 3));
   if (p.userId && !privateView && pages > 1) v.components = [row(button('cardpage:' + p.userId + ':' + p.id + ':' + Math.max(0,page-1), '上一页 / 状态', undefined, page <= 0),
     button('cardpage:' + p.userId + ':' + p.id + ':' + Math.min(pages-1,page+1), '下一页 / 个人描述', undefined, page >= pages-1))];
-  if(p.userId)v.components.push(row(button('profile:home:'+p.userId+':'+p.id,'角色设置 / 分配自由点'),button('gear:view:'+p.userId+':'+p.id+':overview:0','装备槽位',D.ButtonStyle.Primary),button('checkskill:own:'+p.userId+':'+p.id+':0','鉴定技能')));
+  if(p.userId)v.components.push(row(button('profile:home:'+p.userId+':'+p.id,'角色设置 / 分配自由点'),button('gear:view:'+p.userId+':'+p.id+':overview:0','装备槽位',D.ButtonStyle.Primary),button('checkskill:own:'+p.userId+':'+p.id+':0','鉴定技能'),button('features:showcase:view:'+p.userId+':0','收藏柜')));
   v.rpgPortraits = p.portraits || {};
   v.embeds[0].setFooter({ text: '角色 ' + p.id + ' · '+(page+1)+'/'+pages+' · ' + (privateView ? '本人及GM可见' : '公开属性') }); return v;
 }
@@ -160,7 +160,7 @@ function battleView(state, b, page = 0, layout = 'portrait') {
   const details = b.actors.slice(page * 10, page * 10 + 10).map((a, offset) => {
       const n = page * 10 + offset;
       const p = B.actorCharacter(state, a), s = M.stats(p);
-      return (n + 1) + '. ' + a.name.slice(0, 24) + ' [' + (a.team === 'ally' ? '友方' : '敌方') + '] HP ' + p.hp + '/' + s.maxHP +
+      return (n + 1) + '. ' + a.name.slice(0, 24) + ' [' + (a.team === 'ally' ? '友方' : '敌方') + '] '+require('./health').text(p)+
         ' AP ' + p.ap + ' (' + a.x + ',' + a.y + ') ' + (a.deathId ? '💀 已死亡' : a.retreated ? '离场' : '') +
         (b.status === 'ended' ? '' : ' · 本轮' + (round.counts[a.id] || 0) + '次 · 下次' + costText(a.id)) +
         '\n' + a.id + (p.conditions.length ? ' · ' + p.conditions.map(c => c.template.name + '·' + c.severity).join('、').slice(0, 60) : '');
@@ -210,7 +210,7 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const rows = [row(select('tab:' + prefix, '操作分页', [
     ['overview', '概览'], ['move', '移动'], ['quick', '快速行动'], ['formal', '正式行动'], ['status', '装备与状态']
   ].map(([value, label]) => ({ value, label, default: value === tab }))))];
-  const enabled = !!turn && b.status === 'active' && !b.pending;
+  const enabled = require('./health').canAct(p) && !!turn && b.status === 'active' && !b.pending;
   if (tab === 'move') rows.push(row(button('move:' + prefix, '输入移动位置', D.ButtonStyle.Primary, !enabled || s.overloaded)));
   if (tab === 'quick') rows.push(row(button('attackpick:' + prefix + ':quick:0', '快捷技能／超凡攻击', D.ButtonStyle.Primary, !enabled || !turn.quick),
     button('ammo:b:'+b.id+':'+a.id+':home', '更换弹夹 / 填弹', undefined, !enabled || !turn.quick), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick),

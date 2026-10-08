@@ -21,7 +21,7 @@ function createBattleGM(context) {
       ...(b.status === 'recruiting' ? [row(button('gmstart:' + b.id + ':normal', '正式开战', D.ButtonStyle.Success),
         button('gmstart:' + b.id + ':ally', '确认友方偷袭'), button('gmstart:' + b.id + ':enemy', '确认敌方偷袭'))] : []),
       row(button('gmui:' + b.id + ':npc:0', 'NPC模板下拉'), button('gmui:' + b.id + ':current', '操作当前角色', D.ButtonStyle.Primary, !b.current),
-        button('gmui:' + b.id + ':view', '刷新GM面板'),button('boardrepair:'+b.id+':view','战场公示核对'))
+        button('gmui:' + b.id + ':view', '刷新GM面板'),button('boardrepair:'+b.id+':view','战场公示核对'),button('gmstory:home:'+b.id,'救援 / 裁决'))
     ]);
     v.embeds[0].setFooter({ text: b.id + ' · GM个人操作面板 · 战斗结束后清理' }); return v;
   }
@@ -35,9 +35,9 @@ function createBattleGM(context) {
   function actorView(s, b, a) {
     const p = B.actorCharacter(s, a), stats = M.stats(p);
     const v = payload('GM角色配置 · ' + a.name, '阵营 ' + (a.team === 'ally' ? '友方' : '敌方') +
-      '\n位置 (' + a.x + ', ' + a.y + ')米\n生命 ' + U.bar(p.hp, stats.maxHP) + ' ' + p.hp + '/' + stats.maxHP, [
+      '\n位置 (' + a.x + ', ' + a.y + ')米\n' + require('./health').text(p), [
       row(button('gmui:' + b.id + ':position:' + a.id, '位置 / 阵营', D.ButtonStyle.Primary),
-        button('gmui:' + b.id + ':hp:' + a.id, '调整生命'), button('gmui:' + b.id + ':conditions:select:' + a.id, '调整异常')),
+        button('gmui:' + b.id + ':hp:' + a.id, a.userId?'正常HP':'调整生命'),...(a.userId?[button('gmstory:reserve:'+b.id+':'+a.id,'倒地HP',undefined,!require('./health').downed(p)),button('gmstory:singledeath:'+b.id+':'+a.id,'明确判死',D.ButtonStyle.Danger)]:[]), button('gmui:' + b.id + ':conditions:select:' + a.id, '调整异常')),
       ...(!a.userId?[row(button('npcui:b:'+b.id+':'+a.id+':home','NPC自动操作 / 装备槽位',D.ButtonStyle.Primary))]:[]),
       row(button('gmui:' + b.id + ':view', '返回GM概览'))
     ]); v.embeds[0].setFooter({ text: '角色 ' + a.id + ' · ' + b.id }); return v;
@@ -124,12 +124,6 @@ function createBattleGM(context) {
       const v = pickView('选择异常模板', entries, 'gmui:' + ref + ':conditionpick:' + arg, Number(extra) || 0);
       v.components.push(row(button('gmui:' + ref + ':conditions:select:' + arg, '返回'))); return v;
     }
-    if (action === 'hpsubmit' && Number(i.fields.getTextInputValue('hp')) === 0) {
-      const a = B.actorById(b, arg), p = B.actorCharacter(s, a); editable(b);
-      if (a.userId) return payload('确认玩家死亡并销卡', a.name + '的HP将归零，立即清空角色、背包、余额、次数及槽位扩展。', [
-        row(button('gmui:' + ref + ':deathconfirm:' + arg + ':' + p.id, '确认死亡并销卡', D.ButtonStyle.Danger), button('gmui:' + ref + ':view', '取消'))
-      ]);
-    }
     if (action === 'conditionpage') return conditions(s, b, B.actorById(b, arg), Number(extra));
     await tx(i, st => {
       needGM(st, member); const live = battle(st, ref); editable(live);
@@ -145,9 +139,9 @@ function createBattleGM(context) {
           ok(team, '阵营请填写友方或敌方。');
           B.position(live, arg, i.fields.getTextInputValue('x'), i.fields.getTextInputValue('y'), team);
         } else if (action === 'deathconfirm') {
-          ok(a.userId && p.id === extra, '角色已变化，重新确认。'); p.hp = 0; require('./mortality').settle(st, live, a);
+          ok(false,'旧判死入口已失效，请在GM角色配置中打开明确判死并填写理由。');
         } else if (action === 'hpsubmit') {
-          p.hp = num(i.fields.getTextInputValue('hp'), '生命', 0, M.stats(p).maxHP);
+          require('./health').set(p,i.fields.getTextInputValue('hp'),'normal',live.actionRound?.number);
         } else if (action === 'conditionapply') B.record(live, 'GM给' + a.name + '施加异常并结算豁免。',
           B.applyCondition(st, p, { id: extra, severity: i.values[0] }));
         else if (action === 'clear') {

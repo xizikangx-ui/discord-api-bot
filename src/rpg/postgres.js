@@ -2,7 +2,7 @@
 const { gzipSync, gunzipSync } = require('node:zlib');
 const { createHash } = require('node:crypto');
 const C = require('./constants');
-const COLLECTIONS = new Set(['players', 'characterDrafts', 'forms', 'catalog', 'skillTemplates', 'checkSkillTemplates', 'checks', 'sessions', 'lootPublications', 'traits', 'conditionTemplates', 'mapCategories', 'roomTemplates', 'explorations', 'deaths', 'corpses', 'npcTemplates', 'battles', 'offers', 'rolePanels', 'containerDefinitions', 'templateTombstones', 'mapTombstones', 'deliveryJobs']);
+const COLLECTIONS = new Set(['players', 'characterDrafts', 'forms', 'catalog', 'skillTemplates', 'checkSkillTemplates', 'checks', 'sessions', 'lootPublications', 'traits', 'conditionTemplates', 'mapCategories', 'roomTemplates', 'explorations', 'deaths', 'corpses', 'npcTemplates', 'battles', 'offers', 'rolePanels', 'containerDefinitions', 'templateTombstones', 'mapTombstones', 'deliveryJobs', 'couponPools', 'couponRedemptions', 'glossaryTerms', 'bossPools']);
 const canonical = value => JSON.stringify(value, (_, v) => v && !Array.isArray(v) && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
 const digest = state => createHash('sha256').update(canonical(state)).digest('hex');
 function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool, schema = 'rpg', metrics, onLeaseLost = () => {} }) {

@@ -11,7 +11,7 @@ test('PostgreSQL isolated integration, concurrency, disconnect and recovery', {s
  let second,restored;
  try{
   await db.acquireLease('integration');
-  const seed=state();require('../src/rpg/activities').migrate(seed);require('../src/rpg/skills').migrate(seed);require('../src/rpg/content-pack').install(seed);seed.config.gmRoleIds=['gm'];seed.config.playerRoleIds=['player'];
+  const seed=state();seed.upgrade=6;require('../src/rpg/activities').migrate(seed);require('../src/rpg/skills').migrate(seed);require('../src/rpg/content-pack').install(seed);seed.config.gmRoleIds=['gm'];seed.config.playerRoleIds=['player'];
   await db.importState(seed.guildId,seed,'isolated-archive');h.deps.database=db;const st=createStore(h.deps);await st.load(seed.guildId);
   await t.test('import verifies every object and refuses overwrite or repeated content/coin migrations',async()=>{
    assert.equal(digest(await db.load(seed.guildId)),digest(seed));await assert.rejects(db.importState(seed.guildId,seed,'old-archive'));
@@ -99,6 +99,28 @@ test('PostgreSQL isolated integration, concurrency, disconnect and recovery', {s
     await Promise.all(Array.from({length:50},(_,n)=>{const f=refs[n%20];return rpg.handle(h.interaction(f.uid,null,{},'rpg:act:do:'+f.id));}));
     const saved=await db.load(seed.guildId);for(const f of refs){assert.equal(saved.forms[f.id].status,'done');assert.equal(saved.battles[f.bid].actors[0].x,26);assert.equal(saved.battles[f.bid].publicEvents[0].rpEntries.length,1);assert.equal(saved.battles[f.bid].publicEvents.length,1);}console.log(JSON.stringify({test:'private-postgres-rp-blocked-animation-mocked-discord',clicks:20,ackP95Ms:Math.round(firstAck),resultP95Ms:Math.round(firstResult),duplicateBurst:50}));
    }finally{release();rpg.stop();await rpg.drain();await st.recover(seed.guildId);}
+  });
+  await t.test('upgrade 7 collections, twenty voucher commits, BOSS confirmation and downed rescue recover atomically',async()=>{
+   const V=require('../src/rpg/coupons'),H=require('../src/rpg/health'),Boss=require('../src/rpg/boss'),R=require('../src/rpg/rescue'),X=require('../src/rpg/exploration');
+   const refs=await st.transact(seed.guildId,'features-seed','GM',s=>{
+    for(const b of Object.values(s.battles))if(b.status!=='ended')B.endBattle(s,b);
+    for(const m of Object.values(s.explorations)){m.status='ended';m.participants={};}
+    const t=weapon(s,{weightKg:0}),v=V.publish(s,{name:'PRIVATE_VOUCHER_MARKER',mode:'bundle',entries:[{ref:t.id,quantity:2}]}),forms=[];
+    for(let n=0;n<20;n++){const uid='rp-load-'+n;V.grant(s,v.id,[{uid,characterId:s.players[uid].id,quantity:3}]);forms.push({uid,id:V.preview(s,uid,v.id).id});}
+    require('../src/rpg/glossary').publish(s,{name:'PRIVATE_TERM_MARKER',description:'隔离说明'});
+    const cf=F.create(s,'GM','mapcategory');cf.data.name='BOSS类别';const cat=F.publish(s,cf),nt=npc(s,{hpMax:100,randomStrength:true,anomalyRank:'X',levelMin:91,levelMax:91}),rf=F.create(s,'GM','room');Object.assign(rf.data,{name:'隔离BOSS机房',categoryIds:[cat.id]});F.publish(s,rf);s.config.rpChannelId='hidden';const m=X.create(s,'GM','features-map','BOSS地图',1,3,'random',cat.id);X.generate(s,m,minRng);const pool=Boss.publish(s,{name:'PRIVATE_BOSS_MARKER',entries:[{ref:nt.id,quantity:2}]});Boss.assign(s,m,'2,0',pool.id,minRng);X.publish(s,m);X.join(s,m,'1');X.join(s,m,'2');for(const p of Object.values(m.participants))p.cell='2,0';m.revealed['2,0']=true;return{forms,map:m.id,pool:v.id};
+   });
+   await Promise.all(refs.forms.map(f=>st.transact(seed.guildId,'coupon:'+f.id,f.uid,s=>V.redeem(s,f.uid,f.id))));
+   await Promise.all(Array.from({length:50},(_,n)=>{const f=refs.forms[n%20];return st.transact(seed.guildId,'coupon:'+f.id,f.uid,()=>{throw Error('duplicate redemption executed');});}));
+   let saved=await db.load(seed.guildId);assert.equal(Object.keys(saved.couponRedemptions).length,20);for(const f of refs.forms)assert.equal(saved.players[f.uid].couponBalances[refs.pool],2);
+   const request=saved.explorations[refs.map].cells['2,0'].room.bossRequest;assert.equal(saved.deliveryJobs['gmNotice:boss/'+refs.map+'/2,0'].status,'pending');
+   let draws=0;const bid=await st.transact(seed.guildId,'boss-confirm:'+request.id,'GM',s=>Boss.confirm(s,refs.map,'2,0',request.id,request.version,(lo,hi)=>lo+(draws++%(hi-lo))).id);
+   await st.transact(seed.guildId,'party-down','GM',s=>{const b=s.battles[bid];for(const a of b.actors.filter(a=>a.userId)){H.damage(s.players[a.userId],999);require('../src/rpg/mortality').interrupt(s,b,a);}});
+   const reload=createStore(h.deps);await reload.load(seed.guildId);saved=reload.snapshot(seed.guildId);const b=saved.battles[bid],j=b.judgment;assert.equal(b.status,'paused');assert.equal(j.status,'pending');assert.equal(saved.deliveryJobs['gmNotice:rescue/'+bid].status,'pending');assert.ok(H.downed(saved.players['1']));
+   await reload.transact(seed.guildId,'saved-rescue-event','GM',s=>R.event(s,s.battles[bid],j.id,j.version,[b.actors.find(a=>a.userId==='1').id],1,'隔离救援'));
+   const recovered=createStore(h.deps);await recovered.load(seed.guildId);await recovered.transact(seed.guildId,'saved-rescue-event','GM',()=>{throw Error('rescue duplicated');});await recovered.transact(seed.guildId,'boss-confirm:'+request.id,'GM',()=>{throw Error('BOSS regenerated');});
+   saved=await db.load(seed.guildId);assert.equal(saved.players['1'].hp,1);assert.equal(saved.battles[bid].status,'paused');assert.equal(saved.battles[bid].judgment.events.length,1);assert.equal(saved.explorations[refs.map].cells['2,0'].room.bossRequest.battleId,bid);
+   const rows=(await db.pool.query(`SELECT collection,payload FROM "${schema}".objects WHERE guild_id=$1 AND collection=ANY($2::text[])`,[seed.guildId,['couponPools','couponRedemptions','glossaryTerms','bossPools']])).rows;assert.deepEqual(new Set(rows.map(r=>r.collection)),new Set(['couponPools','couponRedemptions','glossaryTerms','bossPools']));assert.ok(rows.every(r=>!r.payload.toString().includes('PRIVATE_')));await st.recover(seed.guildId);
   });
   await t.test('encrypted logical backup restores exact state into a separate namespace',async()=>{
    const exported=await db.load(seed.guildId),packed=JSON.parse(st.pack(exported)),envelope=h.deps.decrypt(packed).value,copy=JSON.parse(require('node:zlib').gunzipSync(Buffer.from(envelope.body,'base64')));

@@ -14,10 +14,12 @@ function put(state, kind, ref, options = {}) {
 }
 function derive(before, next) {
   for (const [ref, b] of Object.entries(next.battles || {})) {
+    if(b.judgment && fingerprint(before.battles?.[ref]?.judgment)!==fingerprint(b.judgment))put(next,'gmNotice','rescue/'+ref,{priority:1});
     if (fingerprint(before.battles?.[ref]) !== fingerprint(b)) put(next, 'battle', ref, { priority: b.pending ? 0 : 5 });
     if (require('./aoe').hits(b).some(h=>!h.notified&&b.actors.some(a=>a.id===h.targetId&&(a.userId||require('./npc-auto').config(a.ai).mode!=='auto')))) put(next,'defense',ref,{priority:0});
   }
   for (const [ref, m] of Object.entries(next.explorations || {})) {
+    for(const [cell,c] of Object.entries(m.cells))if(c.room?.bossRequest&&fingerprint(before.explorations?.[ref]?.cells[cell]?.room?.bossRequest)!==fingerprint(c.room.bossRequest))put(next,'gmNotice','boss/'+ref+'/'+cell,{priority:1});
     if (m.status !== 'draft' && fingerprint(before.explorations?.[ref]) !== fingerprint(m)) put(next, 'map', ref);
     for(const [id,r] of Object.entries(m.moves||{}))if(fingerprint(before.explorations?.[ref]?.moves?.[id])!==fingerprint(r))put(next,'move',ref+'/'+id,{priority:1});
     for(const [id,r] of Object.entries(m.rps||{})){

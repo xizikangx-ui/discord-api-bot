@@ -34,7 +34,7 @@ function confirmCharacter(state, userId) {
   ok(['male','female'].includes(d.gender), '请先下拉选择男性或女性。');
   const p = newCharacter(d.name, clone(d.attributes), d.adaptation);
   p.gender = d.gender; p.age = d.age ?? null; p.profile = clone(d.profile || {});
-  p.userId = userId; p.initialRolls = clone(d);
+  p.userId = userId; p.initialRolls = clone(d); p.couponBalances = {}; p.showcase = []; require('./health').ensure(p);
   state.players[userId] = p;
   delete state.characterDrafts[userId];
   return p;
@@ -101,7 +101,7 @@ function stats(p, extraEffects = []) {
     hit: modify(effects, 'hit', 0),
     resist: Object.fromEntries(Object.keys(C.DAMAGE_TYPES).map(k => [k, signedModifier(effects, 'resist:' + k)])) };
 }
-function syncHP(p) { p.hp = Math.max(0, Math.min(p.hp, stats(p).maxHP)); }
+function syncHP(p) { p.hp = Math.max(0, Math.min(p.hp, stats(p).maxHP)); require('./health').sync(p); }
 function expireEffects(p, now = Date.now()) {
   const expired = (p.temporaryEffects || []).filter(e => e.duration.kind === 'minutes' && e.expiresAt <= now);
   if (expired.length) { p.temporaryEffects = p.temporaryEffects.filter(e => !expired.includes(e)); syncHP(p); }
@@ -117,7 +117,7 @@ function finishEffects(p, turnId) {
   return expired;
 }
 function allocate(state, userId, attribute, amount) {
-  const p = player(state, userId);
+  const p = player(state, userId); require('./health').requireAction(p);
   ok(battleFor(state, userId)?.status !== 'active', '加点前请GM暂停战斗。');
   ok(C.ATTRIBUTES[attribute], '属性无效。');
   amount = num(amount, '属性点', 1, 1000000);
@@ -347,7 +347,7 @@ function issue(state, userId, templateId, quantity = 1) {
   return items;
 }
 function openLoot(state, userId, box = 'card', rng = randomInt) {
-  const p = player(state, userId);
+  const p = player(state, userId); require('./health').requireAction(p);
   ok(box === 'card' || C.BOXES.includes(box), '箱型无效。');
   const count = box === 'card' ? p.tickets.card : (p.tickets.boxes[box] || 0);
   ok(count > 0, '没有对应次数，请找GM发放。');
@@ -365,7 +365,7 @@ function openLoot(state, userId, box = 'card', rng = randomInt) {
   result.pending = false; return result;
 }
 function drop(state, userId, itemId, quantity) {
-  const p = player(state, userId);
+  const p = player(state, userId); require('./health').requireAction(p);
   quantity = num(quantity, '丢弃数量', 1, 100000);
   const item = transferable(state, userId, itemId, quantity);
   item.quantity -= quantity;
@@ -376,7 +376,7 @@ function battleFor(state, userId) {
   return Object.values(state.battles).find(b => b.status !== 'ended' && b.actors.some(a => a.userId === userId && !a.deathId && (!a.characterId || a.characterId === state.players[userId]?.id)));
 }
 function equip(state, userId, itemId, remove = false, hand = 'auto') {
-  const p = player(state, userId); const item = p.inventory[itemId];
+  const p = player(state, userId); require('./health').requireAction(p); const item = p.inventory[itemId];
   ok(item && available(state, userId, itemId) >= 1 && !isAttached(p, itemId), '物品不存在、已预留或作为配件装配。');
   const t = item.snapshot;
   const battle = battleFor(state, userId);
@@ -406,7 +406,7 @@ function equipCharacter(p, itemId, remove = false, hand = 'auto') {
   return t.name;
 }
 function attach(state, userId, equipmentId, attachmentId, remove = false) {
-  const p = player(state, userId);
+  const p = player(state, userId); require('./health').requireAction(p);
   ok(battleFor(state, userId)?.status !== 'active', '请先让GM暂停战斗，再调整配件。');
   if (!remove) ok(available(state, userId, attachmentId) >= 1 && available(state, userId, equipmentId) >= 1, '物品已被交易预留。');
   return attachCharacter(p, equipmentId, attachmentId, remove);
@@ -424,7 +424,7 @@ function attachCharacter(p, equipmentId, attachmentId, remove = false) {
   syncHP(p);
 }
 function useSpecial(state, userId, itemId, slot) {
-  const p = player(state, userId); const item = p.inventory[itemId];
+  const p = player(state, userId); require('./health').requireAction(p); const item = p.inventory[itemId];
   ok(battleFor(state, userId)?.status !== 'active', '调整槽位前请GM暂停战斗。');
   ok(item?.snapshot.kind === '特殊物品' && available(state, userId, itemId) > 0, '特殊物品不可用。');
   if (item.snapshot.special === 'tear') {
@@ -436,13 +436,14 @@ function useSpecial(state, userId, itemId, slot) {
   item.quantity--; if (!item.quantity) delete p.inventory[itemId];
   return p.slots;
 }
-function consume(p, itemId, rng = randomInt, turnId = null, now = Date.now()) {
+function consume(p, itemId, rng = randomInt, turnId = null, now = Date.now(), recipient = p) {
+  require('./health').requireAction(p);
   const item = p.inventory[itemId];
   ok(C.CONSUMABLES.includes(item?.snapshot.kind) && item.quantity > 0, '请选择食物、药品或消耗品。');
-  expireEffects(p, now);
-  const roll = C.dice(item.snapshot.heal || '0', 'normal', rng), before = p.hp;
-  const cleared = p.conditions.filter(c => (item.snapshot.clearConditions || []).includes(c.templateId)).map(c => c.template.name);
-  p.conditions = p.conditions.filter(c => !(item.snapshot.clearConditions || []).includes(c.templateId));
+  expireEffects(recipient, now);
+  const roll = C.dice(item.snapshot.heal || '0', 'normal', rng), before = recipient.hp;
+  const cleared = recipient.conditions.filter(c => (item.snapshot.clearConditions || []).includes(c.templateId)).map(c => c.template.name);
+  recipient.conditions = recipient.conditions.filter(c => !(item.snapshot.clearConditions || []).includes(c.templateId));
   const t = item.snapshot;
   if (t.effects?.length && t.duration) {
     ok(['actions', 'minutes'].includes(t.duration.kind), '持续时间无效。');
@@ -450,18 +451,18 @@ function consume(p, itemId, rng = randomInt, turnId = null, now = Date.now()) {
       modifiers: clone(t.effects), duration: clone(t.duration), appliedAt: now,
       ...(t.duration.kind === 'minutes' ? { expiresAt: now + t.duration.count * 60000 } :
         { remaining: t.duration.count, ...(turnId ? { skipTurnId: turnId } : {}) }) };
-    p.temporaryEffects = [...(p.temporaryEffects || []).filter(e => e.templateId !== item.templateId), next];
+    recipient.temporaryEffects = [...(recipient.temporaryEffects || []).filter(e => e.templateId !== item.templateId), next];
   }
-  p.hp = Math.min(stats(p).maxHP, p.hp + Math.max(0, roll.total));
+  const healing = require('./health').heal(recipient, Math.max(0, roll.total));
   item.quantity--; if (!item.quantity) delete p.inventory[itemId];
-  syncHP(p);
-  return { name: t.name, roll, healed: Math.max(0, p.hp - before), hpChange: p.hp - before, hp: p.hp, cleared,
+  syncHP(recipient);
+  return { name: t.name, roll, ...healing, hpChange: recipient.hp - before, hp: recipient.hp, cleared,
     effects: clone(t.duration ? t.effects || [] : []), duration: clone(t.duration || null) };
 }
 function createOffer(state, creatorId, targetId, type = 'trade', itemId, quantity = 1, price = 0) {
-  player(state, targetId);
+  require('./health').requireAction(player(state, targetId));
   if (type === 'trade' || type === 'transfer') {
-    player(state, creatorId); ok(creatorId !== targetId, '不能向自己交易或转账。');
+    require('./health').requireAction(player(state, creatorId)); ok(creatorId !== targetId, '不能向自己交易或转账。');
   }
   const offer = { id: id('o'), creatorId, targetId, type, revision: 1, status: 'editing',
     expiresAt: Date.now() + C.OFFER_TTL, sides: {}, confirmations: {}, createdAt: Date.now() };
@@ -483,6 +484,7 @@ function createOffer(state, creatorId, targetId, type = 'trade', itemId, quantit
   return offer;
 }
 function updateOffer(state, offerId, userId, items, coins) {
+  require('./health').requireAction(player(state,userId));
   const offer = state.offers[offerId];
   ok(offer?.type === 'trade' && activeOffer(offer) && offer.sides[userId], '交易已过期或你不是交易方。');
   coins = num(coins, '游戏币', 0, C.MAX_MONEY);
@@ -503,6 +505,7 @@ function confirmOffer(state, offerId, userId, revision) {
   ok(offer.revision === revision, '报价已变化，请重新查看后确认。');
   const participants = offer.type === 'buyback' ? [offer.targetId] : offer.type === 'transfer' ? [offer.creatorId] : [offer.creatorId, offer.targetId];
   ok(participants.includes(userId), '你不能确认该交易。');
+  for(const uid of Object.keys(offer.sides))require('./health').requireAction(player(state,uid));
   offer.confirmations[userId] = revision;
   if (!participants.every(uid => offer.confirmations[uid] === revision)) return { completed: false, offer };
   for (const [uid, side] of Object.entries(offer.sides)) {
@@ -555,7 +558,7 @@ function deleteCharacter(state, userId) {
   ok(!battle || ['recruiting', 'paused'].includes(battle.status), '请先暂停战斗，再销卡。');
   if (battle) {
     const actor = battle.actors.find(a => a.userId === userId);
-    ok(!battle.pending?.attackerId && !battle.pending?.targetId, '请先完成待响应攻击。');
+    ok(!battle.pending, '请先完成待响应攻击。');
     battle.actors = battle.actors.filter(a => a !== actor);
     battle.queue = (battle.queue || []).filter(ref => ref.actorId !== actor.id);
     if (battle.current?.actorId === actor.id) battle.current = null;

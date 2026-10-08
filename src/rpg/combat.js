@@ -93,12 +93,12 @@ function beginConditions(p, battle, actor, rng, state) {
   for (const e of M.expireEffects(p)) record(battle, actor.name + '的' + e.name + '持续效果已到期。');
   for (const condition of p.conditions) {
     if (condition.template.effectType !== 'numeric') continue;
-    for (const e of condition.template.levels[condition.severity].effects.filter(e => e.target === 'hp')) {
-      const roll = C.dice(e.amount, 'normal', rng);
-      p.hp = Math.max(0, p.hp - Math.max(0, roll.total));
-      record(battle, actor.name + '因' + condition.template.name + '损失' + Math.max(0, roll.total) + 'HP。', { roll });
-      if (p.hp <= 0 && state) { require('./mortality').settle(state, battle, actor, condition.sourceIdentity || condition.source); return; }
-    }
+    const rolls=condition.template.levels[condition.severity].effects.filter(e=>e.target==='hp').map(e=>C.dice(e.amount,'normal',rng));
+    if(!rolls.length)continue;
+    const amount=rolls.reduce((n,r)=>n+Math.max(0,r.total),0),health=require('./health').damage(p,amount,battle.actionRound?.number);
+    record(battle,actor.name+'因'+condition.template.name+'受到'+amount+'伤害。'+require('./health').text(p),{roll:rolls[0],rolls,health,total:amount,hpBefore:health.before.hp,hp:health.after.hp,maxHP:health.after.maxHP,healthBefore:health.before,healthAfter:health.after,eventType:'condition',actorId:actor.id});
+    if(p.hp<=0&&state)require('./mortality').settle(state,battle,actor,condition.sourceIdentity||condition.source);
+    if(actor.deathId)return;
   }
   M.syncHP(p);
 }
@@ -142,6 +142,7 @@ function join(state, battle, userId) {
   ok(battle.status === 'recruiting', 'GM已经开战，报名已关闭。');
   ok(!M.battleFor(state, userId), '已经参加战斗，请先退出原招募或由GM移出。');
   const p = M.player(state, userId);
+  require('./health').requireAction(p);
   ok(battle.actors.length < 20, '当前战斗最多20名参战者。');
   const actor = { id: id('a'), userId, characterId: p.id, name: p.name, team: 'ally', x: 25, y: 25, retreated: false };
   battle.actors.push(actor); record(battle, p.name + '参加战斗。');
@@ -200,7 +201,8 @@ function setTerrain(battle, x, y, type) {
   battle.terrain[x + ',' + y] = type;
   if (battle.roomObstacles) battle.roomObstacles = battle.roomObstacles.flatMap(o => o.cell !== x + ',' + y ? [o] : type === 'normal' ? [] : [{ ...o, terrain: type }]);
 }
-function liveActors(state, b) { return b.actors.filter(a => !a.retreated && actorCharacter(state, a).hp > 0); }
+function liveActors(state, b) { return b.actors.filter(a => !a.retreated && !a.deathId && require('./health').alive(actorCharacter(state, a))); }
+function activeActors(state,b) { return liveActors(state,b).filter(a=>require('./health').canAct(actorCharacter(state,a))); }
 function roundState(b) {
   if (b.actionRound) return b.actionRound;
   const paid = b.current && !b.current.free;
@@ -228,12 +230,16 @@ function completeOpportunity(b, turn) {
   const round = ensureActionRound(b);
   if (!turn.free && (turn.roundNumber ?? round.number) === round.number && !round.completed.includes(turn.actorId)) round.completed.push(turn.actorId);
 }
-function resetActionRound(state, b) {
-  const round = ensureActionRound(b), actors = liveActors(state, b);
+function resetActionRound(state, b, rng = randomInt) {
+  const round = ensureActionRound(b), actors = activeActors(state, b);
   if (b.current || b.pending || !actors.length || !actors.every(a => round.completed.includes(a.id))) return false;
   b.actionRound = { number: round.number + 1, counts: {}, completed: [] };
   b.queue = [];
   record(b, '所有在场角色已完成一轮，行动费用重置为100 AP。', { roundNumber: b.actionRound.number, actorIds: actors.map(a => a.id) });
+  for (const a of liveActors(state,b).filter(a=>require('./health').downed(actorCharacter(state,a)))) if ((a.downConditionRound || 0) < b.actionRound.number) {
+    a.downConditionRound=b.actionRound.number; const p=actorCharacter(state,a); beginConditions(p,b,a,rng,state); if (!a.deathId) endConditions(p,b,a,rng);
+  }
+  require('./rescue').check(state,b);
   return true;
 }
 function order(state, b, actors, rng) {
@@ -262,7 +268,7 @@ function order(state, b, actors, rng) {
 }
 function advance(state, b, rng) {
   ensureActionRound(b);
-  const actors = liveActors(state, b);
+  const actors = activeActors(state, b);
   if (!actors.length) { b.status = 'paused'; b.pauseReason = '没有可行动参战者。'; return; }
   for (let attempts = 0; attempts < 100; attempts++) {
     b.wave++;
@@ -284,6 +290,7 @@ function advance(state, b, rng) {
   b.status = 'paused'; b.pauseReason = '动作点推进达到安全上限，请GM检查角色。';
 }
 function nextOpportunity(state, b, rng = randomInt) {
+  require('./rescue').check(state,b);
   if (b.status !== 'active' || b.pending) return;
   ensureActionRound(b);
   if (b.current) {
@@ -293,9 +300,10 @@ function nextOpportunity(state, b, rng = randomInt) {
     b.current = null;
   }
   for (let attempts = 0; attempts < 200; attempts++) {
-    resetActionRound(state, b);
+    resetActionRound(state, b, rng);
+    if (b.status !== 'active') return;
     if (!b.queue.length) {
-      const eligible = liveActors(state, b).filter(a => eligibleOpportunity(b, a, actorCharacter(state, a)));
+      const eligible = activeActors(state, b).filter(a => eligibleOpportunity(b, a, actorCharacter(state, a)));
       if (eligible.length) {
         const ordered = b.priority.filter(ref => eligible.some(a => a.id === ref));
         for (const a of eligible) if (!ordered.includes(a.id)) ordered.push(a.id);
@@ -313,7 +321,7 @@ function nextOpportunity(state, b, rng = randomInt) {
     if (!queued.free) { p.ap -= apCost; round.counts[a.id] = (round.counts[a.id] || 0) + 1; }
     if (a.casting && a.casting.count < a.casting.required) a.casting.count++;
     beginConditions(p, b, a, rng, state);
-    if (p.hp <= 0) { endConditions(p, b, a, rng); record(b, a.name + (a.deathId ? '已死亡，跳过主动行动。' : '失能，跳过主动行动。')); continue; }
+    if (p.hp <= 0) { completeOpportunity(b,{actorId:a.id,free:queued.free,roundNumber:round.number}); endConditions(p, b, a, rng); record(b, a.name + (a.deathId ? '已死亡，跳过主动行动。' : '失能，跳过主动行动。')); continue; }
     b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, moveSpent: 0, startedAt: Date.now(), free: queued.free,
       roundNumber: round.number, opportunity: queued.free ? 0 : round.counts[a.id], apCost };
     record(b, '轮到' + a.name + '行动。' + (queued.free ? '免费偷袭机会。' : '第' + round.number + '轮，第' + b.current.opportunity + '次，扣除' + apCost + ' AP。'),
@@ -330,7 +338,7 @@ function start(state, b, surpriseTeam, rng = randomInt) {
   if (surpriseTeam) {
     ok(['ally', 'enemy'].includes(surpriseTeam), '偷袭阵营无效。');
     b.surpriseTeam = surpriseTeam;
-    b.priority = order(state, b, liveActors(state, b), rng);
+    b.priority = order(state, b, activeActors(state, b), rng);
     b.queue = b.priority.filter(ref => actorById(b, ref).team === surpriseTeam).map(actorId => ({ actorId, free: true }));
   }
   nextOpportunity(state, b, rng);
@@ -412,7 +420,7 @@ function attackPlan(state,b,{actor,p,turn},abilityKey,targetId,action='formal',f
   if(t.kind==='技能')ok(action===(t.action||'formal'),'技能须使用指定的行动类型。');else if(action==='quick')ok(t.supernatural,'普通武器攻击需要正式行动。');
   let area=null,targets;
   if(A.validate(t.aoe).mode!=='single') {ok(firing.aoe,'范围攻击需要先预览中心与名单。');area=A.preview(state,b,actor,t,firing.aoe.center,A.validate(t.aoe).mode==='selective'?firing.aoe.targets:undefined);targets=area.targets.map(ref=>actorById(b,ref));ok(targets.length,'范围内没有目标。');}
-  else {const target=actorById(b,targetId);ok(actor.id!==target.id&&actorCharacter(state,target).hp>0&&!target.retreated,'目标不可用。');
+  else {const target=actorById(b,targetId);ok(actor.id!==target.id&&require('./health').alive(actorCharacter(state,target))&&!target.retreated&&!target.deathId,'目标不可用。');
     if(t.melee)ok(Math.floor(actor.x/50)===Math.floor(target.x/50)&&Math.floor(actor.y/50)===Math.floor(target.y/50),'近战必须同格。');
     else ok(Math.hypot(actor.x-target.x,actor.y-target.y)<=M.modify(M.stats(p).effects,'range',t.rangeMeters??t.range*50)+.000001,'目标超出有效射程。');targets=[target];}
   if(t.kind==='技能'&&t.casting){if(!actor.casting)return {actor,p,turn,ability,t,area,targets,castingStart:true};
@@ -454,7 +462,8 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
   ok(['defend', 'dodge', 'both', 'none'].includes(choice), '防守方式无效。');
   const group=b.pending, target = actorById(b, hit.targetId); const p = actorCharacter(state, target);
   ok(!target.deathId&&(!hit.targetCharacterId||p.id===hit.targetCharacterId),'该目标角色已变化。');
-  const hpBefore=p.hp;
+  const healthBefore=require('./health').snapshot(p),hpBefore=p.hp;
+  if(require('./health').downed(p))choice='defend';
   const defaulted = hit.expiresAt <= Date.now();
   if (defaulted) choice = 'defend';
   let dodge = null;
@@ -465,8 +474,7 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
   let total = 0; const breakdown = {}; const saves = [];const armorDamage=[],perShot=[];
   if (!dodge?.success) {
     const fraction = choice === 'both' ? 0.5 : choice === 'defend' ? 1 : 0;
-    let defenses=hit.defenses;for(const shot of hit.shots||[{damage:hit.damage}]){const actual={},reduced={};let shotTotal=0;for(const [type,value] of Object.entries(shot.damage)){const amount=Math.max(0,Math.floor(value-defenses[type]*fraction));actual[type]=amount;reduced[type]=Math.max(0,value-amount);shotTotal+=amount;breakdown[type]=(breakdown[type]||0)+amount;total+=amount;}perShot.push({total:shotTotal,breakdown:actual,reduced,maxRoll:require('./combat-presentation').shotMax(shot)});armorDamage.push(...Dur.weaken(p,hit.armorWeakening));defenses=M.stats(p).defenses;}
-    p.hp = Math.max(0, p.hp - total);
+    let defenses=hit.defenses;for(const shot of hit.shots||[{damage:hit.damage}]){const actual={},reduced={};let shotTotal=0;for(const [type,value] of Object.entries(shot.damage)){const amount=Math.max(0,Math.floor(value-defenses[type]*(require('./health').downed(p)?1:fraction)));actual[type]=amount;reduced[type]=Math.max(0,value-amount);shotTotal+=amount;breakdown[type]=(breakdown[type]||0)+amount;total+=amount;}const health=require('./health').damage(p,shotTotal,b.actionRound?.number);perShot.push({total:shotTotal,breakdown:actual,reduced,maxRoll:require('./combat-presentation').shotMax(shot),health});armorDamage.push(...Dur.weaken(p,hit.armorWeakening));defenses=M.stats(p).defenses;}
     for (const ref of hit.conditions) {
       const attacker = actorById(b, hit.attackerId), origin = actorCharacter(state, attacker);
       saves.push(applyCondition(state, p, ref, rng, { actorId: attacker.id, userId: attacker.userId || null, characterId: origin.id }));
@@ -474,15 +482,15 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
   }
   M.syncHP(p);
   if(dodge?.success)for(const shot of hit.shots||[])perShot.push({total:0,breakdown:{},reduced:{},maxRoll:false});
-  record(b, target.name + (dodge?.success ? '成功闪避。' : '受到' + total + '伤害，剩余' + p.hp + 'HP。'),
-    {actorId:target.id,portrait:p.portraits?.avatar,attackerId:hit.attackerId,ability:hit.attackName,choice,dodge,breakdown,saves,armorDamage,hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,shots:hit.shots,rolls:hit.rolls,total,perShot,presentation:hit.presentation,hitId:hit.id});
+  record(b, target.name + (dodge?.success ? '成功闪避。' : '受到' + total + '伤害，' + require('./health').text(p)),
+    {eventType:'result',actorId:target.id,portrait:p.portraits?.avatar,attackerId:hit.attackerId,ability:hit.attackName,choice,dodge,breakdown,saves,armorDamage,healthBefore,healthAfter:require('./health').snapshot(p),hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,shots:hit.shots,rolls:hit.rolls,total,perShot,presentation:hit.presentation,hitId:hit.id});
   if(armorDamage.length)record(b,'护甲削弱：'+armorDamage.map(d=>d.name+'耐久 -'+d.lost+'（剩余'+d.durability+'）').join('、'));
   M.syncHP(p);
-  hit.result={target:target.name,total,dodge,breakdown,saves,armorDamage,hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,perShot,defaulted};
+  hit.result={healthBefore,healthAfter:require('./health').snapshot(p),target:target.name,total,dodge,breakdown,saves,armorDamage,hpBefore,hp:p.hp,maxHP:M.stats(p).maxHP,perShot,defaulted};
   require('./battle-events').settle(b,hit);
   if(group.kind!=='aoe'||!require('./aoe').hits(b).length)b.pending=null;
   if (p.hp <= 0) {const death=require('./mortality').settle(state, b, target, hit.attackerId);if(death){Object.assign(hit.result,{deathId:death.id,killed:death.team==='enemy',reward:death.rewarded?.result||null});require('./battle-events').settle(b,hit);const event=b.publicEvents?.find(e=>e.details.hitId===hit.id);if(event){Object.assign(event.details,C.clone(hit.result));event.version++;const card=b.npcCards?.[event.actorId];if(card?.eventId===event.id){card.version++;card.publication.status='pending';}}}}
-  const result = { target: target.name, total, dodge, breakdown, saves, armorDamage,hp: p.hp, defaulted };
+  const result = { target: target.name, total, dodge, breakdown, saves, armorDamage,hp: p.hp,healthBefore,healthAfter:require('./health').snapshot(p),defaulted };
   if (b.status === 'active' && b.current && !b.pending) {
     const active = actorById(b, b.current.actorId);
     if (actorCharacter(state, active).hp <= 0) {
@@ -525,7 +533,7 @@ function switchWeapon(state, b, turnId, itemId, hand = 'auto') {
   validateQuick(state,b,{actor,p,turn},{type:'switch',item:itemId,hand});
   W.set(p, itemId, hand); turn.quick--; M.syncHP(p);record(b,actor.name+'切换武器：'+(itemId?p.inventory[itemId].snapshot.name:'卸下武器'),{actorId:actor.id,portrait:p.portraits?.avatar});
 }
-function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget) {
+function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget, recipientId) {
   const { actor, p, turn } = current(state, b, turnId);
   ok(!b.pending && turn.quick > 0, '快速行动不可用。');
   validateQuick(state,b,{actor,p,turn},{type:'heal',item:itemId});
@@ -533,9 +541,10 @@ function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget) {
   ok([...C.CONSUMABLES,'修复道具'].includes(item?.snapshot.kind), '该道具没有已录入的使用效果。');
   if (actor.userId) ok(M.available(state, actor.userId, itemId) > 0, '道具已预留。');
   if(p.inventory[itemId]?.snapshot.kind==='修复道具'){if(actor.userId)ok(M.available(state,actor.userId,repairTarget)>0,'装备已被预留。');const result=Dur.repair(p,itemId,repairTarget);turn.quick--;M.syncHP(p);turn.move=Math.max(0,C.round2(M.stats(p).move-(turn.moveSpent||0)));record(b,actor.name+'使用'+result.name+'修复'+result.target+' '+result.repaired+'点耐久。',{...result,actorId:actor.id,portrait:p.portraits?.avatar});return result;}
-  const result = M.consume(p, itemId, rng, turnId);
+  const recipient = recipientId ? require('./treatment').battle(state,b,actor,recipientId).p : p;
+  const result = M.consume(p, itemId, rng, recipient === p ? turnId : null, Date.now(), recipient);
   turn.move = Math.max(0, C.round2(M.stats(p).move - (turn.moveSpent || 0)));
-  turn.quick--; record(b, actor.name + '使用' + result.name + '，恢复' + result.healed + 'HP。', {...result,hp:p.hp,maxHP:M.stats(p).maxHP,actorId:actor.id,portrait:p.portraits?.avatar});
+  turn.quick--; record(b, actor.name + '使用' + result.name + '治疗'+recipient.name+'，恢复正常HP '+result.healed+'、倒地HP '+(result.reserveHealed||0)+'。', {...result,hp:recipient.hp,maxHP:M.stats(recipient).maxHP,targetName:recipient.name,healthBefore:result.before,healthAfter:require('./health').snapshot(recipient),eventType:'item',actorId:actor.id,portrait:p.portraits?.avatar});
   return result;
 }
 function flee(state, b, turnId, rng = randomInt) {
@@ -562,6 +571,6 @@ function endBattle(state, b) {
   record(b, 'GM结束了战斗。');
 }
 module.exports = { actorCharacter, actorById, record, validateCondition, applyCondition, beginConditions, endConditions,
-  createBattle, join, withdraw, validateNPC, addNPC, position, setTerrain, liveActors, order, advance,
+  createBattle, join, withdraw, validateNPC, addNPC, position, setTerrain, liveActors, activeActors, order, advance,
   roundState, ensureActionRound, opportunityCost, resetActionRound, nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, attackPlan, readonlyCurrent, validateOperation, defend,
   confirmCasting, reload, switchWeapon, useItem, flee, pause, endBattle };

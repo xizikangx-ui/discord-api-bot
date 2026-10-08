@@ -6,7 +6,7 @@
   "main": "src/bot.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --use-env-proxy src/bot.js",
-    "test:rpg": "node --test test/rpg.test.js test/rpg-concurrency.test.js test/rpg-response.test.js test/rpg-action-layout.test.js test/rpg-visual-rp.test.js",
+    "test:rpg": "node --test test/rpg.test.js test/rpg-concurrency.test.js test/rpg-response.test.js test/rpg-action-layout.test.js test/rpg-visual-rp.test.js test/rpg-features.test.js",
     "test:rpg:postgres": "node --test test/rpg-postgres.test.js"
   },
   "engines": {

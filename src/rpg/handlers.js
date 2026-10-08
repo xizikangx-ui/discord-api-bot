@@ -342,7 +342,7 @@ function createHandlers(context) {
     function targetsView(ability,type,mode='semi'){
       if(require('./aoe').validate(ability.attack.aoe).mode!=='single')return context.aoePanel.open(i,s,b,a,ability.key,type,mode);
       const distance=ability.attack.melee?'近战同格':'有效攻击距离 '+C.round2(M.modify(M.stats(p).effects,'range',ability.attack.rangeMeters??ability.attack.range*50))+'米';
-      const targets=b.actors.filter(t=>t.id!==a.id&&!t.retreated&&!t.deathId&&B.actorCharacter(s,t).hp>0);ok(targets.length,'没有有效攻击目标。');
+      const targets=b.actors.filter(t=>t.id!==a.id&&!t.retreated&&!t.deathId&&require('./health').alive(B.actorCharacter(s,t)));ok(targets.length,'没有有效攻击目标。');
       return payload('选择目标 · '+ability.attack.name,'固定命中 '+ability.attack.hit+' · '+distance+(C.FIREARMS.includes(ability.attack.weaponType)?' · '+(mode==='auto'?'全自动':'半自动'):''),[
         row(select('target:'+prefix+':'+type+':'+ability.key+':'+mode,'攻击目标',targets.map(t=>({label:t.name,value:t.id})))),
         row(button('attackpick:'+prefix+':'+type+':0','返回武器选择'),button('view:'+prefix+':overview','取消选择'))]);
@@ -408,6 +408,7 @@ function createHandlers(context) {
           if(W.hands(weapon.snapshot)===1)return payload('切换单手武器 · '+weapon.snapshot.name,'选择主手或副手；替换的武器回到背包，本次切换消耗一次快速行动。',[row(select('weaponhand:'+prefix+':'+weapon.id,'装备在哪只手',[{value:'main',label:'主手'},{value:'off',label:'副手'}])),row(button('weaponpick:'+prefix+':0','返回武器列表'),button('view:'+prefix+':overview','取消'))]);
         }
         if(action==='itempick'&&p.inventory[i.values[0]]?.snapshot.kind==='修复道具')return repairView(i.values[0],0);
+        if(action==='itempick')return context.treatment.targets(s,b,a,i.values[0]);
         if (action === 'reloadpick') {
           const ammoId = i.values[0], weapon = p.inventory[p.equipped.weapon]; ok(weapon?.loaded && p.inventory[ammoId], '武器或弹药不可用。');
           const magazines = Object.values(p.inventory).filter(m => m.snapshot.kind === '弹夹' && m.snapshot.magazineType === weapon.snapshot.magazineType &&

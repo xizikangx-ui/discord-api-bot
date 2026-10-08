@@ -35,7 +35,7 @@ function vote(state,m,ref,uid,yes,now=Date.now()){
 }
 function autoEncounters(state){const changed={maps:[],battles:[]};
   for(const m of Object.values(state.explorations).filter(m=>m.status==='active'))for(const [cell,c] of Object.entries(m.cells)){
-    const r=c.room;if(require('./rp').waiting(m)||!r||!(r.autoStart??r.snapshot.autoStart))continue;
+    const r=c.room;if(require('./rp').waiting(m)||!r||!r.boss&&!(r.autoStart??r.snapshot.autoStart))continue;
     if(r.encounter==='battle'){
       const b=state.battles[r.battleId];if(!b)continue;
       const live=B.liveActors(state,b),enemies=live.filter(a=>a.team==='enemy'),allies=live.filter(a=>a.team==='ally');
@@ -44,7 +44,7 @@ function autoEncounters(state){const changed={maps:[],battles:[]};
       if(b.status!=='ended'||b.outcome!=='victory')continue;
       X.resolve(state,m,cell);changed.maps.push(m.id);
     }
-    if(r.encounter!=='pending')continue;
+    if(r.encounter!=='pending'||r.boss)continue;
     const users=Object.keys(m.participants);if(!users.length||!users.every(uid=>m.participants[uid].cell===cell&&state.players[uid]?.id===m.participants[uid].characterId&&state.players[uid].hp>0&&!M.battleFor(state,uid)))continue;
     if(users.length>=20){m.status='paused';m.lastEvent='自动遭遇暂停：每场20人上限，需给NPC预留位置。';changed.maps.push(m.id);continue;}
     const oldBattles=clone(state.battles),oldRoom=clone(r),oldVersion=m.version,oldPlayers=clone(state.players),oldOffers=clone(state.offers),oldDeaths=clone(state.deaths),oldCorpses=clone(state.corpses);

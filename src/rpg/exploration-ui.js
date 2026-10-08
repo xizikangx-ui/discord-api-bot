@@ -69,7 +69,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
   const back = () => button('map:config', '返回地图配置');
   function config(s) {
     return payload('GM地图与掉落配置', '先录入地图大类，再录入房间。房间可含固定内容与随机容器、散落物资、NPC。\n随机数量分别按0—6、0—6、0—10的独立概率配置，使用下拉选择。\n保险箱概率与钥匙次数可独立调整。', [
-      row(button('map:newcategory', '录入大类', D.ButtonStyle.Primary), button('map:newroom', '录入房间', D.ButtonStyle.Primary), button('map:library:category:0', '已有大类'), button('map:library:room:0', '已有房间')),
+      row(button('map:newcategory', '录入大类', D.ButtonStyle.Primary), button('map:newroom', '录入房间', D.ButtonStyle.Primary), button('map:library:category:0', '已有大类'), button('map:library:room:0', '已有房间'),button('features:boss:home:0','BOSS池')),
       row(button('mapx:boxes:0', '容器分档 / 六色概率'), button('map:keys', '玩家钥匙次数'), button('map:deaths:0', '指定击杀经验'), button('map:home', '地图列表')),
       row(button('map:corpselist:0', 'NPC掉落公示 / 补发'),button('rp:config','RP隐藏操作频道'),button('mapx:cleanuppreview','清理旧地图'))
     ]);
@@ -87,7 +87,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       row(button('map:toggle:' + m.id + ':' + m.version, m.status === 'paused' ? '恢复探索' : '暂停探索', undefined, !['active', 'paused'].includes(m.status)),
         button('map:gmroom:' + m.id + ':0', '房间 / 遭遇 / 待领取'), button('map:players:' + m.id + ':0', '队员 / 位置'),
         button('map:endpreview:' + m.id, '结束探索', D.ButtonStyle.Danger, m.status === 'ended')),
-      row(button('rp:toggle:'+m.id,m.rpEnabled?'关闭RP':'开启RP'),button('rp:home:'+m.id+':'+(m.rpPendingId||'_'),'环境草稿 / 等待',undefined,!m.rpPendingId),button('mapx:layout:'+m.id+':'+m.version,'重新随机布局',undefined,m.status!=='draft'||m.mode==='fixed')),
+      row(button('rp:toggle:'+m.id,m.rpEnabled?'关闭RP':'开启RP'),button('rp:home:'+m.id+':'+(m.rpPendingId||'_'),'环境草稿 / 等待',undefined,!m.rpPendingId),button('mapx:layout:'+m.id+':'+m.version,'重新随机布局',undefined,m.status!=='draft'||m.mode==='fixed'),button('gmstory:bossassign:'+m.id,'分配BOSS房',undefined,!['draft','paused'].includes(m.status))),
       ...(m.moveRequestId?[row(button('map:moveinfo:'+m.id+':'+m.moveRequestId+':0','当前移动申请'),button('map:moverepost:'+m.id+':'+m.moveRequestId,'核对后补发移动确认'))]:[]),
       row(button('map:manage:' + m.id, '刷新'), button('map:repost:' + m.id, '核对后补发地图', undefined, m.status === 'draft'), button('map:home', '返回地图列表'), button('map:celldraft:' + m.id, '继续格子草稿', undefined, !Object.keys(m.cellDrafts || {}).length),button('map:mapview:'+m.id+':wide:gm','横版完整图'))
     ]);

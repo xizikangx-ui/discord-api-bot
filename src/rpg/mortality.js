@@ -1,12 +1,13 @@
 'use strict';
 const C = require('./constants'), M = require('./model');
+const H = require('./health');
 const { requireThat: ok, clone } = C;
 function record(b, message, details) { const entry = {id:C.id('e'), at: Date.now(), message, details };require('./battle-events').capture(b,entry); b.recent.push(entry); b.recent = b.recent.slice(-30); (b.history ||= []).push(clone(entry)); }
 function character(state, a) { return a.finalCharacter || (a.userId ? state.players[a.userId] : a.character); }
 function reward(state, b, death, uid) {
   ok(death.kind === 'npc' && death.team === 'enemy' && !death.rewarded, '该死亡记录不能重复发放经验。');
   const p = M.player(state, uid);
-  ok(p.hp > 0, '不能向死亡角色发放击杀经验。');
+  ok(H.alive(p), '不能向死亡角色发放击杀经验。');
   const result = death.baseXP ? M.grantXP(state, uid, death.baseXP) : { xp: 0 };
   death.rewarded = { userId: uid, characterId: p.id, at: Date.now(), result: clone(result) };
   record(b, death.name + '击杀奖励已结算给' + p.name + '，基础经验' + death.baseXP + '，实得' + (result.credited || 0) + '。', { deathId: death.id, characterId: p.id });
@@ -27,6 +28,8 @@ function settle(state, b, a, sourceReference = null) {
   const sourceId = typeof sourceReference === 'object' ? sourceReference?.actorId || null : sourceReference;
   const p = character(state, a);
   if (!p || p.hp > 0 || a.deathId) return null;
+  if(a.userId)p.userId ||= a.userId;
+  if (a.userId && p.life?.state !== 'dead') { if (!H.downed(p)) H.enter(p, b.actionRound?.number); interrupt(state, b, a); return null; }
   state.deaths ||= {}; state.corpses ||= {};
   const source = b.actors.find(x => x.id === sourceId), killer = source && character(state, source);
   const killerUserId = sourceReference?.userId || source?.userId, killerCharacterId = sourceReference?.characterId || killer?.id;
@@ -50,26 +53,42 @@ function settle(state, b, a, sourceReference = null) {
     for (const offer of Object.values(state.offers)) if (['editing', 'ready'].includes(offer.status) && [offer.creatorId, offer.targetId].includes(a.userId)) offer.status = 'cancelled';
     for (const map of Object.values(state.explorations || {})) if (map.participants?.[a.userId]?.characterId === p.id) {delete map.participants[a.userId];require('./map-links').releaseEmpty(state,map);}
     delete state.players[a.userId]; delete state.characterDrafts[a.userId];
-  } else if (a.team === 'enemy' && killerUserId && state.players[killerUserId]?.id === killerCharacterId && state.players[killerUserId].hp > 0) reward(state, b, d, killerUserId);
+  } else if (a.team === 'enemy' && killerUserId && state.players[killerUserId]?.id === killerCharacterId && H.alive(state.players[killerUserId])) reward(state, b, d, killerUserId);
   record(b, a.name + (a.userId ? '死亡，角色及资产已清空，可重新建卡。' : '死亡。'), { deathId:d.id,actorId:a.id,killed:d.team==='enemy',sourceId,sourceName:source?.name,reward:d.rewarded?.result||null });
   return d;
 }
 // Catch non-attack HP changes at the transaction boundary; historical zero HP is untouched.
+function interrupt(state, b, a) {
+  const p = character(state,a); if (!H.downed(p)) return;
+  if (a.downConditionRound == null) a.downConditionRound = b.actionRound?.number || 1;
+  b.queue = (b.queue || []).filter(q=>q.actorId !== a.id); delete a.casting;
+  if (b.current?.actorId === a.id) { const t=b.current; if (!t.free && b.actionRound && !b.actionRound.completed.includes(a.id)) b.actionRound.completed.push(a.id); require('./combat').endConditions(p,b,a); b.current=null; }
+  for (const f of Object.values(state.forms || {})) if (f.kind==='battleAction' && f.characterId===p.id && f.status==='ready') f.status='cancelled';
+  for (const o of Object.values(state.offers || {})) if (['editing','ready'].includes(o.status) && [o.creatorId,o.targetId].includes(a.userId)) o.status='cancelled';
+}
 function reconcile(state, before) {
+  for (const [uid,p] of Object.entries(state.players)) {
+    p.userId ||= uid;
+    if (p.hp <= 0 && p.life?.state !== 'dead' && !H.downed(p)) H.enter(p);
+    H.ensure(p);
+    p.showcase = (p.showcase || []).filter(ref=>['gold','red'].includes(p.inventory[ref]?.snapshot.rarity));
+    if (H.downed(p)) for (const o of Object.values(state.offers || {})) if (['editing','ready'].includes(o.status) && [o.creatorId,o.targetId].includes(uid)) o.status='cancelled';
+  }
   for (const b of Object.values(state.battles)) if (b.status !== 'ended' || before.battles[b.id]?.status !== 'ended') {
     for (const a of b.actors) {
       const p = character(state, a), old = before.battles[b.id]?.actors.find(x => x.id === a.id);
       const previous = old && character(before, old);
-      if (p?.hp <= 0 && previous?.hp > 0 && !a.deathId) settle(state, b, a);
+      if (H.downed(p)) interrupt(state,b,a);
+      if (p?.hp <= 0 && (p.life?.state==='dead' || previous?.hp > 0) && !a.deathId) settle(state, b, a);
     }
   }
-  for (const [uid, p] of Object.entries(state.players)) if (p.hp <= 0 && before.players[uid]?.id === p.id && before.players[uid].hp > 0) {
+  for (const [uid, p] of Object.entries(state.players)) if (p.life?.state==='dead') {
     // Noncombat death shares the same cleanup without creating an active battle.
     const actor = { id: C.id('a'), userId: uid, name: p.name, team: 'ally' };
     settle(state, { id: null, actors: [actor], queue: [], recent: [], history: [] }, actor);
   }
-  for (const b of Object.values(state.battles)) if (b.status === 'active' && !b.current && !b.pending)
-    require('./combat').nextOpportunity(state, b);
+  for (const b of Object.values(state.battles)) { for(const hit of [...require('./aoe').hits(b)])if(require('./aoe').hit(b,hit.id)&&H.downed(character(state,b.actors.find(a=>a.id===hit.targetId))))require('./combat').defend(state,b,hit.id,'defend'); require('./rescue').check(state,b); if (b.status === 'active' && !b.current && !b.pending) require('./combat').nextOpportunity(state, b); }
+  require('./boss').reconcile(state);
 }
 function claim(state, corpseId, uid, itemId) {
   const c = state.corpses[corpseId], p = M.player(state, uid), b = c && state.battles[c.battleId];
@@ -81,4 +100,4 @@ function claim(state, corpseId, uid, itemId) {
   M.receive(p, clone(item)); c.claims[itemId] = { userId: uid, characterId: p.id, at: Date.now() };
   return clone(item);
 }
-module.exports = { character, reward, equipmentRoots, settle, reconcile, claim };
+module.exports = { character, reward, equipmentRoots, settle, reconcile, claim, interrupt };
