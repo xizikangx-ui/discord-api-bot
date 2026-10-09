@@ -1,6 +1,6 @@
 # 本地 GM 工作台：覆盖与验收
 
-版本1.0.0，数据升级9；Windows x64、Node24.21.0，React19与Vite7锁定构建。共13类模板和67项管理命令，此外有绑定、设备撤销、草稿、批量发放、查询与受权限保护图片接口。
+版本1.0.1，数据升级9；Windows x64、Node24.21.0，React19与Vite7锁定构建。共13类模板和67项管理命令，此外有绑定、设备撤销、草稿、批量发放、查询与受权限保护图片接口。
 
 | 页面 | 覆盖与共用业务 |
 |---|---|
@@ -20,9 +20,11 @@
 
 ## 隔离验收
 
-- 完整跑团397项通过；Windows代理4项通过；24个JS/CJS语法检查，React生产构建通过。最终完整回归重新执行见交付报告。
+- 完整跑团397项通过；Windows代理5项通过；24个JS/CJS语法检查，React生产构建通过。最终完整回归重新执行见交付报告。
 - 真实Railway私网PostgreSQL隔离17项通过：设备撤销、对象加密、重启草稿/回执、原子导入、交易与AOE、提交前后断连、独占锁/丢锁、备份恢复；测试数据不写生产guild。
 - 网页20并发＋50重复突发：预览P95 23ms、提交P95 244ms，20人合计732ms；真实PG池5，Discord身份响应为模拟、通知和图像阻塞。达到隔离环境目标，不能当成生产Discord实网成绩。生产真实身份查询仍受Discord限流/网络影响。
 - 浏览器人工验收：表单发布、逐角色发放、刷新原确认编号和期限、文字成功结果、20人双血条/AP名单、静态地图、分类和概率表。模拟服务器与生产无连接。
 
 运行依据：[React](https://react.dev/learn/build-a-react-app-from-scratch)、[Vite](https://vite.dev/guide/build.html)、[Railway HTTPS](https://docs.railway.com/networking/public-networking)、[Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。发布/备份证据位于当前任务的 outputs/GM_WEB_RELEASE.md，交接记录链接到该文件。
+
+1.0.1本地连接修正：读取当前已启用Windows HTTP(S)代理（或环境代理），Node内置代理支持HTTPS联网，本机地址不走代理；不改系统设置。已在这台Windows电脑经现有代理验证生产接口返回401登录要求。Bot服务逻辑与1.0.0相同，无资产升级追加。
