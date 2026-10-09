@@ -470,6 +470,7 @@ function playerView(s, uid, { roomIds } = {}) {
         status: b.status,
         current: b.current,
         actionRound: b.actionRound,
+        movementFingerprint: b.actors.some(a=>a.userId===uid)?require("../rpg/movement-panel").fingerprint(s,b,b.actors.find(a=>a.userId===uid)):null,
         terrain: b.terrain,
         width: b.width,
         height: b.height,

@@ -57,7 +57,7 @@ function editCell(state, m, x, y, type, categoryId, templateId, variantId = null
   ok(cellTypes(m)[type] || type === 'empty', '格子类型无效。'); const ref = key(x, y), old = m.cells[ref];
   ok(!old?.room?.merchant,'请通过行商入口移除尚未进入的节点。');
   ok(!old?.room?.boss,'请先通过BOSS配置移除尚未进入的BOSS房。');
-  if(touched(m,ref)){ok(old.type===type&&old.categoryId===(categoryId||m.categoryId)&&(old.templateId||null)===(templateId||null),'该格有人或已有交互记录，不能替换或删除。');m.version++;return ref;}
+  if(touched(m,ref)){ok(old.type===type&&old.categoryId===(categoryId||m.categoryId)&&(old.templateId||null)===(templateId||null)&&(old.variantId||null)===(variantId||null),'该格有人或已有交互记录，不能替换或删除。');m.version++;return ref;}
   if (type === 'empty') delete m.cells[ref];
   else {
     const c = { type, categoryId: categoryId || m.categoryId, templateId: templateId || null, variantId:variantId||null };

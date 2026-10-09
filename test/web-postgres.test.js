@@ -176,6 +176,167 @@ test(
         },
       );
       await t.test(
+        "GM creation HTTP accepts numeric map rows and validates independent battle recruitment",
+        async () => {
+          const createdGroup = await app.accounts.createGroup(
+            await app.accounts.user(admin.user.id),
+            { name: "创建入口验收" },
+            crypto.randomUUID(),
+          );
+          await app.games.ensure(createdGroup.id);
+          const categoryId = await app.games.store.transact(
+            createdGroup.id,
+            "map-category-fixture",
+            admin.user.id,
+            (s) => {
+              const F = require("../src/rpg/forms"),
+                f = F.create(s, admin.user.id, "mapcategory");
+              f.data.name = "室内与区域";
+              f.data.mapTypes = ["indoor", "region"];
+              const cat=F.publish(s,f),room=F.create(s,admin.user.id,"room");room.data.name="快速房间";room.data.categoryIds=[cat.id];F.publish(s,room);return cat.id;
+            },
+          );
+          const channelId = (await repo.list("room", createdGroup.id)).find(
+            (r) => r.kind === "chat",
+          ).id;
+          const base = "/groups/" + createdGroup.id + "/gm",
+            params = {
+              name: "创建地图",
+              channelId,
+              categoryId,
+              mapType: "indoor",
+              mode: "manual",
+              rows: 4,
+              width: 3,
+              blockedPercent: 15,
+              stairsMin: 1,
+              stairsMax: 3,
+              maxRank: 3,
+            };
+          for (const mapType of ["indoor", "region"])
+            for (const mode of ["manual", "fixed", "full"]) {
+              const before = Object.keys(
+                app.games.store.snapshot(createdGroup.id).explorations,
+              ).length;
+              const preview = await call(admin, base + "/previews", {
+                command: "map.create",
+                params: { ...params, mapType, mode },
+                clientId: crypto.randomUUID(),
+              });
+              assert.equal(preview.status, 200, JSON.stringify(preview.error));
+              assert.equal(
+                Object.keys(
+                  app.games.store.snapshot(createdGroup.id).explorations,
+                ).length,
+                before,
+              );
+              const result = await call(admin, base + "/commands", {
+                draftId: preview.data.id,
+              });
+              assert.equal(result.status, 200, JSON.stringify(result.error));
+              const duplicates = await Promise.all(
+                Array.from({ length: 20 }, () =>
+                  app.games.commit(createdGroup.id,admin.user.id,preview.data.id).then(data=>({status:200,data})),
+                ),
+              );
+              assert.ok(
+                duplicates.every(
+                  (r) =>
+                    r.status === 200 &&
+                    r.data.result.id === result.data.result.id,
+                ),
+              );
+              const current = await db.load(createdGroup.id),
+                map = current.explorations[result.data.result.id];
+              assert.equal(
+                Object.keys(current.explorations).length,
+                before + 1,
+              );
+              assert.equal(map.mapType, mapType);
+              if (mode !== "full") {
+                assert.equal(map.floors, 4);
+                assert.equal(map.width, 3);
+              }
+              assert.doesNotThrow(() =>
+                require("../src/rpg/exploration").validateMap(map),
+              );
+              assert.deepEqual(
+                map.cells,
+                app.games.store.snapshot(createdGroup.id).explorations[map.id]
+                  .cells,
+              );
+            }
+          for(const mapType of ['indoor','region'])for(const mode of ['manual','full','fixed']){
+            const f=await call(admin,base+'/previews',{command:'map.quickCreate',params:{...params,mapType,mode},clientId:crypto.randomUUID()});assert.equal(f.status,200,JSON.stringify(f.error));
+            const first=await call(admin,base+'/commands',{draftId:f.data.id});assert.equal(first.status,200,JSON.stringify(first.error));
+            await Promise.all(Array.from({length:20},()=>app.games.commit(createdGroup.id,admin.user.id,f.data.id)));
+            const stored=(await db.load(createdGroup.id)).explorations[first.data.result.id];assert.equal(stored.status,'draft');assert.equal(!!stored.generated,mode!=='fixed');assert.deepEqual(stored.cells,app.games.store.snapshot(createdGroup.id).explorations[stored.id].cells);
+          }
+          const opts=await call(admin,base+'/context/maps');assert.equal(opts.status,200);assert.ok(opts.data.categories.some(c=>c.id===categoryId&&c.usable));
+          const battleParams = {
+            name: "创建战斗",
+            channelId,
+            width: 3,
+            height: 4,
+          };
+          const f = await call(admin, base + "/previews", {
+            command: "battle.create",
+            params: battleParams,
+          });
+          assert.equal(f.status, 200, JSON.stringify(f.error));
+          assert.equal(
+            Object.keys((await db.load(createdGroup.id)).battles).length,
+            0,
+          );
+          const b = await call(admin, base + "/commands", {
+            draftId: f.data.id,
+          });
+          assert.equal(b.status, 200, JSON.stringify(b.error));
+          assert.equal(b.data.result.status, "recruiting");
+          assert.equal(
+            (await call(admin, base + "/commands", { draftId: f.data.id })).data
+              .result.id,
+            b.data.result.id,
+          );
+          assert.equal(
+            (
+              await call(admin, base + "/previews", {
+                command: "battle.create",
+                params: battleParams,
+              })
+            ).status,
+            422,
+          );
+          assert.equal(
+            (
+              await call(alice, base + "/previews", {
+                command: "map.create",
+                params,
+              })
+            ).status,
+            403,
+          );
+          for (const command of ["grant", "templates.publish"])
+            for (const rows of [4, {}, [null]]) {
+              const invalid = await call(admin, base + "/previews", {
+                command,
+                params: { rows },
+              });
+              assert.equal(invalid.status, 422);
+              assert.match(invalid.error.message, /列表|清单/);
+              assert.doesNotMatch(
+                invalid.error.message,
+                /function|iterable|TypeError/,
+              );
+            }
+          const invalid = await call(admin, base + "/previews", {
+            command: "npc.portrait",
+          });
+          assert.equal(invalid.status, 422);
+          assert.match(invalid.error.message, /参数格式/);
+        },
+      );
+      await t.test(
         "private messages exclude GM; images require room and message permissions",
         async () => {
           dm = await app.chat.dm(
@@ -749,7 +910,12 @@ test(
               B.join(s, b, bob.user.id);
               B.position(b, b.actors[1].id, 26, 25, "enemy");
               let rollIndex = 0;
-              B.start(s, b, null, (min, max) => min + (rollIndex++ % (max - min + 1)));
+              B.start(
+                s,
+                b,
+                null,
+                (min, max) => min + (rollIndex++ % (max - min + 1)),
+              );
               return b.id;
             },
           );

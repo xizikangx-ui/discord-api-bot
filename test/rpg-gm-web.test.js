@@ -24,3 +24,56 @@ test('duplicate grant rows obey existing per-project caps and Discord ticket res
 test('loot repair binds only the checked multipart message and preserves already delivered parts',async()=>{const s=seed(),id='loot-record',first={id:'part-0',messageId:'111111111111111111',status:'sent'},second={id:'part-1',status:'uncertain'};s.lootPublications[id]={id,channelId:'channel',result:{pending:false,batchId:'batch',items:[M.makeItem(s.catalog.special_heart),M.makeItem(s.catalog.special_tear)]},userId:'1',publicationParts:[first,second]};const msg={id:'222222222222222222',channelId:'channel',author:{id:'bot'},embeds:require('../src/rpg/activities-ui').lootMessages(s.lootPublications[id])[1].embeds.map(e=>e.data),components:[]};const ctx=require('../src/rpg/gm-web-context').createContext({store:{snapshot:()=>s},client:{user:{id:'bot'}},outbox:{active:new Set()},textChannel:async()=>({id:'channel',messages:{fetch:async()=>msg}})}),p={kind:'loot',ref:id,partIndex:1,messageId:msg.id},before=C.clone(first);await ctx.checkPublication({g:s.guildId},p);ctx.repairPublication(s,{g:s.guildId},p);assert.deepEqual(first,before);assert.equal(second.messageId,msg.id);assert.equal(second.status,'sent');});
 
 test('protected media renders actual battle and map PNG using current renderer signature',async t=>{const s=seed(),B=require('../src/rpg/combat'),b=B.createBattle(s,'channel',gm,'图像验收');B.join(s,b,'1');const f=F.create(s,gm,'mapcategory');f.data.name='图像类别';const cat=F.publish(s,f),m=require('../src/rpg/exploration').create(s,gm,'channel','图像地图',2,3,'random',cat.id),renderer=require('../src/rpg/map-image').createRenderer({portraits:{load:async()=>null},logFailure:()=>{}});t.after(()=>renderer.close());const ctx=require('../src/rpg/gm-web-context').createContext({store:{select:(g,fn)=>C.clone(fn(s))},renderer});for(const key of ['battle/'+b.id,'map/'+m.id]){const r=await ctx.media({g:s.guildId},key,new URLSearchParams('wide=1&gm=1'));assert.equal(r.type,'image/png');assert.equal(r.bytes.subarray(1,4).toString(),'PNG');}});
+
+test('GM map dimensions remain numeric while bulk operations require row arrays',async t=>{
+ const s=seed(),cf=F.create(s,gm,'mapcategory');cf.data.name='地图入口验收';cf.data.mapTypes=['indoor','region'];const cat=F.publish(s,cf),h=await harness(t,{seed:s});await h.bind();
+ for(const mapType of ['indoor','region'])for(const mode of ['manual','fixed','full']){
+  const params={name:'入口-'+mapType+'-'+mode,channelId:'123456789012345679',categoryId:cat.id,mapType,mode,rows:4,width:3,blockedPercent:15,stairsMin:1,stairsMax:3,maxRank:3};
+  const preview=await h.call('/previews',{command:'map.create',params});assert.equal(preview.status,200,JSON.stringify(preview.error));
+  const before=Object.keys(h.canonical().explorations).length;const result=await h.call('/commands',{draftId:preview.data.id});assert.equal(result.status,200,JSON.stringify(result.error));
+  const again=await h.call('/commands',{draftId:preview.data.id});assert.equal(again.data.result.id,result.data.result.id);assert.equal(Object.keys(h.canonical().explorations).length,before+1);
+  const m=h.canonical().explorations[result.data.result.id];assert.equal(m.mapType,mapType);if(mode!=='full'){assert.equal(m.floors,4);assert.equal(m.width,3);}
+ }
+ for(const command of ['grant','templates.publish']){const r=await h.call('/previews',{command,params:{rows:4}});assert.equal(r.status,422);assert.match(r.error.message,/清单|列表/);assert.doesNotMatch(r.error.message,/iterable|function|TypeError/);}
+});
+test('new battle preview validates recruitment without requiring an existing battle',async t=>{
+ const h=await harness(t);await h.bind();const p={name:'新战斗入口',channelId:'123456789012345679',width:3,height:4};
+ const f=await h.call('/previews',{command:'battle.create',params:p});assert.equal(f.status,200,JSON.stringify(f.error));assert.equal(Object.keys(h.canonical().battles).length,0);
+ const r=await h.call('/commands',{draftId:f.data.id});assert.equal(r.status,200,JSON.stringify(r.error));assert.equal(r.data.result.status,'recruiting');assert.equal(Object.keys(h.canonical().battles).length,1);
+ const invalid=await h.call('/previews',{command:'battle.create',params:p});assert.equal(invalid.status,422);assert.match(invalid.error.message,/已有战斗/);
+});
+
+test('narrow random maps retain a room and minimum vertical links even when every candidate becomes stairs',()=>{
+ const s=seed(),f=F.create(s,gm,'mapcategory');f.data.name='窄图';const cat=F.publish(s,f),Layout=require('../src/rpg/random-layout'),X=require('../src/rpg/exploration');
+ const m=Layout.create(s,gm,'channel','全楼梯边界','indoor','manual',cat.id,4,3,{blockedPercent:0,stairsMin:1,stairsMax:3},(min,max)=>max-1);
+ assert.ok(Object.values(m.cells).some(c=>c.type==='room'));assert.doesNotThrow(()=>X.validateMap(m));
+ for(let y=1;y<m.floors;y++){let links=0;for(let x=0;x<m.width;x++)if(['stairs','entrance'].includes(m.cells[x+','+(y-1)]?.type)&&['stairs','entrance'].includes(m.cells[x+','+y]?.type))links++;assert.ok(links>=1);}
+});
+
+
+test('quick map creation saves content atomically, preserves previews and recovers one result',async t=>{
+ const s=seed(),f=F.create(s,gm,'mapcategory');f.data.name='快速主题';f.data.mapTypes=['indoor','region'];const category=F.publish(s,f),r=F.create(s,gm,'room');r.data.name='快速房间';r.data.categoryIds=[category.id];F.publish(s,r);
+ const h=await harness(t,{seed:s});await h.bind();const base={name:'完整地图',channelId:'123456789012345679',categoryId:category.id,mapType:'indoor',mode:'manual',rows:4,width:3,stairsMin:1,stairsMax:3,maxRank:3};
+ for(const mapType of ['indoor','region'])for(const mode of ['manual','full','fixed']){
+  const before=Object.keys(h.canonical().explorations).length,f=await h.call('/previews',{command:'map.quickCreate',params:{...base,mapType,mode}});assert.equal(f.status,200,JSON.stringify(f.error));assert.equal(Object.keys(h.canonical().explorations).length,before);
+  const replies=await Promise.all(Array.from({length:mode==='manual'?50:20},()=>h.call('/commands',{draftId:f.data.id})));assert.ok(replies.every(r=>[200,202].includes(r.status)),JSON.stringify(replies.find(r=>![200,202].includes(r.status))));const id=replies.find(r=>r.status===200).data.result.id,m=h.canonical().explorations[id];assert.equal(Object.keys(h.canonical().explorations).length,before+1);assert.equal(m.status,'draft');assert.equal(!!m.generated,mode!=='fixed');if(mode!=='fixed')assert.ok(Object.values(m.cells).filter(c=>c.type==='room'||c.hasContents).every(c=>c.room));await h.store.recover(s.guildId);assert.deepEqual(h.canonical().explorations[id].cells,m.cells);
+ }
+ const invalid=await h.call('/previews',{command:'map.quickCreate',params:{...base,width:1}});assert.equal(invalid.status,422);assert.match(invalid.error.message,/楼梯|列数/);
+ const before=C.clone(h.canonical().explorations),state=h.canonical();state.roomTemplates={};assert.throws(()=>G.apply(state,gm,'map.quickCreate',base),/主题/);assert.deepEqual(state.explorations,before);
+});
+
+test('map options and GM battle context expose consistent names and action data',async t=>{
+ const h=await harness(t);await h.bind();const opts=await h.call('/context/maps');assert.equal(opts.status,200);assert.ok(opts.data.cellTypes.indoor.room);assert.ok(Array.isArray(opts.data.rooms));
+ await h.store.transact(C.DEFAULT_GUILD_ID,'context-fixture',gm,s=>{const b=require('../src/rpg/combat').createBattle(s,'123456789012345679',gm,'数据接口',3,4);require('../src/rpg/combat').join(s,b,'1');});
+ const id=Object.keys(h.canonical().battles)[0],r=await h.call('/context/battle?id='+id);assert.equal(r.status,200);assert.equal(r.data.actors[0].ap,h.canonical().players['1'].ap);assert.equal(r.data.actors[0].opportunities,0);assert.equal(r.data.actors[0].nextCost,100);assert.ok(r.data.actors[0].health.maxHP>0);
+});
+
+
+test('editing map labels preserves generated room snapshots; replacing terrain requires regeneration',()=>{
+ const s=seed(),f=F.create(s,gm,'mapcategory');f.data.name='编辑主题';const cat=F.publish(s,f),r=F.create(s,gm,'room');r.data.name='冻结房间';r.data.categoryIds=[cat.id];F.publish(s,r);
+ const m=G.apply(s,gm,'map.quickCreate',{name:'编辑验收',channelId:'channel',categoryId:cat.id,mapType:'indoor',mode:'manual',rows:4,width:3,stairsMin:1,stairsMax:3,maxRank:3}),map=s.explorations[m.id],ref=Object.keys(map.cells).find(k=>map.cells[k].room),c=map.cells[ref],before=C.clone(c.room),[x,y]=ref.split(',').map(Number);
+ const params={mapId:map.id,x,y,type:c.type,categoryId:c.categoryId,templateId:c.templateId,variantId:c.variantId,name:'可读名字',passable:true,hasContents:!!c.hasContents};
+ G.apply(s,gm,'map.cell',params);assert.deepEqual(map.cells[ref].room,before);assert.equal(map.generated,true);
+ map.cells[ref].touched=true;assert.throws(()=>G.apply(s,gm,'map.cell',{...params,variantId:'changed'}),/交互记录/);assert.deepEqual(map.cells[ref].room,before);
+ map.cells[ref].touched=false;G.apply(s,gm,'map.cell',{...params,type:'corridor'});assert.equal(map.generated,false);assert.equal(map.cells[ref].room,undefined);
+});

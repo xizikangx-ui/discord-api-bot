@@ -58,10 +58,19 @@ function apply(s,user,command,p){
   if(command==='container.set'){const K=require('./containers');if(p.grade)K.setGrade(s,p.name,p.grade);if(p.enabled!==undefined){s.containerDefinitions||=K.definitions();const d=s.containerDefinitions[p.name];ok(d,'容器不存在。');d.enabled=!!p.enabled;d.version++;}return require('./containers').get(s,p.name);}
   if(command==='container.rates'){require('./loot').setGradeRates(s,p.grade,p.rates);return {grade:p.grade,rates:p.rates};}
   if(command==='config.save'){s.config={...s.config,...p.data};return {saved:Object.keys(p.data)};}
+  if(command==='map.quickCreate'){
+    require('./gm-context-data').validateQuick(s,p);
+    // Stage the complete map so callers also cannot retain a partial map on failure.
+    const staged={...s,explorations:{...s.explorations}},layout=require('./random-layout');
+    if(p.mode==='full')staged.mapCategories=Object.fromEntries(Object.entries(s.mapCategories).filter(([id])=>require('./gm-context-data').mapOptions(s).categories.some(c=>c.id===id&&c.usable)));
+    const m=layout.create(staged,user,p.channelId,p.name,p.mapType,p.mode,p.categoryId,p.rows,p.width,p);
+    if(p.mode!=='fixed')require('./exploration').generate(staged,m);
+    s.explorations[m.id]=m;return {id:m.id,name:m.name,status:m.status,version:m.version,generated:!!m.generated,createdMap:true};
+  }
   if(command==='map.create')return require('./random-layout').create(s,user,p.channelId,p.name,p.mapType,p.mode,p.categoryId,p.rows,p.width,p);
   if(command.startsWith('map.')){const X=require('./exploration'),m=s.explorations[p.mapId];ok(m&&m.status!=='ended','地图不存在或已结束。');
     switch(command){case'map.generate':X.generate(s,m);break;case'map.layout':require('./random-layout').build(m,m.generation||{});X.generate(s,m);break;case'map.link':require('./map-links').bind(s,m,p.cell,p.buildingMapId);break;case'map.transfer':return X.transfer(s,m,p.cell,p.containerId,p.uid);case'map.auto':{ok(['draft','paused'].includes(m.status),'先暂停地图。');const r=m.cells[p.cell]?.room;ok(r,'房间不存在。');r.autoStart=!!p.enabled;m.version++;break;}case'map.playerPosition':case'map.playerRemove':{ok(m.status==='paused'&&m.participants[p.uid]&&!M.battleFor(s,p.uid),'先暂停地图并结束目标战斗。');if(command==='map.playerRemove'){delete m.participants[p.uid];require('./map-links').releaseEmpty(s,m);}else {const c=m.cells[p.cell];ok(c&&X.passable(c)&&(!c.room||c.room.unlocked),'目标格不可用或房门未解锁。');m.participants[p.uid].cell=p.cell;m.revealed[p.cell]=true;c.touched=true;}m.version++;break;}case'map.publish':X.publish(s,m);break;
-      case'map.cell':{const ref=X.editCell(s,m,Number(p.x)+1,Number(p.y)+1,p.type,p.categoryId,p.templateId,p.variantId);if(p.type!=='empty'){const c=m.cells[ref];Object.assign(c,{name:C.text(p.name||'','地点名称',80,true),description:C.text(p.description||'','地点说明',2000,true),passable:p.passable!==false,hasContents:!!p.hasContents});if(p.buildingMapId)require('./map-links').bind(s,m,ref,p.buildingMapId);}break;}
+      case'map.cell':{const key=Number(p.x)+','+Number(p.y),old=m.cells[key],same=old&&old.type===p.type&&old.categoryId===(p.categoryId||m.categoryId)&&(old.templateId||null)===(p.templateId||null)&&(old.variantId||null)===(p.variantId||null);let ref;if(same){ok(['draft','paused'].includes(m.status),'修改布局前请暂停地图。');ref=key;m.version++;}else{ref=X.editCell(s,m,Number(p.x)+1,Number(p.y)+1,p.type,p.categoryId,p.templateId,p.variantId);if(m.status==='draft')m.generated=false;}if(p.type!=='empty'){const c=m.cells[ref];Object.assign(c,{name:C.text(p.name||'','地点名称',80,true),description:C.text(p.description||'','地点说明',2000,true),passable:p.passable!==false,hasContents:!!p.hasContents});if(m.status==='paused'&&!c.room&&(c.type==='room'||c.hasContents))c.room=X.instantiate(s,X.selectRoom(s,m,c),require('node:crypto').randomInt,m.maxRank??10,c.variantId);if(p.buildingMapId)require('./map-links').bind(s,m,ref,p.buildingMapId);}break;}
       case'map.pause':ok(m.status==='active','地图尚未启动。');m.status='paused';m.version++;break;
       case'map.resume':ok(m.status==='paused','地图未暂停。');m.entrance=X.validateMap(m);m.revealed[m.entrance]=true;m.status='active';m.version++;break;
       case'map.end':ok(!m.excursion&&!m.parentContext,'请先让队伍返回区域地图。');ok(!Object.values(s.battles).some(b=>b.exploration?.mapId===m.id&&b.status!=='ended'),'先结束关联战斗。');m.status='ended';m.endedAt=Date.now();m.version++;break;
@@ -109,9 +118,15 @@ function apply(s,user,command,p){
   if(command==='check.end'){const x=s.checks[p.id];ok(x,'鉴定不存在。');x.status='ended';x.version++;return {id:x.id,status:x.status};}
   error('操作入口无效。');
 }
-function guards(s,command,p){const refs=[];const add=(source,id)=>{ok(s[source]?.[id],'引用已删除，请重新选择。');refs.push({source,id,hash:fingerprint(s[source][id])});};
+function rowsFor(command,p){
+  ok(p&&typeof p==='object'&&!Array.isArray(p),'操作参数格式无效。');
+  if(command!=='grant'&&command!=='templates.publish')return [];
+  ok(Array.isArray(p.rows)&&p.rows.every(r=>r&&typeof r==='object'&&!Array.isArray(r)),'批量清单须为有效的列表。');
+  return p.rows;
+}
+function guards(s,command,p){const rows=rowsFor(command,p),refs=[];const add=(source,id)=>{ok(s[source]?.[id],'引用已删除，请重新选择。');refs.push({source,id,hash:fingerprint(s[source][id])});};
   if(p.mapId)add('explorations',p.mapId);if(p.battleId){add('battles',p.battleId);for(const a of s.battles[p.battleId].actors)if(a.userId&&s.players[a.userId])add('players',a.userId);}
-  if(p.uid)add('players',p.uid);for(const r of p.rows||[]){if(r.uid)add('players',r.uid);if(r.ref){const src={item:'catalog',skill:'skillTemplates',checkskill:'checkSkillTemplates',coupon:'couponPools'}[r.type];if(src)add(src,r.ref);}if(r.id&&KINDS[r.kind])add(KINDS[r.kind],r.id);}
+  if(p.uid)add('players',p.uid);for(const r of rows){if(r.uid)add('players',r.uid);if(r.ref){const src={item:'catalog',skill:'skillTemplates',checkskill:'checkSkillTemplates',coupon:'couponPools'}[r.type];if(src)add(src,r.ref);}if(r.id&&KINDS[r.kind])add(KINDS[r.kind],r.id);}
   if(p.templateId){const src=command.includes('merchant')?'merchantTemplates':command.startsWith('map.cell')?'roomTemplates':command==='map.restock'?'catalog':command==='battle.condition'?'conditionTemplates':'npcTemplates';add(src,p.templateId);}
   if(command==='map.cleanup')for(const id of p.ids||[])add('explorations',id);if(command==='npc.portrait')add('npcTemplates',p.id);if(command==='death.reward')add('deaths',p.id);if(p.buildingMapId)add('explorations',p.buildingMapId);
   if(p.poolId)add('bossPools',p.poolId);if(p.id&&command.startsWith('session.'))add('sessions',p.id);if(p.id&&command.startsWith('check.'))add('checks',p.id);
@@ -119,4 +134,4 @@ function guards(s,command,p){const refs=[];const add=(source,id)=>{ok(s[source]?
 }
 function verifyGuards(s,list){const conflicts=list.filter(r=>fingerprint(r.id?s[r.source]?.[r.id]:s[r.source])!==r.hash);if(conflicts.length){const e=Error('相关角色、资源或内容已经变化，请核对差异并重新预览。');e.code='CONFLICT';e.details=conflicts.map(r=>({source:r.source,id:r.id,current:r.id?s[r.source]?.[r.id]:s[r.source]}));throw e;}}
 function validateBatch(s,rows,owner){ok(Array.isArray(rows)&&rows.length&&rows.length<=100,'每批录入1—100条。');const seen=new Set();return rows.map((r,n)=>{try{if(r.id){const key=r.kind+':'+r.id;ok(!seen.has(key),'本组重复修改同一模板。');seen.add(key);}const source=KINDS[r.kind];ok(source,'模板类型无效。');const copy={...s,forms:{},[source]:{...s[source]}};return {row:n+1,success:true,...publishBatch(copy,[r],owner)[0]};}catch(e){return {row:n+1,name:r.data?.name,success:false,reason:e.message};}});}
-module.exports={KINDS,error,version,fingerprint,publishBatch,validateBatch,grantOne,grantBatch,apply,guards,verifyGuards,editable};
+module.exports={KINDS,error,version,fingerprint,publishBatch,validateBatch,grantOne,grantBatch,apply,rowsFor,guards,verifyGuards,editable};

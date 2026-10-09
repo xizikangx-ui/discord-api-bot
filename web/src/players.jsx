@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import {gridCells} from '../../gm-web/src/ui-state';
+import React, { useState, useEffect, useRef } from "react";
 import { api, id, mediaUrl } from "./api";
 import { Result } from "../../gm-web/src/main";
 const attrs = {
@@ -904,9 +905,13 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
     [image, Image] = useState(""),
     [merchant, Merchant] = useState(null),
     [choice, Choice] = useState({ quantity: 1 });
+  const mapRef=useRef(null);
   const m = game.maps.find((m) => m.id === mid) || game.maps[0],
     part = m?.participants[game.player?.userId],
     room = m?.cells[part?.cell]?.room;
+  mapRef.current=m?.id;
+  useEffect(()=>{Cell("");Image("");Merchant(null);},[m?.id]);
+  useEffect(()=>{if(image&&m)Image("/api/web/v1/groups/"+groupId+"/map-image/"+m.id+"?v="+game.revision);},[game.revision,m?.id]);
   return (
     <>
       <section className="panel">
@@ -961,7 +966,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
                 gridTemplateColumns: "repeat(" + m.width + ",minmax(65px,1fr))",
               }}
             >
-              {Object.entries(m.cells).map(([ref, c]) => (
+              {gridCells(m.width,m.rows,m.cells).map(({ref,cell:raw}) => {const c=raw||{type:"empty",passable:false};return (
                 <button
                   key={ref}
                   className={
@@ -969,6 +974,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
                     (cell === ref ? "selected " : "") +
                     (ref === part?.cell ? "current-cell" : "")
                   }
+                  disabled={!raw}
                   onClick={() => Cell(ref)}
                 >
                   <small>
@@ -985,7 +991,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
                   </b>
                   {ref === part?.cell && <span>◆ 队伍</span>}
                 </button>
-              ))}
+              );})}
             </div>
             {cell && (
               <div className="toolbar">
@@ -1109,7 +1115,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
                   <button
                     onClick={() =>
                       run(async () =>
-                        Merchant(
+                        ((quote)=>{if(mapRef.current===m.id)Merchant(quote);})(
                           await api("/groups/" + groupId + "/merchant/quote", {
                             mapId: m.id,
                             cell: part.cell,
@@ -1163,9 +1169,10 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
               className="primary"
               onClick={() =>
                 run(async () => {
-                  await api("/groups/" + groupId + "/merchant/commit", {
-                    id: merchant.id,
-                  });
+                  const quote=merchant;
+                  try{await api("/groups/"+groupId+"/merchant/commit",{id:quote.id});}
+                  catch(e){const receipt=await api("/groups/"+groupId+"/merchant/receipt/"+quote.id).catch(()=>null);if(receipt?.status!=="committed")throw e;}
+                  if(mapRef.current!==m.id)return;
                   Merchant(null);
                   await refresh();
                 }).catch(() => {})
@@ -1199,10 +1206,8 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
     myTurn = b?.current?.actorId === actor?.id,
     p = game.player;
   const set = (k, v) => X((old) => ({ ...old, [k]: v }));
-  useEffect(() => {
-    Cells([]);
-    Cell(null);
-  }, [b?.current?.id, b?.id, game.revision]);
+  const moveRef=useRef(null);moveRef.current=b?.movementFingerprint;
+  useEffect(()=>{let alive=true;Cells([]);Cell(null);if(action==='move'&&myTurn&&b){api('/groups/'+groupId+'/game/movement?battleId='+b.id).then(r=>{if(alive&&r.fingerprint===moveRef.current)Cells(r.cells);}).catch(()=>{});}return()=>{alive=false;};},[b?.id,b?.movementFingerprint,action,myTurn,groupId]);
   function execute(params = x) {
     prepare("battle.action", {
       battleId: b.id,
@@ -1406,7 +1411,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
                     className={action === key ? "active" : ""}
                     onClick={() => {
                       Action(key);
-                      if (key === "move") loadMove();
+
                     }}
                   >
                     {label}

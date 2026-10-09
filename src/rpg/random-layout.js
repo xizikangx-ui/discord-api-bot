@@ -8,7 +8,17 @@ function build(m,raw={},rng=randomInt){C.requireThat(m.status==='draft','只能�
  const startX=extents[0].x+rng(0,extents[0].len),entrance=X.key(startX,0);cells[entrance]={type:'entrance',categoryId:m.categoryId};m.cells=cells;
  const target=Math.floor(Object.keys(cells).length*o.blockedPercent/100);let blocked=0;
  for(const ref of shuffled(Object.keys(cells),rng)){if(blocked>=target)break;const c=cells[ref];if(['entrance','stairs'].includes(c.type))continue;const old=C.clone(c);cells[ref]=region?{type:rng(0,2)?'water':'mountain',passable:false,categoryId:m.categoryId}:{type:'wall',categoryId:m.categoryId};try{X.validateMap(m);blocked++;}catch{cells[ref]=old;}}
- if(!Object.values(cells).some(c=>c.type==='room'||c.hasContents)){const r=Object.keys(cells).find(r=>!['entrance','stairs','wall'].includes(cells[r].type)&&X.passable(cells[r]));C.requireThat(r,'生成结果没有可用房间。');cells[r].type=region?'landmark':'room';if(region)cells[r].hasContents=true;}
+ if(!Object.values(cells).some(c=>c.type==='room'||c.hasContents)){
+  let placed=false;
+  for(const ref of Object.keys(cells).filter(r=>cells[r].type!=='entrance'&&X.passable(cells[r]))){
+   const old=cells[ref];cells[ref]={...old,type:region?'landmark':'room',...(region?{hasContents:true}:{})};
+   const [,cy]=X.xy(ref),pairs=[cy,cy+1].filter(y=>y>0&&y<rows);
+   const enough=region||pairs.every(y=>{let overlap=0,links=0;for(let x=0;x<width;x++){const a=cells[X.key(x,y-1)],b=cells[X.key(x,y)];if(a&&b)overlap++;if(['stairs','entrance'].includes(a?.type)&&['stairs','entrance'].includes(b?.type))links++;}return links>=Math.min(o.stairsMin,overlap);});
+   if(enough){try{X.validateMap(m);placed=true;break;}catch{}}
+   cells[ref]=old;
+  }
+  C.requireThat(placed,'当前尺寸和楼梯设置没有可用房间，请增加列数或减少最少楼梯连接。');
+ }
  X.validateMap(m);m.generation={mode:raw.mode||'manual',...o,extents,blocked,at:Date.now()};m.generated=false;m.maxRank=o.maxRank;m.version++;return m;
 }
 function create(state,owner,channel,name,type,mode,categoryId,rows,width,raw={},rng=randomInt){C.requireThat(['full','manual','fixed'].includes(mode),'生成方式无效。');const pool=Object.values(state.mapCategories).filter(t=>t.published&&(t.mapTypes||['indoor','region']).includes(type));if(mode==='full'){C.requireThat(pool.length,'没有适用大类。');categoryId=pool[rng(0,pool.length)].id;rows=rng(4,9);width=rng(4,9);}const category=state.mapCategories[categoryId];C.requireThat(category?.published&&(category.mapTypes||['indoor','region']).includes(type),'大类不适用于该地图类型。');const m=X.create(state,owner,channel,name,rows,width,mode==='fixed'?'fixed':'random',categoryId,type);m.maxRank=options(raw).maxRank;if(mode!=='fixed')build(m,{...raw,mode},rng);return m;}

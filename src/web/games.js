@@ -224,6 +224,8 @@ function createGames({
     return id;
   }
   async function preview(group, uid, command, params, clientId, gm = false) {
+    S.ok(typeof command === "string", "操作名称无效。");
+    G.rowsFor(command, params);
     const a = await authorize(group, uid, gm);
     S.ok(gm || P.playerCommands[command], "操作不存在。");
     if (gm)
@@ -316,6 +318,8 @@ function createGames({
     );
   }
   async function validateReferences(a, command, p, gm) {
+    const rows = G.rowsFor(command, p);
+    S.ok(p.users === undefined || Array.isArray(p.users), "参战玩家须为列表。");
     const channelIds = store.select(a.group.id, (s) =>
       [
         p.mapId && s.explorations[p.mapId]?.channelId,
@@ -337,7 +341,7 @@ function createGames({
     for (const id of [
       p.targetUid,
       ...(p.users || []),
-      ...(p.rows || []).filter((r) => r.uid).map((r) => r.uid),
+      ...rows.filter((r) => r.uid).map((r) => r.uid),
     ].filter(Boolean))
       await accounts.member(a.group.id, id);
     if (
@@ -356,7 +360,7 @@ function createGames({
     }
     if (gm && command === "templates.publish")
       S.ok(
-        p.rows.every((r) => r.kind !== "rolepanel"),
+        rows.every((r) => r.kind !== "rolepanel"),
         "网站身份请使用成员管理。",
       );
   }

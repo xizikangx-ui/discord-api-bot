@@ -18,6 +18,7 @@ import {
   BattlePanel,
   ActivitiesPanel,
 } from "./players";
+import {roomMessages,mergeMessages} from "./chat-state";
 import "./style.css";
 const date = (v) =>
   new Date(v).toLocaleTimeString("zh-CN", {
@@ -50,7 +51,8 @@ function Auth({ done }) {
   }[mode];
   async function submit(e) {
     e.preventDefault();
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current=true;
     B(true);
     E("");
     try {
@@ -62,6 +64,7 @@ function Auth({ done }) {
     } catch (e) {
       E(e.message);
     } finally {
+      busyRef.current=false;
       B(false);
     }
   }
@@ -247,6 +250,7 @@ function App() {
   const ws = useRef(null),
     active = useRef({}),
     refreshTimer = useRef(null),
+    busyRef = useRef(false),
     [mobileSide, MobileSide] = useState(false);
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
@@ -393,7 +397,8 @@ function App() {
       );
   }, [groupId, roomId]);
   async function run(fn) {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current=true;
     B(true);
     E("");
     try {
@@ -402,6 +407,7 @@ function App() {
       E(e.message);
       throw e;
     } finally {
+      busyRef.current=false;
       B(false);
     }
   }
@@ -413,36 +419,38 @@ function App() {
       }).catch(() => {});
       return;
     }
+    const targetGroup=groupId;
     await run(async () => {
       const f = await api(
-        "/groups/" + groupId + (isGM ? "/gm/previews" : "/game/preview"),
+        "/groups/" + targetGroup + (isGM ? "/gm/previews" : "/game/preview"),
         { command, params, clientId: id() },
       );
-      Preview(f);
-      R(null);
+      if(active.current.groupId===targetGroup){Preview(f);R(null);}
     }).catch(() => {});
   }
   async function receipt() {
     if (!preview) return;
     const r = await api("/groups/" + groupId + "/game/receipt/" + preview.id);
-    R(r.result || r);
     if (r.status === "committed") {
+      R(r.result);
       Preview(null);
       await refresh();
     } else N("操作状态：" + r.status + "。请保留原编号。");
   }
   async function commit() {
-    const f = preview;
+    const f = preview, targetGroup=groupId;
     await run(async () => {
       try {
-        const r = await api("/groups/" + groupId + "/game/commit", {
+        const r = await api("/groups/" + targetGroup + "/game/commit", {
           draftId: f.id,
         });
+        if(active.current.groupId!==targetGroup)return;
         R(r.result);
         Preview(null);
         N("已保存，网站通知在后台更新。");
         await refresh();
       } catch (e) {
+        if(active.current.groupId!==targetGroup)throw e;
         if (e.details) Preview((old) => ({ ...old, conflicts: e.details }));
         await receipt().catch(() => N("暂时无法确认结果，请保留原操作编号。"));
         throw e;
@@ -695,6 +703,7 @@ function App() {
                 }}
                 error={E}
                 notice={N}
+                visible={tab === "chat"}
                 onRead={refresh}
               />
             </div>
@@ -759,7 +768,7 @@ function App() {
                       <Grant {...common} />
                     </Keep>
                     <Keep show={gmTab === "maps"}>
-                      <World {...common} kind="maps" />
+                      <World {...common} kind="maps" openTemplates={() => GmTab("templates")} />
                     </Keep>
                     <Keep show={gmTab === "battles"}>
                       <World {...common} kind="battles" />
@@ -898,6 +907,7 @@ function App() {
               有效至 {new Date(preview.expiresAt).toLocaleTimeString()} ·{" "}
               {preview.id}
             </p>
+            {error&&<div className="banner error" role="alert">{error}</div>}
             <Result value={preview.preview} />
             {preview.conflicts && <Result value={preview.conflicts} />}
             <div className="toolbar">
@@ -919,7 +929,7 @@ function App() {
               >
                 查询已保存结果
               </button>
-              <button disabled={busy} onClick={() => Preview(null)}>
+              <button disabled={busy} onClick={() => {Preview(null);refresh().catch(()=>{});}}>
                 返回修改
               </button>
             </div>
@@ -971,18 +981,23 @@ function Chat({
   error,
   notice,
   onRead,
+  visible,
 }) {
-  const [messages, Messages] = useState([]),
+  const [storedMessages, Messages] = useState([]),
     [drafts, Drafts] = useState({}),
-    [attachments, Attachments] = useState([]),
-    [reply, Reply] = useState(null),
-    [kind, Kind] = useState("text"),
-    [mode, Mode] = useState("normal"),
+    [composers, Composers] = useState({}),
     [online, Online] = useState([]),
-    [sending, Sending] = useState(false);
+    [sending, Sending] = useState(false),
+    [inView, InView] = useState(false),
+    [foreground, Foreground] = useState(document.visibilityState==='visible');
+  const messages=roomMessages(storedMessages,roomId);
+  const composer=composers[roomId]||{},attachments=composer.attachments||[],reply=composer.reply||null,kind=composer.kind||'text',mode=composer.mode||'normal';
+  const change=(key,v)=>Composers(old=>{const c=old[roomId]||{},value=typeof v==='function'?v(c[key]||[]):v;return {...old,[roomId]:{...c,[key]:value}};});
+  const Attachments=v=>change('attachments',v),Reply=v=>change('reply',v),Kind=v=>change('kind',v),Mode=v=>change('mode',v);
+  const sendingRooms=useRef(new Set());
   const bottom = useRef(null),
     active = useRef(roomId),
-    client = useRef(null),
+    client = useRef({}),
     cursor = useRef(0);
   active.current = roomId;
   const room = rooms.find((r) => r.id === roomId),
@@ -997,9 +1012,7 @@ function Chat({
     );
     if (active.current === roomId)
       Messages((old) =>
-        before
-          ? [...r.filter((m) => !old.some((o) => o.id === m.id)), ...old]
-          : r,
+        mergeMessages(old,r),
       );
   }
   async function catchUp() {
@@ -1012,10 +1025,7 @@ function Chat({
       );
       if (active.current !== roomId) return;
       Messages((old) =>
-        [
-          ...old.filter((m) => !batch.some((n) => n.id === m.id)),
-          ...batch,
-        ].sort((a, b) => a.sequence - b.sequence),
+        mergeMessages(old,batch),
       );
       if (!batch.length) break;
       after = batch.at(-1).sequence;
@@ -1027,19 +1037,14 @@ function Chat({
     );
     if (active.current === roomId)
       Messages((old) =>
-        [
-          ...old.filter((m) => !fresh.some((n) => n.id === m.id)),
-          ...fresh,
-        ].sort((a, b) => a.sequence - b.sequence),
+        mergeMessages(old,fresh),
       );
   }
   useEffect(() => {
     Messages([]);
-    Attachments([]);
-    Reply(null);
-    client.current = null;
     cursor.current = 0;
     load().catch((e) => error(e.message));
+    Sending(sendingRooms.current.has(roomId));
   }, [roomId]);
   useEffect(() => {
     if (chatEvent?.type === "reconnect") {
@@ -1053,23 +1058,17 @@ function Chat({
     if (chatEvent?.data?.roomId !== roomId) return;
     if (["message", "deleted"].includes(chatEvent.type))
       Messages((old) =>
-        [...old.filter((m) => m.id !== chatEvent.data.id), chatEvent.data].sort(
-          (a, b) => a.sequence - b.sequence,
-        ),
+        mergeMessages(old,[chatEvent.data]),
       );
   }, [chatEvent, roomId]);
-  useEffect(() => {
-    if (messages.length) {
-      cursor.current = Math.max(cursor.current, messages.at(-1).sequence);
-      bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      api("/rooms/" + encodeURIComponent(roomId) + "/read", {
-        sequence: messages.at(-1).sequence,
-      }).catch(() => {});
-    }
-  }, [messages.at(-1)?.sequence]);
+  useEffect(()=>{const handler=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',handler);return()=>document.removeEventListener('visibilitychange',handler);},[]);
+  useEffect(()=>{const observer=new IntersectionObserver(([entry])=>InView(entry.isIntersecting));if(bottom.current)observer.observe(bottom.current);return()=>observer.disconnect();},[roomId]);
+  useEffect(()=>{if(messages.length)cursor.current=Math.max(cursor.current,messages.at(-1).sequence);},[messages.at(-1)?.sequence]);
+  useEffect(()=>{if(visible&&foreground&&inView&&roomId&&messages.length)api('/rooms/'+encodeURIComponent(roomId)+'/read',{sequence:messages.at(-1).sequence}).then(()=>onRead()).catch(()=>{});},[visible,foreground,inView,roomId,messages.at(-1)?.sequence]);
   async function send(e) {
     e.preventDefault();
-    if (sending || !roomId) return;
+    if (sendingRooms.current.has(roomId) || !roomId) return;
+    sendingRooms.current.add(roomId);
     Sending(true);
     error("");
     const text = drafts[roomId] || "",
@@ -1082,29 +1081,28 @@ function Chat({
       },
       signature = JSON.stringify(data),
       payload =
-        client.current?.signature === signature
-          ? client.current
+        client.current[roomId]?.signature === signature
+          ? client.current[roomId]
           : { clientId: id(), ...data, signature };
-    client.current = payload;
+    client.current[roomId] = payload;
     try {
       const m = await api(
         "/rooms/" + encodeURIComponent(roomId) + "/messages",
         payload,
       );
-      Messages((old) =>
-        [...old.filter((o) => o.id !== m.id), m].sort(
-          (a, b) => a.sequence - b.sequence,
-        ),
+      if(active.current===roomId)Messages((old) =>
+        mergeMessages(old,[m]),
       );
-      Drafts((old) => ({ ...old, [roomId]: "" }));
+      Drafts((old) => ({ ...old, [roomId]: old[roomId]===text?"":old[roomId] }));
       Attachments([]);
       Reply(null);
-      client.current = null;
+      delete client.current[roomId];
       onRead().catch(() => {});
     } catch (e) {
-      error(e.message + "；保留同一消息编号，再次发送不会重复创建。");
+      if(active.current===roomId)error(e.message + "；保留同一消息编号，再次发送不会重复创建。");
     } finally {
-      Sending(false);
+      sendingRooms.current.delete(roomId);
+      if(active.current===roomId)Sending(false);
     }
   }
   async function upload(files) {
@@ -1293,7 +1291,7 @@ function Chat({
           value={drafts[roomId] || ""}
           onChange={(e) => {
             Drafts((old) => ({ ...old, [roomId]: e.target.value }));
-            client.current = null;
+            delete client.current[roomId];
           }}
           onKeyDown={(e) => {
             if (e.ctrlKey && e.key === "Enter") send(e);
@@ -1307,7 +1305,7 @@ function Chat({
               value={kind}
               onChange={(e) => {
                 Kind(e.target.value);
-                client.current = null;
+                delete client.current[roomId];
               }}
             >
               <option value="text">普通聊天</option>

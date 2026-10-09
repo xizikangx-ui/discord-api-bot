@@ -579,6 +579,7 @@ function createWeb({
         if (b.channelId) await chat.access(uid, b.channelId);
         return answer({
           cells: await require("../rpg/movement-panel").reachable(s, b, actor),
+          fingerprint:require("../rpg/movement-panel").fingerprint(s,b,actor),
           budget: b.current?.move,
           turnId: b.current?.id,
         });
@@ -610,6 +611,11 @@ function createWeb({
           { delivery: false },
         );
         return answer(result);
+      }
+      if(rest.startsWith('/merchant/receipt/')&&!p){
+        const f=games.store.select(group,s=>s.forms[rest.slice('/merchant/receipt/'.length)]);
+        S.ok(f?.kind==='merchantTrade'&&f.owner===uid,'交易回执不属于你。','FORBIDDEN');
+        return answer({status:f.status==='done'?'committed':games.store.frozen(group)?'uncertain':'uncommitted',result:f.result});
       }
       if (rest === "/merchant/commit" && p)
         return answer(
@@ -674,7 +680,7 @@ function createWeb({
         return answer({
           channels: (await chat.rooms(group, uid))
             .filter((c) => c.kind !== "dm")
-            .map((c) => ({ id: c.id, name: c.name })),
+            .map((c) => ({ id: c.id, name: c.name, kind:c.kind })),
           roles: [],
           texts: require("../rpg/texts")
             .definitions()
@@ -780,32 +786,8 @@ function createWeb({
             ),
         });
       }
-      if (gpath === "/context/battle") {
-        const b = s.battles[u.searchParams.get("id")];
-        S.ok(b, "战斗不存在。");
-        const actor = b.actors.find(
-            (a) =>
-              a.id === (u.searchParams.get("actorId") || b.current?.actorId),
-          ),
-          character =
-            actor && require("../rpg/combat").actorCharacter(s, actor);
-        return answer({
-          actors: b.actors.map((a) => ({
-            ...a,
-            health: require("../rpg/health").snapshot(
-              require("../rpg/combat").actorCharacter(s, a),
-            ),
-            nextCost: require("../rpg/combat").opportunityCost(b, a.id),
-          })),
-          character,
-          current: b.current,
-          abilities: character
-            ? require("../rpg/combat").abilities(character)
-            : [],
-          pending: b.pending,
-          judgment: b.judgment,
-        });
-      }
+      if (gpath === "/context/battle") return answer(require("../rpg/gm-context-data").battle(s,u.searchParams.get("id"),u.searchParams.get("actorId")));
+      if (gpath === "/context/maps") return answer(require("../rpg/gm-context-data").mapOptions(s));
       if (gpath === "/drafts" && !p)
         return answer(
           Object.values(s.forms).filter(
@@ -841,6 +823,10 @@ function createWeb({
           ),
         );
       if (gpath === "/previews" && p) {
+        S.ok(
+          p.params && typeof p.params === "object" && !Array.isArray(p.params),
+          "操作参数格式无效。",
+        );
         if (p.command === "npc.portrait")
           p.params.mediaId = p.params.mediaId || p.params.uploadId;
         return answer(
@@ -866,7 +852,13 @@ function createWeb({
           revision: games.store.select(group, (s) => s.revision),
         });
       }
-      if (gpath === "/portraits" && p) return answer(await media.upload(a, p));
+      if (gpath === "/portraits" && p) {
+        const npc=s.npcTemplates[p.npcId];
+        S.ok(npc && ["avatar","illustration"].includes(p.slot),"先选择NPC模板和图片位置。");
+        const baseVersion=npc.version;
+        const uploaded=await media.upload(a,p);
+        return answer({...uploaded,baseVersion});
+      }
       if (gpath.startsWith("/media/")) {
         const result = await context.media(
           { g: group },
