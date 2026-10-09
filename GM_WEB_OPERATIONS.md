@@ -28,3 +28,5 @@
 运行依据：[React](https://react.dev/learn/build-a-react-app-from-scratch)、[Vite](https://vite.dev/guide/build.html)、[Railway HTTPS](https://docs.railway.com/networking/public-networking)、[Windows DPAPI](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata)。发布/备份证据位于当前任务的 outputs/GM_WEB_RELEASE.md，交接记录链接到该文件。
 
 1.0.1本地连接修正：读取当前已启用Windows HTTP(S)代理（或环境代理），Node内置代理支持HTTPS联网，本机地址不走代理；不改系统设置。已在这台Windows电脑经现有代理验证生产接口返回401登录要求。Bot服务逻辑与1.0.0相同，无资产升级追加。
+
+上线证据：Bot提交806f1b1、部署42053f86-2c6c-4dd9-97e4-4d4f1e58854b SUCCESS，客户端修正d7da20c只更新本地包。6518→6519、升级9审计1、写锁1、10项资产/行动/迁移核对一致，新版加密备份隔离恢复摘要一致。临时SSH已撤销；演示文件清理被自动审批拒绝，暂存在忽略目录，演示服务已停止。详见交付报告。
