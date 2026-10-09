@@ -86,6 +86,7 @@ function commands() {
   gm.addSubcommand(s=>s.setName('兑换券').setDescription('编辑兑换池、批量发券及查看兑换审计'));
   gm.addSubcommand(s=>s.setName('名词').setDescription('录入、预览发布、修改或停用名词'));
   gm.addSubcommand(s=>s.setName('行商').setDescription('编辑行商模板、出售与收购分类'));
+  gm.addSubcommand(s=>s.setName('网页').setDescription('绑定本地GM工作台或撤销已绑定设备'));
   list.push(cmd('行商','打开当前探索格的行商货单'));
   list.push(gm);
   const battle = cmd('战斗', 'GM招募、战斗操作与玩家个人面板');

@@ -197,6 +197,7 @@ function createRpg(deps) {
     timer = setInterval(() => { for (const guild of ready) {const job=tickGuild(guild).catch(e => logFailure('跑团定时处理失败。', e));tickJobs.add(job);job.finally(()=>tickJobs.delete(job));} }, 2000);
     timer.unref();
     if(store.backgroundPublications){outbox.start();backupTimer=setInterval(()=>{for(const guild of ready)store.backup(guild).catch(e=>logFailure('跑团数据库Discord备份失败，数据库存档仍为权威。',e));},300000);backupTimer.unref();}
+    gmWeb.start();
   }
   function configView(s) {
     const roles = ids => ids.map(r => '<@&' + r + '>').join('、') || '未配置';
@@ -463,6 +464,7 @@ function createRpg(deps) {
   async function gmSlash(i, member) {
     const s = snapshot(i.guildId); needGM(s, member);
     const o = i.options, sub = o.getSubcommand(), uid = i.user.id, target = o.getUser('成员')?.id;
+    if(sub==='网页')return gmWeb.bindCommand(i);
     if(sub==='行商')return merchant.slash(i,member);
     if(['兑换券','名词'].includes(sub))return features.slash(i,member);
     if (sub === '批量发放' || (sub === '发放' && !target)) return bulkIssue.start(i, member);
@@ -505,6 +507,7 @@ function createRpg(deps) {
     const result = await tx(i, st => {
       needGM(st, member);
       const p = M.player(st, target), amount = o.getInteger('数量') || 1;
+      if(['经验','属性点','发放','次数'].includes(sub))return require('./gm-service').grantOne(st,target,{'经验':'xp','属性点':'points','发放':'item','次数':'tickets'}[sub],sub==='次数'?o.getString('类型'):o.getString('物品'),amount);
       if(sub==='时运'){p.luck=num(o.getInteger('数值'),'基础时运',-9,11);return {luck:p.luck};}
       if (sub === '经验') return M.grantXP(st, target, amount);
       if (sub === '属性点') { p.points = num(p.points + amount, '累计自由点', 0, 1000000); return { points: p.points }; }
@@ -629,6 +632,12 @@ function createRpg(deps) {
     catch(e){if(!store.frozen(guild))await store.transact(guild,'offer-failed:'+C.id('j'),client.user.id,st=>{st.offers[ref].notification={status:typeof e.code==='number'&&e.code>=10000?'failed':'uncertain'};},'交易通知待核对',{delivery:false});throw e;}}
   const outbox=require('./outbox').createOutbox({store,client,logFailure,metrics,handlers:{gmNotice:story.notice,eventImage:battleEvents.publishImage,defense:publishDefenseNow,battle:publishBattleNow,map:async(g,r,f)=>{if(!store.select(g,s=>s.explorations[r]))return;await exploration.publishNow(g,r,f);},move:(g,r,f)=>exploration.publishMoveNow(g,...r.split('/'),f),corpses:(g,r,f)=>exploration.publishCorpsesNow(g,r,f),loot:(g,r,f)=>activities.publishNow(g,'loot',r,f),check:(g,r,f)=>activities.publishNow(g,'check',r,f),attempt:(g,r,f)=>activities.publishNow(g,'attempt',r,f),session:(g,r,f)=>activities.publishNow(g,'session',r,f),offer:publishOffer,rp:(g,r)=>rpPanel.publishQueued(g,...r.split('/')),rpDraft:(g,r,f)=>rpPanel.draft(g,r,f),reminder:(g,r)=>activities.remind(g,r)}});
   store.onCommit(()=>outbox.wake());
+  const webContext=require('./gm-web-context').createContext({store,client,snapshot,needGM,needConfig,textChannel,safeRoles,rolePanelView,renderer,portraits,outbox,metrics,logFailure});
+  const gmWeb=require('./gm-web').createGmWeb(webContext);
+  // The durable outbox owns these sends, independently of HTTP replies.
+  outbox.register('rolepanel',webContext.publishRolePanel);
+  outbox.register('mapCleanup',g=>mapExtra.recover(g));
+  outbox.register('manualReminder',async(g,ref)=>{const [id,intent]=ref.split('/');if(!store.select(g,st=>st.sessions[id]?.manualReminder?.authorized&&st.sessions[id]?.manualReminder?.id===intent))return;const allowed=await store.transact(g,'web-manual-reminder:'+intent,client.user.id,st=>{const r=st.sessions[id];if(!r?.manualReminder?.authorized||r.manualReminder.id!==intent)return false;r.manualReminder.authorized=false;return true;},'补发提醒授权已使用',{delivery:false});if(allowed)await activities.remind(g,id,true);});
   const { openModal, component } = createHandlers({ snapshot, tx, needGM, needConfig, owner, battle, canActor,
     configView, safeRoles, publishRoles, claim, formView, offerAccess, catalogView, pickView, publishBattle, store, textChannel, use, gmUI,selections,aoePanel,actionPanel,treatment,bulkUse });
   async function handle(i) {
@@ -666,6 +675,7 @@ function createRpg(deps) {
         /^rpg:(movement|move):/.test(i.customId) ? await movement.component(i,member) :
         i.customId.startsWith('rpg:bulkuse:') ? await bulkUse.component(i,member) :
         i.customId.startsWith('rpg:reopen:') ? await panelRecovery.component(i,member) :
+        i.customId.startsWith('rpg:gmweb:') ? await gmWeb.component(i) :
         i.customId.startsWith('rpg:merchant:') ? await merchant.component(i,member) :
         i.customId.startsWith('rpg:features:') ? await features.component(i,member) :
         i.customId.startsWith('rpg:gmstory:') ? await story.component(i,member) :
@@ -730,9 +740,9 @@ function createRpg(deps) {
     }
     return true;
   }
-  function stop(){clearInterval(timer);clearInterval(backupTimer);outbox.stop();renderer.close();metrics.close();}
-  async function drain(){await Promise.allSettled([...interactions,...tickJobs]);await outbox.drain();await Promise.allSettled([...mediaJobs]);await store.drain();}
+  function stop(){gmWeb.stop();clearInterval(timer);clearInterval(backupTimer);outbox.stop();renderer.close();metrics.close();}
+  async function drain(){await gmWeb.drain();await Promise.allSettled([...interactions,...tickJobs]);await outbox.drain();await Promise.allSettled([...mediaJobs]);await store.drain();}
   async function trackedHandle(i){const job=handle(i);interactions.add(job);try{return await job;}finally{interactions.delete(job);}}
-  return { merchant,features,story,treatment,bulkUse,movement,start, handle:trackedHandle, stop, drain, store, activities, exploration, tickGuild, portraits, outbox,metrics };
+  return { gmWeb,merchant,features,story,treatment,bulkUse,movement,start, handle:trackedHandle, stop, drain, store, activities, exploration, tickGuild, portraits, outbox,metrics };
 }
 module.exports = { createRpg, commands, dangerBits };

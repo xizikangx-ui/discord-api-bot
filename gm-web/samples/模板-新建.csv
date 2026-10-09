@@ -1,0 +1,2 @@
+﻿templateKind,id,baseVersion,name,description,enabled,effects
+trait,,0,示例耐力,编辑样例后再发布,true,"[{""target"":""attr:constitution"",""op"":""add"",""value"":1}]"

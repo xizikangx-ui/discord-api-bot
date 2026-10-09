@@ -11,3 +11,7 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+gm-web/runtime/
+gm-web/release/
+gm-web-demo/

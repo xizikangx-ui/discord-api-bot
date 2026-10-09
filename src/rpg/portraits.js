@@ -26,11 +26,11 @@ function createPortraits({client,channel,encrypt,decrypt,fetcher=fetch,snapshot,
   const cache=new Map();
   async function upload(guild,uid,attachment) {
     ok(attachment.size<=LIMIT,'每张图片最多4 MiB。');
-    const bytes=await readBounded(await fetcher(attachment.url,{signal:AbortSignal.timeout(20000)}),LIMIT),ext=format(bytes),id=C.id('image');
+    const bytes=attachment.bytes||await readBounded(await fetcher(attachment.url,{signal:AbortSignal.timeout(20000)}),LIMIT),ext=format(bytes),id=attachment.id||C.id('image');
     const ch=channel();ok(ch?.send&&ch.guild,'私密图片存储频道未连接。');
     const file=Buffer.from(encrypt({kind:'rpg-portrait',guildId:guild,id,owner:uid,ext,hash:hash(bytes),body:bytes.toString('base64')}));
     ok(file.length<(ch.guild.maximumFileSize||10*1024*1024),'加密图片超过存储频道附件限制。');
-    const message=await ch.send({content:'discord-api-bot-rpg-image:'+guild+':'+id,allowedMentions:{parse:[]},files:[{attachment:file,name:id+'.json.enc'}]});
+    const message=await ch.send({content:'discord-api-bot-rpg-image:'+guild+':'+id,allowedMentions:{parse:[]},...(attachment.id?{nonce:id,enforceNonce:true}:{}),files:[{attachment:file,name:id+'.json.enc'}]});
     return {id,messageId:message.id,ext,hash:hash(bytes),size:bytes.length};
   }
   async function load(guild,ref) {

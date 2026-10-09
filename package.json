@@ -6,8 +6,10 @@
   "main": "src/bot.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --use-env-proxy src/bot.js",
-    "test:rpg": "node --test test/rpg.test.js test/rpg-concurrency.test.js test/rpg-response.test.js test/rpg-action-layout.test.js test/rpg-visual-rp.test.js test/rpg-features.test.js test/rpg-interaction.test.js",
-    "test:rpg:postgres": "node --test test/rpg-postgres.test.js"
+    "test:rpg": "node --test test/rpg.test.js test/rpg-concurrency.test.js test/rpg-response.test.js test/rpg-action-layout.test.js test/rpg-visual-rp.test.js test/rpg-features.test.js test/rpg-interaction.test.js test/rpg-gm-web.test.js",
+    "test:rpg:postgres": "node --test test/rpg-postgres.test.js",
+    "build:gm-web": "npm --prefix gm-web ci --no-fund && npm --prefix gm-web run build",
+    "test:gm-web": "npm --prefix gm-web test"
   },
   "engines": {
     "node": ">=24.5"

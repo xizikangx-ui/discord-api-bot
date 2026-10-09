@@ -1,0 +1,10 @@
+const path=require('node:path'),fs=require('node:fs');
+const {harness,seed}=require('../../test/helpers/gm-web-fixture.cjs');
+const {createLocal}=require('../local/server.cjs');
+const F=require('../../src/rpg/forms'),B=require('../../src/rpg/combat'),X=require('../../src/rpg/exploration');
+(async()=>{const hooks=[],s=seed(),gm='123456789012345678';
+const f=F.create(s,gm,'mapcategory');f.data.name='废弃建筑';const cat=F.publish(s,f);X.create(s,gm,'123456789012345679','灰港研究所',3,4,'random',cat.id);
+const b=B.createBattle(s,'123456789012345679',gm,'灰港 · 隔离演习');for(let n=1;n<=20;n++){B.join(s,b,String(n));b.actors[n-1].team=n>10?'enemy':'ally';}b.status='paused';
+const renderer=require('../../src/rpg/map-image').createRenderer({portraits:{load:async()=>null},logFailure:()=>{}});
+const h=await harness({after:f=>hooks.push(f)},{seed:s,context:({store,client})=>require('../../src/rpg/gm-web-context').createContext({store,client,renderer,outbox:{active:new Set()}})});await h.bind();const [guildId,deviceId,secret]=h.token().split('.');const directory=path.join(__dirname,'../gm-web-demo');fs.mkdirSync(directory,{recursive:true});fs.writeFileSync(path.join(directory,'credential.bin'),JSON.stringify({guildId,deviceId,secret,remote:h.url}));const local=createLocal({directory,protect:async b=>b,remoteUrl:h.url,allowTestHttp:true,port:47832});const address=await local.start();console.log(address.url);
+process.on('SIGINT',async()=>{await local.stop();renderer.close();for(const hook of hooks)await hook();process.exit(0);});})();

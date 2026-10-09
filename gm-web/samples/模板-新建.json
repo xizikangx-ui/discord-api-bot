@@ -1,0 +1,18 @@
+[
+  {
+    "kind": "trait",
+    "baseVersion": 0,
+    "data": {
+      "name": "示例耐力",
+      "description": "导入后请核对发布",
+      "enabled": true,
+      "effects": [
+        {
+          "target": "attr:constitution",
+          "op": "add",
+          "value": 1
+        }
+      ]
+    }
+  }
+]

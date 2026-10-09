@@ -131,7 +131,7 @@ function create(state, owner, kind, itemKind, existingId) {
   if(kind==='npc'&&old&&!data.quantities)data.quantities=C.clone(old.itemQuantities||{});
   if (kind === 'condition' && old) for (const s of C.SEVERITIES) data.levels[s] = { ...defaults(kind).levels[s], ...(old.levels[s] || {}), enabled: !!old.levels[s] };
   const form = { id: C.id('f'), owner, kind, existingId: existingId || null, data, page: 0, field: 0, choicePage: 0,
-    effectOp: 'add', createdAt: Date.now() };
+    effectOp: 'add', createdAt: Date.now(), baseTemplateVersion: old?.version || 0, baseTemplateFingerprint: old ? require('./gm-service').fingerprint({...old,version:undefined,portraits:undefined}) : null };
   state.forms[form.id] = form; return form;
 }
 function owned(state, formId, owner) { const f = state.forms[formId]; ok(f && f.owner === owner, '草稿不存在或不属于你。'); return f; }
@@ -167,7 +167,7 @@ function view(state, form, preview = false) {
       U.button('formedit:' + form.id, '编辑：' + selected.label, U.D.ButtonStyle.Primary),
       U.button('formpreview:' + form.id, '预览'), U.button('formdetail:' + form.id, '查看当前字段全文')),
     U.row(U.button('formpublish:' + form.id, form.kind === 'rolepanel' ? '发布领取面板' : '发布模板', U.D.ButtonStyle.Success),
-      U.button('formexit:' + form.id, '保存并退出'), U.button('formdelete:' + form.id, '删除草稿', U.D.ButtonStyle.Danger))
+      ...(form.existingId?[U.button('formrebasepreview:'+form.id,'核对最新版本')]:[]), U.button('formexit:' + form.id, '保存并退出'), U.button('formdelete:' + form.id, '删除草稿', U.D.ButtonStyle.Danger))
   ]);
   if(form.kind==='npc')result.components.push(U.row(U.button('npcui:f:'+form.id+':_:home','NPC自动操作 / 装备槽位',U.D.ButtonStyle.Primary)));
   if(form.kind==='npc')result.rpgPortraits=form.data.portraits || {};
@@ -225,6 +225,7 @@ function effectsView(state, form) {
   ]);
 }
 function publish(state, form) {
+  if(form.existingId&&!form.variantParent){const source={item:'catalog',skill:'skillTemplates',trait:'traits',condition:'conditionTemplates',npc:'npcTemplates',mapcategory:'mapCategories',room:'roomTemplates',rolepanel:'rolePanels',checkskill:'checkSkillTemplates'}[form.kind];const live=state[source]?.[form.existingId];ok(live,'模板已删除。');ok(form.baseTemplateVersion!==undefined,'旧修改草稿缺少版本基线，请查看最新模板差异后重新确认；填写内容仍保留。');const compatiblePortrait=form.kind==='npc'&&form.baseTemplateFingerprint===require('./gm-service').fingerprint({...live,version:undefined,portraits:undefined});if(!compatiblePortrait)require('./gm-service').version(live.version,form.baseTemplateVersion);}
   const data = C.clone(form.data);
   let result;
   if(form.variantParent){const V=require('./room-variants'),parent=owned(state,form.variantParent.formId,form.owner);ok((parent.variantVersion||0)===form.variantParent.version,'主房间变种已修改，请重新编辑。');const v=parent.data.variants.find(v=>v.id===form.variantParent.id);ok(v,'变种已不存在。');const checked=require('./exploration').validateRoom(state,data,true);v.overrides=Object.fromEntries(V.KEYS.filter(k=>JSON.stringify(checked[k])!==JSON.stringify(parent.data[k])).map(k=>[k,C.clone(checked[k])]));parent.variantVersion=(parent.variantVersion||0)+1;form.done=true;return {id:v.id,name:v.name};}
@@ -268,6 +269,7 @@ function publish(state, form) {
   }
   result.published=data.enabled!==false;
   form.publishedId = result.id; form.existingId = result.id;
+  form.baseTemplateVersion = result.version; form.baseTemplateFingerprint=require('./gm-service').fingerprint({...result,version:undefined,portraits:undefined});
   return result;
 }
 module.exports = { get, set, defaults, fields, create, owned, display, view, options, choiceView, setChoice, effectsView, publish };

@@ -82,6 +82,6 @@ function createOutbox({ store, handlers, client, logFailure, metrics, concurrenc
   function start() { if (!stopped) return; stopped = false; timer = setInterval(wake, 250); timer.unref(); wake(); }
   async function drain() { while (active.size) await new Promise(resolve => setTimeout(resolve, 20)); }
   function stop() { stopped = true; clearInterval(timer); }
-  return { start, stop, wake, drain, active };
+  return { start, stop, wake, drain, active, register(kind,handler){handlers[kind]=handler;} };
 }
 module.exports = { fingerprint, put, derive, createOutbox,needsRecovery };

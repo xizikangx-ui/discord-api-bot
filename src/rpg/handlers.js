@@ -60,6 +60,11 @@ function createHandlers(context) {
     const s = snapshot(i.guildId), formId = args[0], f = F.owned(s, formId, i.user.id);
     if (f.kind === 'rolepanel') needConfig(member); else needGM(s, member);
     if (action === 'formpreview') return F.view(s, f, true);
+    if(action==='formrebasepreview'){
+      const source=require('./gm-service').KINDS[f.kind],live=s[source]?.[f.existingId];ok(live,'原模板不存在。');
+      return payload('核对修改草稿与最新模板','原填写内容保留；确认将基线更新到 v'+live.version+'。\n\n最新模板：\n'+JSON.stringify(live,null,2).slice(0,1500)+'\n\n你的草稿：\n'+JSON.stringify(f.data,null,2).slice(0,1500),[row(button('formrebaseconfirm:'+formId+':'+live.version,'已核对差异，采用当前基线',D.ButtonStyle.Danger),button('formback:'+formId,'返回修改'))]);
+    }
+    if(action==='formrebaseconfirm'){await tx(i,st=>{const f=F.owned(st,formId,i.user.id),live=st[require('./gm-service').KINDS[f.kind]]?.[f.existingId];ok(live?.version===Number(args[1]),'模板再次变化，请重新核对。');f.baseTemplateVersion=live.version;return {id:f.id,version:live.version};},'核对旧模板草稿基线');return F.view(snapshot(i.guildId),F.owned(snapshot(i.guildId),formId,i.user.id));}
     if (action === 'formdetail') {
       const def = F.fields(f)[f.field];
       return payload('字段全文 · ' + def.label, F.display(F.get(f.data, def.key), def, s, 4000),

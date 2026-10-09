@@ -1,0 +1,17 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),{spawnSync}=require('node:child_process');
+const root=path.resolve(__dirname,'..'),out=path.resolve(process.argv[2]||path.join(root,'release'));
+const destination=path.join(out,'荒原档案-GM工作台');
+if(fs.existsSync(destination))throw Error('交付目录已存在，请指定新的输出目录。');
+fs.mkdirSync(destination,{recursive:true});
+for(const name of ['dist','local','samples','启动GM工作台.vbs','使用说明.md','connection.json','Node-LICENSE.txt'])fs.cpSync(path.join(root,name),path.join(destination,name),{recursive:true});
+fs.mkdirSync(path.join(destination,'runtime'));
+fs.copyFileSync(process.execPath,path.join(destination,'runtime/node.exe'));
+fs.mkdirSync(path.join(destination,'licenses'));
+for(const name of ['react','react-dom'])fs.copyFileSync(path.join(root,'node_modules',name,'LICENSE'),path.join(destination,'licenses',name+'.txt'));
+const files=[];function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const file=path.join(dir,entry.name);if(entry.isDirectory())walk(file);else files.push({path:path.relative(destination,file).replaceAll('\\','/'),bytes:fs.statSync(file).size,sha256:crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')});}}walk(destination);
+fs.writeFileSync(path.join(destination,'package-manifest.json'),JSON.stringify({version:'1.0.0',upgrade:9,node:process.version,platform:process.platform,arch:process.arch,files},null,2));
+const archive=path.join(out,'荒原档案-GM工作台-Windows-x64.zip');
+const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command','Compress-Archive -LiteralPath $env:GM_PACKAGE_DIR -DestinationPath $env:GM_PACKAGE_ZIP -CompressionLevel Optimal'],{windowsHide:true,env:{...process.env,GM_PACKAGE_DIR:destination,GM_PACKAGE_ZIP:archive},encoding:'utf8'});
+if(result.status)throw Error('压缩失败：'+result.stderr);
+console.log(JSON.stringify({directory:destination,archive,bytes:fs.statSync(archive).size,sha256:crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex')}));

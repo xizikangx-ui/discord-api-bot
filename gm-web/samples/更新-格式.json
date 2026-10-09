@@ -1,0 +1,13 @@
+[
+  {
+    "kind": "trait",
+    "id": "填写现有模板稳定ID",
+    "baseVersion": 1,
+    "data": {
+      "name": "修改后的名称",
+      "description": "请先导出现有内容再修改",
+      "enabled": true,
+      "effects": []
+    }
+  }
+]
