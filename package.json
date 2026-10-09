@@ -9,16 +9,21 @@
     "test:rpg": "node --test test/rpg.test.js test/rpg-concurrency.test.js test/rpg-response.test.js test/rpg-action-layout.test.js test/rpg-visual-rp.test.js test/rpg-features.test.js test/rpg-interaction.test.js test/rpg-gm-web.test.js",
     "test:rpg:postgres": "node --test test/rpg-postgres.test.js",
     "build:gm-web": "npm --prefix gm-web ci --no-fund && npm --prefix gm-web run build",
-    "test:gm-web": "npm --prefix gm-web test"
+    "test:gm-web": "npm --prefix gm-web test",
+    "start:web": "node --env-file-if-exists=.env src/web/server.js",
+    "build:web": "npm --prefix web ci --no-fund && npm --prefix web run build",
+    "test:web": "node --test test/web.test.js test/web-postgres.test.js"
   },
   "engines": {
     "node": ">=24.5"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1148.0",
     "@resvg/resvg-js": "^2.6.2",
     "discord.js": "^14.22.1",
     "dotenv": "^16.6.1",
     "pg": "^8.23.1",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "ws": "^8.22.0"
   }
 }

@@ -6,7 +6,7 @@ const COLLECTIONS = new Set(['players', 'characterDrafts', 'forms', 'catalog', '
 const canonical = value => JSON.stringify(value, (_, v) => v && !Array.isArray(v) && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
 const digest = state => createHash('sha256').update(canonical(state)).digest('hex');
 function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool, schema = 'rpg', metrics, onLeaseLost = () => {} }) {
-  C.requireThat(/^(rpg|rpg_test_[a-z0-9_]+)$/.test(schema), '数据库命名空间不合法。');
+  C.requireThat(/^(rpg|rpg_web|rpg_test_[a-z0-9_]+)$/.test(schema), '数据库命名空间不合法。');
   const pool = suppliedPool || new (require('pg').Pool)({ connectionString, max: 5, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30000, statement_timeout: 10000, application_name: 'discord-rpg' });
   const table = name => '"' + schema + '".' + name;
   let initialized, lease, heartbeat, lost = false;
@@ -21,7 +21,7 @@ function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool
   }
   async function init() {
     if (!initialized) initialized = (async () => {
-      await pool.query('CREATE SCHEMA IF NOT EXISTS "' + schema + '"');
+      if (!(await pool.query('SELECT 1 FROM pg_namespace WHERE nspname=$1', [schema])).rowCount) await pool.query('CREATE SCHEMA "' + schema + '"');
       await pool.query(`CREATE TABLE IF NOT EXISTS ${table('guilds')} (guild_id text PRIMARY KEY, revision bigint NOT NULL, metadata bytea NOT NULL, imported_message_id text, imported_revision bigint, imported_digest text, updated_at timestamptz NOT NULL DEFAULT now());
         CREATE TABLE IF NOT EXISTS ${table('objects')} (guild_id text NOT NULL REFERENCES ${table('guilds')}(guild_id), collection text NOT NULL, object_id text NOT NULL, payload bytea NOT NULL, PRIMARY KEY(guild_id,collection,object_id));
         CREATE TABLE IF NOT EXISTS ${table('audit')} (guild_id text NOT NULL REFERENCES ${table('guilds')}(guild_id), sequence bigint NOT NULL, operation_id text NOT NULL, payload bytea NOT NULL, PRIMARY KEY(guild_id,sequence));

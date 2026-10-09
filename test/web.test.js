@@ -1,0 +1,149 @@
+"use strict";
+const test = require("node:test"),
+  assert = require("node:assert/strict"),
+  crypto = require("node:crypto");
+const S = require("../src/web/security"),
+  L = require("../src/web/library"),
+  C = require("../src/rpg/constants"),
+  M = require("../src/rpg/model"),
+  P = require("../src/web/game-service");
+test("website ciphertext authenticates both content and record identity", () => {
+  const c = S.codec(crypto.randomBytes(32).toString("base64")),
+    b = c.seal("message", "id", { text: "隐私内容" });
+  assert.ok(!b.includes(Buffer.from("隐私内容")));
+  assert.deepEqual(c.open("message", "id", b), { text: "隐私内容" });
+  assert.throws(() => c.open("message", "another", b));
+  const broken = JSON.parse(b);
+  broken.data = Buffer.from("tampered").toString("base64");
+  assert.throws(() =>
+    c.open("message", "id", Buffer.from(JSON.stringify(broken))),
+  );
+});
+test("passwords use asynchronous scrypt, unique salts and verification", async () => {
+  const p = await S.password("a long test password");
+  assert.equal(p.algorithm, "scrypt-131072-8-1");
+  assert.equal(await S.password("a long test password", p), true);
+  assert.equal(await S.password("another long password", p), false);
+  assert.notEqual((await S.password("a long test password")).salt, p.salt);
+  await assert.rejects(S.password("short"));
+});
+test("public library preserves modified templates and frozen inventory snapshots", () => {
+  const s = C.newState("web-test"),
+    t = { id: "item", name: "新版物品", published: true, version: 1 },
+    entry = {
+      id: "catalog:item",
+      collection: "catalog",
+      templateId: "item",
+      version: 1,
+      template: t,
+    };
+  L.applySync(s, [entry], L.planSync(s, [entry]));
+  const frozen = JSON.parse(JSON.stringify(t));
+  s.players.a = { inventory: { i: { snapshot: frozen } } };
+  s.catalog.item.name = "本地修改";
+  const next = {
+      ...entry,
+      version: 2,
+      template: { ...t, name: "公共更新", version: 2 },
+    },
+    preview = L.planSync(s, [next]);
+  assert.equal(preview.conflicts.length, 1);
+  L.applySync(s, [next], preview);
+  assert.equal(s.catalog.item.name, "本地修改");
+  L.applySync(s, [next], L.planSync(s, [next]), {
+    resolutions: { "catalog:item": "replace" },
+  });
+  assert.equal(s.catalog.item.name, "公共更新");
+  assert.equal(frozen.name, "新版物品");
+  assert.throws(() => L.applySync(s, [next], preview), /变化/);
+});
+test("public library missing dependencies are held for GM resolution", () => {
+  const s = C.newState("web-test"),
+    e = {
+      id: "roomTemplates:r",
+      collection: "roomTemplates",
+      templateId: "r",
+      version: 1,
+      template: { id: "r", npcIds: ["missing"] },
+    };
+  const p = L.planSync(s, [e]);
+  assert.equal(p.changes.length, 0);
+  assert.equal(p.conflicts[0].reason, "缺少依赖");
+});
+test("public synchronization keeps local versions monotonic without creating false local conflicts", () => {
+  const state = C.newState("library-versions");
+  state.catalog.item = {
+    id: "item",
+    name: "旧本地",
+    version: 18,
+    published: true,
+  };
+  const entry = {
+    id: "catalog:item",
+    collection: "catalog",
+    templateId: "item",
+    version: 1,
+    template: { id: "item", name: "公共内容", version: 1, published: true },
+  };
+  L.applySync(state, [entry], L.planSync(state, [entry]), {
+    resolutions: { "catalog:item": "replace" },
+  });
+  assert.equal(state.catalog.item.version, 19);
+  const next = {
+    ...entry,
+    version: 2,
+    template: { ...entry.template, version: 2, name: "第二版" },
+  };
+  assert.equal(L.planSync(state, [next]).conflicts.length, 0);
+  L.applySync(state, [next], L.planSync(state, [next]));
+  assert.equal(state.catalog.item.version, 20);
+  assert.equal(state.catalog.item.name, "第二版");
+});
+test("website player projection does not expose unvisited rooms or unopened container contents", () => {
+  const s = C.newState("web-test"),
+    p = M.newCharacter("玩家", {
+      strength: 5,
+      constitution: 5,
+      mind: 5,
+      appearance: 5,
+      intelligence: 5,
+      agility: 5,
+      knowledge: 5,
+    });
+  p.userId = "a";
+  s.players.a = p;
+  s.explorations.map = {
+    id: "map",
+    name: "地图",
+    status: "active",
+    width: 2,
+    floors: 1,
+    participants: {},
+    revealed: { "0,0": true },
+    cells: {
+      "0,0": {
+        type: "room",
+        room: {
+          id: "r",
+          snapshot: { name: "可见" },
+          encounter: "resolved",
+          containers: [
+            {
+              id: "box",
+              box: "工具箱",
+              status: "ready",
+              result: { secret: "hidden" },
+            },
+          ],
+          supplies: [],
+        },
+      },
+      "1,0": { type: "room", room: { snapshot: { name: "秘密BOSS" } } },
+    },
+    rps: {},
+  };
+  const v = P.playerView(s, "a");
+  assert.equal(v.maps[0].cells["1,0"].hidden, true);
+  assert.equal(v.maps[0].cells["0,0"].room.containers[0].result, undefined);
+  assert.ok(!JSON.stringify(v).includes("秘密BOSS"));
+});

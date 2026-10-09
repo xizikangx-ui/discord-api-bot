@@ -36,6 +36,7 @@ function createRpg(deps) {
   function snapshot(guild) { ok(ready.has(guild), '跑团存档正在读取或读取失败，暂未启用。'); return store.snapshot(guild); }
   const navigation = createNavigation(snapshot,store.select);
   const needGM = (s, member) => ok(U.gm(s, member), '需要本服务器配置的GM身份组。');
+  const publicLibrary=require('./library-sync').createLibrarySync({store,needGM,client,logFailure});
   const needConfig = member => ok(member.permissions.has(D.PermissionFlagsBits.ManageGuild), '配置面板需要“管理服务器”权限。');
   const owner = (i, uid) => ok(uid === i.user.id, '该个人操作面板不属于你，请重新打开自己的面板。');
   const tx = (i, fn, label) => store.transact(i.guildId, i.id, i.user.id, fn, label || i.commandName || i.customId.split(':')[1]);
@@ -197,7 +198,7 @@ function createRpg(deps) {
     timer = setInterval(() => { for (const guild of ready) {const job=tickGuild(guild).catch(e => logFailure('跑团定时处理失败。', e));tickJobs.add(job);job.finally(()=>tickJobs.delete(job));} }, 2000);
     timer.unref();
     if(store.backgroundPublications){outbox.start();backupTimer=setInterval(()=>{for(const guild of ready)store.backup(guild).catch(e=>logFailure('跑团数据库Discord备份失败，数据库存档仍为权威。',e));},300000);backupTimer.unref();}
-    gmWeb.start();
+    gmWeb.start();publicLibrary.start();
   }
   function configView(s) {
     const roles = ids => ids.map(r => '<@&' + r + '>').join('、') || '未配置';
@@ -464,6 +465,7 @@ function createRpg(deps) {
   async function gmSlash(i, member) {
     const s = snapshot(i.guildId); needGM(s, member);
     const o = i.options, sub = o.getSubcommand(), uid = i.user.id, target = o.getUser('成员')?.id;
+    if(sub==='公共库')return publicLibrary.panel(i);
     if(sub==='网页')return gmWeb.bindCommand(i);
     if(sub==='行商')return merchant.slash(i,member);
     if(['兑换券','名词'].includes(sub))return features.slash(i,member);
@@ -675,6 +677,7 @@ function createRpg(deps) {
         /^rpg:(movement|move):/.test(i.customId) ? await movement.component(i,member) :
         i.customId.startsWith('rpg:bulkuse:') ? await bulkUse.component(i,member) :
         i.customId.startsWith('rpg:reopen:') ? await panelRecovery.component(i,member) :
+        i.customId.startsWith('rpg:library:') ? await publicLibrary.component(i) :
         i.customId.startsWith('rpg:gmweb:') ? await gmWeb.component(i) :
         i.customId.startsWith('rpg:merchant:') ? await merchant.component(i,member) :
         i.customId.startsWith('rpg:features:') ? await features.component(i,member) :
@@ -740,8 +743,8 @@ function createRpg(deps) {
     }
     return true;
   }
-  function stop(){gmWeb.stop();clearInterval(timer);clearInterval(backupTimer);outbox.stop();renderer.close();metrics.close();}
-  async function drain(){await gmWeb.drain();await Promise.allSettled([...interactions,...tickJobs]);await outbox.drain();await Promise.allSettled([...mediaJobs]);await store.drain();}
+  function stop(){publicLibrary.stop();gmWeb.stop();clearInterval(timer);clearInterval(backupTimer);outbox.stop();renderer.close();metrics.close();}
+  async function drain(){await publicLibrary.drain();await gmWeb.drain();await Promise.allSettled([...interactions,...tickJobs]);await outbox.drain();await Promise.allSettled([...mediaJobs]);await store.drain();}
   async function trackedHandle(i){const job=handle(i);interactions.add(job);try{return await job;}finally{interactions.delete(job);}}
   return { gmWeb,merchant,features,story,treatment,bulkUse,movement,start, handle:trackedHandle, stop, drain, store, activities, exploration, tickGuild, portraits, outbox,metrics };
 }

@@ -5,7 +5,7 @@ const KINDS={item:'catalog',skill:'skillTemplates',checkskill:'checkSkillTemplat
 function error(message,code='VALIDATION'){const e=Error(message);e.code=code;throw e;}
 function version(actual,expected){if(Number(actual||0)!==Number(expected))error('内容已被修改，请查看差异并重新确认。','CONFLICT');}
 const volatile=new Set(['messageId','auxiliaryMessages','boardPublication','notifiedTurn','notifiedPause','publicEvents','npcCards','history','recent','events','notification','publication','defenseNotifications','webPublication']);
-function fingerprint(value){return createHash('sha256').update(JSON.stringify(value, (k,v)=>volatile.has(k)?undefined:v)).digest('hex');}
+function fingerprint(value){return createHash('sha256').update(JSON.stringify(value, (k,v)=>volatile.has(k)?undefined:v)??'null').digest('hex');}
 function publishBatch(s,rows,owner){
   ok(Array.isArray(rows)&&rows.length>0&&rows.length<=100,'每批录入1—100条。');
   const ids=new Set(),results=[];

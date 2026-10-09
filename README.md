@@ -4,6 +4,12 @@
 
 公开版本不包含 `.env`、`node_modules/` 或 `data/` 运行数据。隐私政策见 [PRIVACY.md](PRIVACY.md)，特权意图审核准备资料见 [PRIVILEGED_INTENT_REVIEW.md](PRIVILEGED_INTENT_REVIEW.md)。
 
+## 独立在线跑团与聊天
+
+[打开荒原档案网站](https://wasteland-web-production.up.railway.app)。邀请注册、独立账号、多团、聊天/图片/RP/掷骰/私聊、玩家界面和 GM 工作台；无需 Discord。网站与 Discord 共用规则和公开模板，角色、资产、地图、战斗及消息独立。首页使用网页登录，API 地址不作为首页。
+
+首次管理员使用私密交付文件初始化；说明、部署变量、权限、备份及恢复见 [WEB_OPERATIONS.md](WEB_OPERATIONS.md)，入口覆盖见 [WEB_FEATURE_COVERAGE.md](WEB_FEATURE_COVERAGE.md)。开发使用 `npm run build:web`、`npm run test:web`，生产独立服务入口为 `Dockerfile.web`。
+
 ## 跑团系统（服务器 1549280540505411635）
 
 存储迁移、并发任务、备份与回滚见 [RPG_OPERATIONS.md](RPG_OPERATIONS.md)。个人操作提交成功后先返回文字和按钮，图片及公共频道刷新在后台进行。每场战斗的每个 NPC 固定更新一张公开操作卡；玩家操作独立留存，同一行动机会内的移动继续合并。完整骰点、事件和死亡奖励审计保留。

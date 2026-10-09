@@ -5,7 +5,8 @@ const { migrate } = require('./activities');
 
 // A failed Discord write is not retried with fresh dice. The canonical attachment
 // must be read first; unresolved outcomes freeze this guild until a GM recovers it.
-function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt, fetcher = fetch, database, allowImport = false, backgroundPublications = !!database, metrics }) {
+function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt, fetcher = fetch, database, allowImport = false, backgroundPublications = !!database, metrics, systemActorId, deriveDelivery }) {
+  const actor = () => systemActorId || client.user.id;
   const states = new Map(), messages = new Map(), queues = new Map(), frozen = new Map();
   const depths = new Map(), listeners = new Set(), backupMessages = new Map(), backedUp = new Map(), backupJobs = new Map();
   const loadedDatabaseGuilds = new Set();
@@ -91,7 +92,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
     const migration = migrate(state);
     if (migration) {
       state.revision++;
-      state.events.push({ id: 'rpg-upgrade-' + state.upgrade, at: Date.now(), actorId: client.user.id, label: '跑团存档升级', result: migration, revision: state.revision });
+      state.events.push({ id: 'rpg-upgrade-' + state.upgrade, at: Date.now(), actorId: actor(), label: '跑团存档升级', result: migration, revision: state.revision });
       if (database) await database.save(guild, before, state); else await persist(guild, state);
     }
     states.set(guild, state); frozen.delete(guild);
@@ -114,7 +115,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       next.events.push({ id: operation, at: Date.now(), actorId, label, revision: next.revision, result: C.clone(savedResult) });
       // Interaction IDs cannot be reused after 24h. Full audit entries remain.
       for (const [key, receipt] of Object.entries(next.receipts)) if (Date.now() - receipt.at > 86400000) delete next.receipts[key];
-      if (backgroundPublications && options.delivery !== false) require('./outbox').derive(before, next);
+      if (backgroundPublications && options.delivery !== false) (deriveDelivery || require('./outbox').derive)(before, next);
       computeDone?.();
       try {
         if (database) await database.save(guild, before, next); else await persist(guild, next);
@@ -147,7 +148,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
   async function enqueue(guild, kind, ref, options = {}) {
     const key = kind + ':' + ref, job = select(guild, st => st.deliveryJobs?.[key]);
     if (job && ['pending', 'running'].includes(job.status) && !options.force) return key;
-    await transact(guild, 'outbox-enqueue:' + C.id('j'), client.user.id, st => require('./outbox').put(st, kind, ref, options), '安排后台公示', { delivery: false });
+    await transact(guild, 'outbox-enqueue:' + C.id('j'), actor(), st => require('./outbox').put(st, kind, ref, options), '安排后台公示', { delivery: false });
     return key;
   }
   async function backup(guild) {
@@ -187,7 +188,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       if (copy.key === 'latest') backedUp.set(guild, state.revision);
     }
   }
-  return { load, recover, transact, snapshot, select, enqueue, backup, database, backgroundPublications, get clientId(){return client.user?.id;},
+  return { load, recover, transact, snapshot, select, enqueue, backup, database, backgroundPublications, get clientId(){return systemActorId || client.user?.id;},
     guilds: () => [...states.keys()], drain: () => Promise.allSettled([...queues.values(),...backupJobs.values()]), onCommit: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     freeze: guild => frozen.set(guild, '运行锁已丢失'), frozen: guild => frozen.has(guild), pack };
 }
