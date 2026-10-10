@@ -2,6 +2,7 @@ import {gridCells} from '../../gm-web/src/ui-state';
 import React, { useState, useEffect, useRef } from "react";
 import { api, id, mediaUrl } from "./api";
 import { Result } from "../../gm-web/src/main";
+import { BattleLoot } from "./battle-loot";
 const statuses={active:'进行中',paused:'已暂停',ended:'已结束',recruiting:'招募中',draft:'草稿',editing:'协商中',ready:'待双方同意',completed:'已完成',cancelled:'已取消',expired:'已过期',locked:'未开启',opened:'已开启',claimed:'已领取'};
 const attrs = {
     strength: "力量",
@@ -899,7 +900,7 @@ function AdvancedInventory({ item, selected, p, form, set, prepare }) {
     </details>
   );
 }
-export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
+export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation }) {
   const [mid, Map] = useState(""),
     [cell, Cell] = useState(""),
     [key, Key] = useState(""),
@@ -911,6 +912,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
     part = m?.participants[game.player?.userId],
     room = m?.cells[part?.cell]?.room;
   mapRef.current=m?.id;
+  useEffect(()=>{if(navigation?.type==='map')Map(navigation.id);},[navigation?.key]);
   useEffect(()=>{Cell("");Image("");Merchant(null);},[m?.id]);
   useEffect(()=>{if(image&&m)Image("/api/web/v1/groups/"+groupId+"/map-image/"+m.id+"?v="+game.revision);},[game.revision,m?.id]);
   return (
@@ -1138,7 +1140,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
     </>
   );
 }
-export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
+export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navigation }) {
   const [bid, Battle] = useState(""),
     [action, Action] = useState("attack"),
     [x, X] = useState({
@@ -1157,6 +1159,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
     myTurn = b?.current?.actorId === actor?.id,
     p = game.player;
   const set = (k, v) => X((old) => ({ ...old, [k]: v }));
+  useEffect(()=>{if(navigation?.type==='battle'){Battle(navigation.id);Image(false);}},[navigation?.key]);
   const moveRef=useRef(null);moveRef.current=b?.movementFingerprint;
   useEffect(()=>{let alive=true;Cells([]);Cell(null);if(action==='move'&&myTurn&&b){api('/groups/'+groupId+'/game/movement?battleId='+b.id).then(r=>{if(alive&&r.fingerprint===moveRef.current)Cells(r.cells);}).catch(()=>{});}return()=>{alive=false;};},[b?.id,b?.movementFingerprint,action,myTurn,groupId]);
   function execute(params = x) {
@@ -1649,27 +1652,11 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
           )}
         </section>
       )}
-      {game.corpses
-        .filter((c) => c.battleId === b?.id)
-        .map((c) => (
-          <section className="panel" key={c.id}>
-            <h3>共享战利品</h3>
-            {c.items
-              .filter((i) => !c.claims[i.id])
-              .map((i) => (
-                <div className="result-row" key={i.id}>
-                  <b>{i.snapshot?.name || i.name}</b>
-                  <button
-                    onClick={() =>
-                      prepare("corpse.claim", { corpseId: c.id, itemId: i.id })
-                    }
-                  >
-                    领取
-                  </button>
-                </div>
-              ))}
-          </section>
-        ))}
+      {(game.corpses || []).length > 0 && <section className="panel">
+        <h3>战后战利品</h3>
+        <p>战斗结束后仍可查看；聊天中的战利品卡也可直接拾取。</p>
+        {game.corpses.map(c => <div key={c.id}><h4>{c.battleName}</h4><BattleLoot corpse={c} prepare={prepare} /></div>)}
+      </section>}
     </>
   );
 }

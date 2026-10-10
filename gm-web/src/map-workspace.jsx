@@ -8,11 +8,12 @@ const labels={draft:'草稿',active:'进行中',paused:'已暂停',ended:'已结
 export function MapWorkspace(props){
   const {run,error,prepare,revision,lastResult,drafts={},saveLocal}=props;
   const [items,Items]=useState([]),[page,Page]=useState(0),[total,Total]=useState(0),[id,Id]=useState(''),[item,Item]=useState(null),[cell,Cell]=useState(''),[options,Options]=useState(null),[creating,Creating]=useState(false),[form,Form]=useState(()=>({...defaults,...drafts.mapCreate})),[command,Command]=useState('map.cell'),[image,Image]=useState(''),[full,Full]=useState(true),[selection,Selection]=useState(0);
+  useEffect(()=>{if(props.navigation?.type==='map'){Id(props.navigation.id);Cell(props.navigation.cell||'');Creating(false);}},[props.navigation?.key]);
   const imageRef=useRef(''),active=useRef('');active.current=id+':'+(item?.version||'')+':'+full;
   useQuery(()=>api('/context/maps'),[revision],Options,error);
   useQuery(()=>api('/collections/explorations?size=25&page='+page),[revision,page],r=>{Items(r.items);Total(r.total);},error);
   useQuery(()=>id?api('/collections/explorations?id='+id):null,[id,revision],r=>Item(r?.item||null),error);
-  useEffect(()=>{Item(null);Cell('');Selection(n=>n+1);},[id]);
+  useEffect(()=>{Item(null);Cell(props.navigation?.id===id?props.navigation.cell||'':'');Selection(n=>n+1);},[id]);
   useEffect(()=>{if(lastResult?.createdMap){Id(lastResult.id);Creating(false);Command('map.cell');}},[lastResult]);
   useEffect(()=>{if(!options)return;Form(f=>({...f,channelId:f.channelId||options.channelId,categoryId:options.categories.some(c=>c.id===f.categoryId&&c.mapTypes.includes(f.mapType)&&(f.mode==='fixed'||c.usable))?f.categoryId:options.categories.find(c=>c.mapTypes.includes(f.mapType)&&(f.mode==='fixed'||c.usable))?.id||''}));},[options,form.mapType,form.mode]);
   useEffect(()=>{const timer=setTimeout(()=>saveLocal?.('mapCreate',form),600);return()=>clearTimeout(timer);},[form]);

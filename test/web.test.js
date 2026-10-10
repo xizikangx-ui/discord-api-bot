@@ -158,3 +158,39 @@ test('kill effects require actual enemy deaths, aggregate completed AOE and igno
   const seen=new Set(),event={type:'message',data:{system:{event:attack,effectDeaths:['d1','d2']}}};assert.deepEqual(freshKills(event,seen,false),[]);assert.deepEqual(freshKills({...event,type:'history'},seen,true),[]);assert.deepEqual(freshKills(event,seen,true),['d1','d2']);assert.deepEqual(freshKills(event,seen,true),[]);
   const meta=await require('sharp')(require('node:path').join(__dirname,'../web/public/effects/kill-v1.gif')).metadata();assert.ok(meta.pages>=2&&meta.pages<=12);assert.equal(meta.loop,1);assert.ok(meta.delay.reduce((a,b)=>a+b,0)<=2100);assert.ok(require('node:fs').statSync(require('node:path').join(__dirname,'../web/public/effects/kill-v1.gif')).size<512*1024);
 });
+
+test('ended battle loot remains visible independently, with live eligibility and room permissions', () => {
+  const {s,b}=require('./helpers/rpg-harness').fight(),Loot=require('../src/web/battle-loot');
+  s.corpses.loot={id:'loot',battleId:b.id,name:'敌方拾荒者',items:[{id:'drop',quantity:2,snapshot:{name:'止血药',rarity:'green'}}],claims:{},eligible:{'1':s.players['1'].id,'2':s.players['2'].id}};
+  let corpse=P.playerView(s,'1').corpses[0];assert.equal(corpse.canClaim,false);
+  require('../src/rpg/combat').endBattle(s,b);
+  const v=P.playerView(s,'1');assert.equal(v.battles.length,0);assert.equal(v.corpses.length,1);assert.equal(v.corpses[0].battleName,b.name);assert.equal(v.corpses[0].canClaim,true);assert.equal(v.corpses[0].items[0].name,'止血药');
+  assert.equal(P.playerView(s,'1',{roomIds:new Set()}).corpses.length,0);
+  assert.equal(P.playerView(s,'3').corpses.length,0);
+  s.players['1'].hp=0;assert.equal(Loot.view(s,s.corpses.loot,'1').canClaim,false);
+  s.players['1'].hp=1;s.corpses.loot.eligible['1']='old-character';assert.equal(Loot.view(s,s.corpses.loot,'1').canClaim,false);
+  b.exploration={mapId:'missing',cell:'0,0'};assert.equal(Loot.view(s,s.corpses.loot,'2').ready,false);
+});
+
+test('battle loot publication merges claims, backfills only unclaimed ended loot and resumes by stable key', () => {
+  const {s,b}=require('./helpers/rpg-harness').fight(),{derive}=require('../src/web/games'),Loot=require('../src/web/battle-loot');
+  s.corpses.loot={id:'loot',battleId:b.id,name:'敌方',items:[{id:'drop',snapshot:{name:'战利品'}}],claims:{},eligible:{'1':s.players['1'].id}};
+  const before=structuredClone(s);require('../src/rpg/combat').endBattle(s,b);s.revision++;
+  derive(before,s);const key='web:corpses:'+b.id;assert.equal(s.deliveryJobs[key].kind,'webCorpses');assert.equal(s.deliveryJobs[key].roomId,b.channelId);
+  s.deliveryJobs[key].status='done';assert.equal(Loot.needsBackfill(s),false);
+  const claimBefore=structuredClone(s);s.corpses.loot.claims.drop={userId:'1',characterId:s.players['1'].id};s.revision++;derive(claimBefore,s);
+  assert.equal(s.deliveryJobs[key].status,'pending');assert.equal(s.deliveryJobs[key].desiredRevision,s.revision);assert.equal(Loot.forBattle(s,b.id)[0].claims.drop.name,s.players['1'].name);
+  delete s.deliveryJobs[key];assert.equal(Loot.needsBackfill(s),false);delete s.corpses.loot.claims.drop;assert.equal(Loot.needsBackfill(s),true);
+  s.deliveryJobs={};const restored=structuredClone(s);derive(restored,s);assert.equal(s.deliveryJobs[key].status,'pending');
+  const jobs=structuredClone(s.deliveryJobs);derive(structuredClone(s),s);assert.deepEqual(s.deliveryJobs,jobs);
+});
+
+test('unread and pending notifications navigate without executing a game operation',async()=>{
+  const {notificationTarget:target}=await import('../web/src/notification-target.js');
+  assert.equal(target(undefined),null);
+  assert.equal(target({battleId:'b',kind:'webDefense'}).tab,'battle');
+  assert.deepEqual(target({battleId:'b',kind:'webNotice'},true),{tab:'gm',gmTab:'battles',id:'b',type:'battle'});
+  assert.equal(target({mapId:'m',kind:'webNotice'},true).tab,'gm');
+  assert.equal(target({mapId:'m',kind:'webNotice'},false).tab,'explore');
+  assert.deepEqual(target({source:'sessions'}),{tab:'activities'});
+});

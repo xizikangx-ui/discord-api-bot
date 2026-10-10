@@ -1217,6 +1217,39 @@ test(
         const before=require('../src/rpg/postgres').digest(await db.load(g.id));await app.games.store.recover(g.id);assert.equal(require('../src/rpg/postgres').digest(await db.load(g.id)),before);assert.equal(index,19);assert.equal(app.games.store.snapshot(g.id).conditionPackVersion,1);
       });
       async function accountsUser(){return app.accounts.user(admin.user.id);}
+      await t.test('ended battle loot chat card survives restart, concurrent quick pickup and overweight rollback',async()=>{
+        const B=require('../src/rpg/combat'),u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'战利品隔离验收'},crypto.randomUUID());await app.games.ensure(g.id);
+        const partner=crypto.randomUUID();await repo.put('user',{id:partner,name:partner,displayName:'队友',version:1});await repo.put('member',{id:g.id+':'+partner,groupId:g.id,userId:partner,role:'player',active:true,version:1},{scope:g.id});
+        const fixture=await app.games.store.transact(g.id,'loot-fixture',u.id,s=>{
+          s.traits.neutral={id:'neutral',name:'无附加效果',effects:[],published:true,version:1};
+          for(const uid of [u.id,partner]){s.players[uid]=M.newCharacter('拾荒者',{strength:5,constitution:5,mind:5,appearance:5,intelligence:5,agility:5,knowledge:5});s.players[uid].userId=uid;}
+          const b=B.createBattle(s,s.config.announcementChannelId,u.id,'已结束战斗',2,2);B.join(s,b,u.id);B.join(s,b,partner);B.endBattle(s,b);
+          const t=require('./helpers/rpg-harness').weapon(s,{name:'战利品短剑',weightKg:1}),item=M.issue(s,u.id,t.id)[0];delete s.players[u.id].inventory[item.id];
+          s.corpses.loot={id:'loot',battleId:b.id,name:'敌方拾荒者',items:[item],claims:{},eligible:{[u.id]:s.players[u.id].id,[partner]:s.players[partner].id}};
+          return {battleId:b.id,itemId:item.id,roomId:b.channelId};
+        },'测试战利品',{delivery:false});
+        // Exercise startup backfill against a newly loaded store, without replaying the battle.
+        const fresh=require('../src/web/games').createGames({database:db,repo,accounts:app.accounts,library:app.library,chat:app.chat,...gameCrypt});
+        try{
+          await fresh.ensure(g.id);let v=await fresh.view(g.id,u.id);assert.equal(v.battles.length,0);assert.equal(v.corpses[0].canClaim,true);
+          await fresh.tick();await fresh.tick();let history=await app.chat.history(u.id,fixture.roomId,{after:0,before:Number.MAX_SAFE_INTEGER});
+          assert.equal(history.filter(m=>m.system?.corpses).length,1);assert.equal(history.find(m=>m.system?.corpses).system.corpses[0].items[0].name,'战利品短剑');
+          const originalId=history.find(m=>m.system?.corpses).id,params={corpseId:'loot',itemId:fixture.itemId},ops=[crypto.randomUUID(),crypto.randomUUID()],users=[u.id,partner];
+          const op=crypto.randomUUID(),pv=await fresh.view(g.id,u.id),transact=fresh.store.transact;
+          let enter,release;const entered=new Promise(r=>enter=r),gate=new Promise(r=>release=r);
+          fresh.store.transact=async(...args)=>{if(args[1]==='web-direct:'+u.id+':'+op){enter();await gate;}return transact(...args);};
+          const saving=fresh.execute(g.id,u.id,'character.profile',{characterId:pv.player.id,data:{profile:{background:'等待结果核对'}}},op,pv.versions);
+          try{await entered;assert.equal((await fresh.operationReceipt(g.id,u.id,op)).status,'processing');}finally{release();fresh.store.transact=transact;}
+          const savedResult=await saving;assert.deepEqual(await fresh.operationReceipt(g.id,u.id,op),savedResult);
+          const views=await Promise.all(users.map(uid=>fresh.view(g.id,uid)));
+          const claims=await Promise.allSettled(users.map((uid,i)=>fresh.execute(g.id,uid,'corpse.claim',params,ops[i],views[i].versions)));
+          assert.equal(claims.filter(x=>x.status==='fulfilled').length,1);const winner=claims.findIndex(x=>x.status==='fulfilled');assert.deepEqual(await fresh.execute(g.id,users[winner],'corpse.claim',params,ops[winner],views[winner].versions),claims[winner].value);
+          assert.deepEqual(await fresh.operationReceipt(g.id,users[winner],ops[winner]),claims[winner].value);
+          await fresh.tick();await fresh.tick();history=await app.chat.history(u.id,fixture.roomId,{after:0,before:Number.MAX_SAFE_INTEGER});const card=history.filter(m=>m.system?.corpses);assert.equal(card.length,1);assert.equal(card[0].id,originalId);assert.ok(card[0].system.corpses[0].claims[fixture.itemId]);
+          await fresh.store.transact(g.id,'heavy-loot',u.id,s=>{const item={...structuredClone(s.corpses.loot.items[0]),id:'heavy',snapshot:{...s.corpses.loot.items[0].snapshot,name:'超重战利品',weight:10000000}};s.corpses.loot.items.push(item);return item.id;}).then(async itemId=>{v=await fresh.view(g.id,u.id);await assert.rejects(fresh.execute(g.id,u.id,'corpse.claim',{corpseId:'loot',itemId},crypto.randomUUID(),v.versions),/负重|超重/);assert.equal(fresh.store.snapshot(g.id).corpses.loot.claims[itemId],undefined);});
+          const saved=fresh.store.snapshot(g.id);await fresh.store.recover(g.id);assert.deepEqual(fresh.store.snapshot(g.id).corpses,saved.corpses);
+        }finally{await fresh.stop();await app.games.store.recover(g.id);}
+      });
       await t.test('permanent deletion fences game writes, purges DM/content/media, resumes failed cleanup and retains other groups',async()=>{
         const u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'仅删除隔离测试团'},crypto.randomUUID());await app.games.ensure(g.id);
         const rooms=await repo.list('room',g.id),publicRoom=rooms.find(r=>r.kind==='chat');

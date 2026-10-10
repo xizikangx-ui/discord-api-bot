@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { api, mediaUrl } from "./api";
-export function GroupHome({ game, group, members, rooms, Preview }) {
+export function GroupHome({ game, group, members, rooms, Preview, onRoom, onNavigate }) {
   return (
     <>
       <section className="panel">
@@ -14,16 +14,20 @@ export function GroupHome({ game, group, members, rooms, Preview }) {
             <span>有效成员</span>
             <b>{members?.filter((m) => m.active).length || 0}</b>
           </div>
-          <div>
+          <button className="overview-action" onClick={() => { const r=rooms?.find(r=>r.unread>0)||rooms?.[0];if(r)onRoom(r.id); }}>
             <span>未读消息</span>
             <b>{rooms?.reduce((n, r) => n + r.unread, 0) || 0}</b>
-          </div>
-          <div>
+            <small>点击打开对应频道</small>
+          </button>
+          <button className="overview-action" onClick={() => onNavigate({battleId:game?.battles[0]?.id})}>
             <span>进行中战斗</span>
             <b>{game?.battles.length || 0}</b>
-          </div>
+          </button>
         </div>
       </section>
+      {rooms?.some(r=>r.unread>0) && <section className="panel"><h3>未读消息</h3><div className="toolbar">
+        {rooms.filter(r=>r.unread>0).map(r=><button key={r.id} onClick={()=>onRoom(r.id)}>{r.name} · {r.unread} 条未读 →</button>)}
+      </div></section>}
       {game?.actionDrafts?.length > 0 && (
         <section className="panel">
           <h3>旧版未执行草稿</h3>
@@ -43,18 +47,19 @@ export function GroupHome({ game, group, members, rooms, Preview }) {
         {game?.battles
           .filter((b) => b.pending.length)
           .map((b) => (
-            <p key={b.id}>⚑ {b.name}：有待防守攻击，请前往战斗页。</p>
+            <p key={b.id}><button onClick={()=>onNavigate({battleId:b.id})}>⚑ {b.name} · 前往防守 →</button></p>
           ))}
         {game?.maps
           .filter((m) => m.rpWaiting)
           .map((m) => (
-            <p key={m.id}>◇ {m.name}：等待 GM 环境描述。</p>
+            <p key={m.id}><button onClick={()=>onNavigate({mapId:m.id,kind:'webNotice'})}>◇ {m.name} · 查看环境描述待办 →</button></p>
           ))}
         {game?.sessions
           .filter((s) => s.status === "open")
           .map((s) => (
             <p key={s.id}>
               开团 · {s.name} · {new Date(s.startsAt).toLocaleString()}
+              <button onClick={()=>onNavigate({source:'sessions'})}>查看团务 →</button>
             </p>
           ))}
         <p>每个团拥有自己的角色、资产、探索地图、战斗与频道。</p>

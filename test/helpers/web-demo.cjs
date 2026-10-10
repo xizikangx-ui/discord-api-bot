@@ -164,6 +164,12 @@ async function main() {
     }
     const battle=B.createBattle(s,s.config.announcementChannelId,u.id,'灰烬营地 · 技能演练');B.join(s,battle,u.id);const enemy=M.newCharacter('荒原靶标',{strength:1,constitution:1,mind:1,appearance:1,intelligence:1,agility:1,knowledge:1});enemy.hp=1;
     battle.actors.push({id:C.id('a'),name:enemy.name,team:'enemy',character:enemy,x:45,y:25,retreated:false,ai:{mode:'manual'}});battle.width=3;battle.height=3;B.start(s,battle,null,(lo)=>lo);
+    if (process.env.WEB_DEMO_LOOT === '1') {
+      B.endBattle(s,battle);
+      const t=require('./rpg-harness').weapon(s,{name:'战利品验收短剑',weightKg:0}),source=M.issue(s,u.id,t.id)[0];delete p.inventory[source.id];
+      const item={...C.clone(source),id:C.id('i'),snapshot:{...source.snapshot,name:'荒原制式战利品'}};
+      s.corpses.demoLoot={id:'demoLoot',battleId:battle.id,name:'荒原拾荒者',items:[item],claims:{},eligible:{[u.id]:p.id}};
+    }
     return true;
   });
   const room = (await repo.list("room", g.id)).find((c) => c.kind === "chat");
@@ -183,6 +189,12 @@ async function main() {
     text: "侦察废墟",
   });
   const addr = await app.start(47840);
+  let lost=false;
+  app.server.prependListener("request", (req,res) => {
+    if(process.env.WEB_DEMO_LOST_ONCE==='1' && !lost && req.method==='POST' && req.url.endsWith('/game/execute')){
+      const end=res.end;res.end=function(...args){if(res.statusCode===200&&!lost){lost=true;return end.call(this,'{"incomplete":');}return end.apply(this,args);};
+    }
+  });
   app.server.prependListener("request", (req) => {
     req.headers.cookie = "web_session=" + a.secret;
   });

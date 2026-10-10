@@ -1,5 +1,7 @@
 import {SkillBook} from "./skills";
 import {freshKills} from "./kill-effects";
+import { BattleLoot } from "./battle-loot";
+import { notificationTarget } from "./notification-target";
 import { GroupHome, MemberDirectory, ChannelManager } from "./community";
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
@@ -237,6 +239,7 @@ function App() {
     [busy, B] = useState(false),
     [preview, Preview] = useState(null),
     [pendingOperation, PendingOperation] = useState(null),
+    [navigation, Navigation] = useState(null),
     [result, R] = useState(null),
     [killEffect,KillEffect]=useState(null),
     [accountRecovery, AccountRecovery] = useState(""),
@@ -257,11 +260,13 @@ function App() {
     seenDeaths=useRef(new Set()),liveReady=useRef(false),prefsRef=useRef(null),
     refreshTimer = useRef(null),
     busyRef = useRef(false),
+    pendingRef = useRef(null),
     [mobileSide, MobileSide] = useState(false);
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
   active.current = { groupId, roomId, scope };
+  pendingRef.current=pendingOperation;
   prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"tactical";
   useEffect(()=>{if(!killEffect)return;const t=setTimeout(()=>KillEffect(null),2100);return()=>clearTimeout(t);},[killEffect]);
   async function boot() {
@@ -432,19 +437,22 @@ function App() {
       }).catch(() => {});
       return;
     }
-    if(pendingOperation){N('上一操作仍待核对，请先查询保存结果。');return;}
+    if(pendingOperation){await run(()=>checkDirect()).catch(()=>{});return;}
     const targetGroup=groupId, operationId=id(), request={groupId:targetGroup,operationId,command,params,isGM};
     await run(async()=>{
       PendingOperation(request);saveLocal('pendingOperation',request);
       try{
         const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:game?.versions});
         if(active.current.groupId!==targetGroup)return;
-        R(r.result);PendingOperation(null);saveLocal('pendingOperation',null);N('已保存，通知在后台更新。');await refresh();
+        R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');await refresh();
       }catch(e){
         if(active.current.groupId!==targetGroup)throw e;
         if(['CONFLICT','VALIDATION','FORBIDDEN','NOT_FOUND'].includes(e.code)){
           PendingOperation(null);saveLocal('pendingOperation',null);if(e.details)R({conflicts:e.details});await refresh().catch(()=>{});
-        }else await checkDirect(request).catch(()=>N('连接中断，原操作待核对；不会重复执行。'));
+        }else {
+          const recovered=await checkDirect(request).catch(()=>N('连接中断，原操作待核对；不会重复执行。'));
+          if(recovered?.status==='committed')return;
+        }
         throw e;
       }
     }).catch(()=>{});
@@ -452,10 +460,22 @@ function App() {
   async function checkDirect(request=pendingOperation){
     if(!request)return;
     const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId);
-    if(active.current.groupId!==request.groupId)return;
-    if(r.status==='committed'){R(r.result);PendingOperation(null);saveLocal('pendingOperation',null);await refresh();}
+    if(active.current.groupId!==request.groupId || pendingRef.current?.operationId!==request.operationId)return;
+    if(r.status==='committed'){E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');await refresh();}
     else if(r.status==='uncommitted'){PendingOperation(null);saveLocal('pendingOperation',null);N('权威记录确认此操作未保存。填写内容已保留，可重新提交。');}
     else N(r.status==='processing'?'原操作仍在处理中，请稍后查询。':'保存结果尚未明确，修改保持暂停。');
+    return r;
+  }
+  useEffect(()=>{
+    if(!pendingOperation || pendingOperation.groupId!==groupId || !me)return;
+    let alive=true,timer;
+    const check=async()=>{if(!alive)return;if(!busyRef.current && document.visibilityState==='visible')await checkDirect(pendingOperation).catch(()=>{});if(alive)timer=setTimeout(check,5000);};
+    void check();return()=>{alive=false;clearTimeout(timer);};
+  },[groupId,me?.user.id,pendingOperation?.operationId]);
+  function openRoom(id){Room(id);Tab('chat');MobileSide(false);}
+  function navigateNotice(system){
+    const target=notificationTarget(system,gm);if(!target)return;
+    Navigation({...target,key:id()});Tab(target.tab);if(target.tab==='gm')GmTab(target.gmTab);MobileSide(false);
   }
   async function receipt() {
     if (!preview) return;
@@ -677,6 +697,7 @@ function App() {
             <button onClick={() => N("")}>×</button>
           </div>
         )}
+        {pendingOperation && <div className="banner" role="status"><span>上一操作待核对；仍可查看消息和面板。</span><button disabled={busy} onClick={()=>run(()=>checkDirect()).catch(()=>{})}>查询保存结果</button></div>}
         {game?.battles.some((b) => b.pending.length) && (
           <div className="banner defense-card" role="status">
             你有待结算的受击，请及时防守。
@@ -724,6 +745,10 @@ function App() {
                   rooms,
                   run,
                   busy,
+                  game,
+                  prepare,
+                  navigateNotice,
+                  gm,
                 }}
                 error={E}
                 notice={N}
@@ -733,7 +758,7 @@ function App() {
             </div>
             <div className="page-content" key={groupId} hidden={tab === "chat"}>
               <Keep show={tab === "home"}>
-                <GroupHome {...{ game, group, members, rooms, Preview }} />
+                <GroupHome {...{ game, group, members, rooms, Preview }} onRoom={openRoom} onNavigate={navigateNotice} />
               </Keep>
               <Keep show={["character", "bag"].includes(tab)}>
                 {game && (
@@ -750,13 +775,14 @@ function App() {
               </Keep>
               <Keep show={tab === "explore"}>
                 {game && (
-                  <ExplorePanel {...{ game, groupId, prepare, run, refresh }} />
+                  <ExplorePanel {...{ game, groupId, prepare, run, refresh }} navigation={navigation} />
                 )}
               </Keep>
               <Keep show={tab === "battle"}>
                 {game && (
                   <BattlePanel
                     {...{ game, groupId, prepare, run, refresh }}
+                    navigation={navigation}
                     userId={me.user.id}
                   />
                 )}
@@ -793,10 +819,10 @@ function App() {
                       <Grant {...common} />
                     </Keep>
                     <Keep show={gmTab === "maps"}>
-                      <World {...common} kind="maps" openTemplates={() => GmTab("templates")} />
+                      <World {...common} kind="maps" navigation={navigation} openTemplates={() => GmTab("templates")} />
                     </Keep>
                     <Keep show={gmTab === "battles"}>
-                      <World {...common} kind="battles" />
+                      <World {...common} kind="battles" navigation={navigation} />
                     </Keep>
                     <Keep show={gmTab === "content"}>
                       <Commands
@@ -962,7 +988,6 @@ function App() {
           </section>
         </div>
       )}
-      {pendingOperation&&<section className="panel pending-operation"><h3>原操作正在核对</h3><p>不会自动重复提交；填写内容仍保留。</p><button onClick={()=>run(()=>checkDirect()).catch(()=>{})}>查询保存结果</button></section>}
       {result && (
         <div className="inline-result">
           <section className="panel">
@@ -1005,6 +1030,10 @@ function Chat({
   rooms,
   run,
   busy,
+  game,
+  prepare,
+  navigateNotice,
+  gm,
   error,
   notice,
   onRead,
@@ -1270,6 +1299,12 @@ function Chat({
                   </div>
                 )}
                 {m.system?.event && <EventDetails event={m.system.event} />}
+                {m.system?.corpses?.map(c => <BattleLoot key={c.id}
+                  corpse={game?.corpses?.find(live => live.id === c.id) || { ...c, canClaim: false, blockedReason: "仅本场参战角色可拾取；若刚结束战斗，请稍候刷新。" }}
+                  prepare={prepare} busy={busy} />)}
+                {notificationTarget(m.system,gm) && <button onClick={()=>navigateNotice(m.system)}>
+                  {m.system?.corpses ? '查看战利品与战斗' : m.system?.kind==='webDefense' ? '前往防守' : m.system?.kind==='webNotice' ? '前往处理' : m.system?.battleId ? '打开战斗面板' : m.system?.mapId ? '打开对应地图' : '查看团务'} →
+                </button>}
               </div>
             </article>
           ))}

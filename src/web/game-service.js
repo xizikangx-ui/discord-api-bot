@@ -529,14 +529,9 @@ function playerView(s, uid, { roomIds } = {}) {
         .map((d) => ({ ...d, text: require("../rpg/texts").get(s, d.key) })),
       corpses: Object.values(s.corpses)
         .filter((c) =>
-          s.battles[c.battleId]?.actors.some((a) => a.userId === uid),
+          s.battles[c.battleId]?.actors.some((a) => a.userId === uid) && visible(s.battles[c.battleId]),
         )
-        .map((c) => ({
-          id: c.id,
-          battleId: c.battleId,
-          items: c.items,
-          claims: c.claims,
-        })),
+        .map((c) => require("./battle-loot").view(s, c, uid)),
     };
   return result;
 }

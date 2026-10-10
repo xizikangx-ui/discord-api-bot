@@ -6,12 +6,25 @@ const crypto = require("node:crypto"),
   B = require("../rpg/combat"),
   S = require("./security"),
   P = require("./game-service"),
+  Loot = require("./battle-loot"),
   L = require("./library");
 function derive(before, next) {
   next.deliveryJobs ||= {};
   for (const [id, b] of Object.entries(next.battles)) {
     const old = before.battles[id],
       known = new Set((old?.publicEvents || []).map((e) => e.id));
+    const corpses = Object.values(next.corpses || {}).filter(c => c.battleId === id),
+      previousCorpses = Object.values(before.corpses || {}).filter(c => c.battleId === id),
+      lootKey = "web:corpses:" + id;
+    if (b.status === "ended" && corpses.some(c => c.items.length) &&
+      (old?.status !== "ended" || G.fingerprint(corpses) !== G.fingerprint(previousCorpses) ||
+        Loot.forBattle(next, id)[0]?.ready !== Loot.forBattle(before, id)[0]?.ready ||
+        !next.deliveryJobs[lootKey] && corpses.some(c => c.items.some(i => !c.claims?.[i.id])))) {
+      next.deliveryJobs[lootKey] = {
+        key: lootKey, kind: "webCorpses", battleId: id, roomId: b.channelId,
+        status: "pending", desiredRevision: next.revision, priority: 2,
+      };
+    }
     const previousHits = new Set(
       old
         ? require("../rpg/aoe")
@@ -210,6 +223,8 @@ function createGames({
     loading.set(id, job);
     try {
       await job;
+      if (store.select(id, Loot.needsBackfill))
+        await store.transact(id, "web-loot-backfill-v1", "system:web", () => ({ queued: true }), "恢复战后战利品入口");
     } finally {
       loading.delete(id);
     }
@@ -468,7 +483,14 @@ function createGames({
         return f.result;
   }
   const directId=(uid,op)=>'wd_'+S.hash(uid+':'+op).slice(0,32);
-  async function execute(group,uid,command,params,clientId,expected,gm=false) {
+  const inFlight = new Map(), operationKey = (group,uid,id) => group+":"+uid+":"+id;
+  async function execute(...args) {
+    const key = operationKey(args[0],args[1],args[4]);
+    inFlight.set(key,(inFlight.get(key)||0)+1);
+    try { return await executeNow(...args); }
+    finally { const count=inFlight.get(key)-1;if(count)inFlight.set(key,count);else inFlight.delete(key); }
+  }
+  async function executeNow(group,uid,command,params,clientId,expected,gm=false) {
     operation(clientId);
     S.ok(typeof command==='string' && params && typeof params==='object' && !Array.isArray(params),'操作参数格式无效。');
     G.rowsFor(command,params);
@@ -501,7 +523,7 @@ function createGames({
   }
   async function operationReceipt(group,uid,clientId){
     await authorize(group,uid);operation(clientId);
-    return store.select(group,s=>s.forms[directId(uid,clientId)]?.result||{status:store.frozen(group)?'uncertain':'uncommitted'});
+    return store.select(group,s=>s.forms[directId(uid,clientId)]?.result||{status:store.frozen(group)?'uncertain':inFlight.has(operationKey(group,uid,clientId))?'processing':'uncommitted'});
   }
   async function receipt(group, uid, id) {
     await authorize(group, uid);
@@ -603,6 +625,13 @@ function createGames({
           npcId: j.npcId,
           cardKey: j.npcId ? b.id + ":" + j.npcId : undefined,
         };
+      } else if (j.kind === "webCorpses") {
+        const b = s.battles[j.battleId];
+        if (b?.status !== "ended") continue;
+        const corpses = Loot.forBattle(s, b.id);
+        const remaining = corpses.reduce((n, c) => n + c.items.filter(i => !c.claims[i.id]).length, 0);
+        text = "战后战利品 · " + b.name + "\n" + (remaining ? "剩余 " + remaining + " 项物品，参战角色可在下方快速拾取。" : "本场战利品已全部领取。");
+        system = { battleId: b.id, corpses };
       } else if (j.kind === "webRP") {
         const r = s.explorations[j.mapId]?.rps[j.rpId];
         if (r?.status !== "publishing") continue;
@@ -625,10 +654,12 @@ function createGames({
           mapId: j.mapId,
           cell: j.cell,
           items: j.items,
+          kind: j.kind,
+          hitId: j.hitId,
         };
       }
       const clientId = S.hash(j.key + ":" + j.desiredRevision);
-      if (["webEvent", "webActivity", "webLoot"].includes(j.kind))
+      if (["webEvent", "webActivity", "webLoot", "webCorpses"].includes(j.kind))
         await chat.upsertSystem(room.id, j.key, j.desiredRevision, {
           text,
           system,
