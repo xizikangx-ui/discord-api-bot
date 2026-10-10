@@ -30,6 +30,7 @@ function createWeb({
       require("./repository").createRepository(pool, contentCrypt, {
         schema: "web_content",
       });
+  content.setGroupRepository?.(repo);
   const sockets = new Set(),
     limits = new Map(),
     pending = new Map();
@@ -144,6 +145,8 @@ function createWeb({
       store: games.store,
       renderer,
     });
+  const deletion=require('./group-deletion').createDeletion({repo,content,accounts,games,database,storage,disconnected:group=>{for(const ws of sockets)if(ws.groupId===group)ws.close(4003,'此团正在删除');}});
+  let deletionTimer;
   const json = (res, status, value) => {
     res.writeHead(status, {
       "content-type": "application/json; charset=utf-8",
@@ -238,11 +241,13 @@ function createWeb({
               ".css": "text/css; charset=utf-8",
               ".svg": "image/svg+xml",
               ".png": "image/png",
+              ".gif": "image/gif",
+              ".ttf": "font/ttf",
             }[path.extname(selected)] || "application/octet-stream",
           "cache-control":
             path.extname(selected) === ".html"
               ? "no-cache"
-              : "public,max-age=3600",
+              : /\/(effects|fonts)\//.test(u.pathname)?"public,max-age=31536000,immutable":"public,max-age=3600",
           "content-security-policy":
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
           "x-content-type-options": "nosniff",
@@ -366,6 +371,12 @@ function createWeb({
       }
       if (pth === "/groups/join" && p)
         return answer(await accounts.join(auth.user, p.code));
+      if(pth==='/preferences' && p){
+        S.ok(['tactical','magic','psychic'].includes(p.artStyle),'请选择战术、魔法或精神风格。');
+        return answer(await repo.tx('preferences:'+uid+':'+crypto.randomUUID(),async r=>{const u=await accounts.user(uid,r);u.preferences={artStyle:p.artStyle,killEffects:p.killEffects!==false};u.version++;await repo.put('user',u,{lookup:S.hash(u.name)},r);return u.preferences;}));
+      }
+      const deletePath=pth.match(/^\/admin\/groups\/([^/]+)\/(delete|deletion)$/);
+      if(deletePath){accounts.admin(auth.user);return answer(deletePath[2]==='delete'&&p?await deletion.start(auth.user,deletePath[1],p):await deletion.status(auth.user,deletePath[1]));}
       if (pth === "/admin/users" && !p) {
         accounts.admin(auth.user);
         return answer((await repo.list("user")).map(accounts.publicUser));
@@ -545,6 +556,13 @@ function createWeb({
           revision: games.store.select(group, (s) => s.revision),
         });
       if (rest === "/game" && !p) return answer(await games.view(group, uid));
+      if(['/game/execute','/gm/execute'].includes(rest)&&p){
+        const key=group+':'+uid+':'+p.operationId;
+        if(p.command==='npc.portrait'&&p.params)p.params.mediaId ||= p.params.uploadId;
+        const job=games.execute(group,uid,p.command,p.params||{},p.operationId,p.versions,rest==='/gm/execute');pending.set(key,job);
+        try{return answer(await job);}finally{if(pending.get(key)===job)pending.delete(key);}
+      }
+      if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length);return answer(pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op));}
       if (rest === "/game/preview" && p)
         return answer(
           await games.preview(
@@ -569,6 +587,9 @@ function createWeb({
         return answer(
           await games.receipt(group, uid, rest.slice("/game/receipt/".length)),
         );
+      if(rest==='/game/skill-check'&&p){
+        try{const st=games.store.snapshot(group),P=require('./game-service'),{b}=P.ownActor(st,uid,p.battleId),x=P.normalizeAction(st,uid,p);require('../rpg/combat').validateOperation(st,b,{type:'attack',ability:x.abilityKey,target:x.targetId,group:x.action,firing:x.firing});return answer({available:true});}catch(e){return answer({available:false,reason:e.message});}
+      }
       if (rest === "/game/movement" && !p) {
         const s = games.store.snapshot(group),
           { b, a: actor } = require("./game-service").ownActor(
@@ -917,7 +938,7 @@ function createWeb({
     await repo.init();
     await content.init();
     await database.acquireLease("standalone-web");
-    for (const g of await repo.list("group")) await games.ensure(g.id);
+    for (const g of await repo.list("group")) if(!g.deleting) await games.ensure(g.id);
     server = http.createServer((req, res) => {
       void route(req, res);
     });
@@ -1016,7 +1037,10 @@ function createWeb({
     });
     if (!origin) origin = "http://" + host + ":" + server.address().port;
     ready = true;
+    await library.installConditions();
     games.start();
+    void deletion.resume();
+    deletionTimer=setInterval(()=>void deletion.resume().catch(()=>{}),30000);deletionTimer.unref();
     const heartbeat = setInterval(async () => {
       for (const ws of sockets) {
         if (!ws.alive) {
@@ -1052,6 +1076,8 @@ function createWeb({
   }
   async function stop() {
     ready = false;
+    clearInterval(deletionTimer);
+    await deletion.drain();
     await backups?.stop();
     for (const ws of sockets) ws.close(1001, "网站维护");
     await games.stop();
@@ -1073,6 +1099,7 @@ function createWeb({
     accounts,
     chat,
     library,
+    deletion,
     games,
     renderer,
     get server() {

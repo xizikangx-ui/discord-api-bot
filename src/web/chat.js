@@ -86,10 +86,11 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
       "chat:" + roomId + ":" + userId + ":" + p.clientId,
       async (r) => {
         if (!system) await access(userId, roomId, r);
+        const group=await repo.get("group",room.groupId,r,true);S.ok(group&&!group.deleting,"此团已关闭。");
         const old = await repo.duplicate(roomId, userId, p.clientId, r);
         if (old) return old;
         const live = await repo.get("room", roomId, r, true);
-        S.ok(!live.archived, "频道已关闭。");
+        S.ok(live&&!live.archived, "频道已关闭。");
         const kind = system ? "system" : p.kind || "text";
         S.ok(
           ["text", "rp", "dice", "system"].includes(kind) &&
@@ -260,6 +261,8 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
       async (r) => {
         const room = await repo.get("room", roomId, r, true),
           prior = await repo.get("card", roomId + ":" + key, r, true);
+        S.ok(room,"频道已删除。","NOT_FOUND");
+        const group=await repo.get("group",room.groupId,r,true);S.ok(group&&!group.deleting,"此团已关闭。");
         if (prior?.revision >= revision)
           return repo.findMessage(prior.messageId, r);
         const old = prior && (await repo.findMessage(prior.messageId, r)),

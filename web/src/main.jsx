@@ -1,3 +1,5 @@
+import {SkillBook} from "./skills";
+import {freshKills} from "./kill-effects";
 import { GroupHome, MemberDirectory, ChannelManager } from "./community";
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
@@ -11,6 +13,7 @@ import {
   Audit,
   Result,
   Field,
+  SearchSelect,
 } from "../../gm-web/src/main";
 import {
   PlayerPanel,
@@ -233,7 +236,9 @@ function App() {
     [notice, N] = useState(""),
     [busy, B] = useState(false),
     [preview, Preview] = useState(null),
+    [pendingOperation, PendingOperation] = useState(null),
     [result, R] = useState(null),
+    [killEffect,KillEffect]=useState(null),
     [accountRecovery, AccountRecovery] = useState(""),
     [connected, Conn] = useState(false),
     [chatEvent, ChatEvent] = useState(null),
@@ -249,6 +254,7 @@ function App() {
     [gmTab, GmTab] = useState("templates");
   const ws = useRef(null),
     active = useRef({}),
+    seenDeaths=useRef(new Set()),liveReady=useRef(false),prefsRef=useRef(null),
     refreshTimer = useRef(null),
     busyRef = useRef(false),
     [mobileSide, MobileSide] = useState(false);
@@ -256,6 +262,8 @@ function App() {
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
   active.current = { groupId, roomId, scope };
+  prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"tactical";
+  useEffect(()=>{if(!killEffect)return;const t=setTimeout(()=>KillEffect(null),2100);return()=>clearTimeout(t);},[killEffect]);
   async function boot() {
     try {
       const a = await api("/auth/me");
@@ -280,6 +288,7 @@ function App() {
       api("/groups/" + g + "/members"),
     ]);
     if (active.current.groupId === g) {
+      if(!liveReady.current){for(const id of data.historicalDeathIds||[])seenDeaths.current.add(id);liveReady.current=true;}
       Game(data);
       Rooms(channels);
       Members(people);
@@ -293,17 +302,20 @@ function App() {
     if (gid !== groupId) Group(gid);
   }, [groups, me]);
   useEffect(() => {
+    liveReady.current=false;KillEffect(null);
     Game(null);
     Rooms([]);
     Room("");
     Schema(null);
     Preview(null);
+    PendingOperation(drafts[groupId+":"+me?.user.id]?.pendingOperation||null);
     R(null);
     if (!groupId || !me) return;
     refresh().catch((e) => E(e.message));
     const base = "/groups/" + groupId + "/gm";
     setTransport((path, body) => api(base + path, body));
     window.gmMediaBase = "/api/web/v1" + base;
+    window.gmDirect=true;
     window.gmSession = { guildId: groupId, userId: me.user.id };
     if (gm)
       Promise.all([api(base + "/schemas"), api(base + "/directory")])
@@ -346,7 +358,7 @@ function App() {
       );
       ws.current = socket;
       socket.onopen = () => {
-        Conn(true);
+        Conn(true);liveReady.current=false;
         socket.send(
           JSON.stringify({
             type: "subscribe",
@@ -359,6 +371,7 @@ function App() {
       };
       socket.onmessage = (e) => {
         const event = JSON.parse(e.data);
+        const kills=freshKills(event,seenDeaths.current,liveReady.current);if(kills.length&&prefsRef.current?.killEffects!==false)KillEffect({id:kills.join(":"),count:kills.length});
         if (["state", "room-unread"].includes(event.type)) {
           clearTimeout(refreshTimer.current);
           refreshTimer.current = setTimeout(
@@ -419,14 +432,30 @@ function App() {
       }).catch(() => {});
       return;
     }
-    const targetGroup=groupId;
-    await run(async () => {
-      const f = await api(
-        "/groups/" + targetGroup + (isGM ? "/gm/previews" : "/game/preview"),
-        { command, params, clientId: id() },
-      );
-      if(active.current.groupId===targetGroup){Preview(f);R(null);}
-    }).catch(() => {});
+    if(pendingOperation){N('上一操作仍待核对，请先查询保存结果。');return;}
+    const targetGroup=groupId, operationId=id(), request={groupId:targetGroup,operationId,command,params,isGM};
+    await run(async()=>{
+      PendingOperation(request);saveLocal('pendingOperation',request);
+      try{
+        const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:game?.versions});
+        if(active.current.groupId!==targetGroup)return;
+        R(r.result);PendingOperation(null);saveLocal('pendingOperation',null);N('已保存，通知在后台更新。');await refresh();
+      }catch(e){
+        if(active.current.groupId!==targetGroup)throw e;
+        if(['CONFLICT','VALIDATION','FORBIDDEN','NOT_FOUND'].includes(e.code)){
+          PendingOperation(null);saveLocal('pendingOperation',null);if(e.details)R({conflicts:e.details});await refresh().catch(()=>{});
+        }else await checkDirect(request).catch(()=>N('连接中断，原操作待核对；不会重复执行。'));
+        throw e;
+      }
+    }).catch(()=>{});
+  }
+  async function checkDirect(request=pendingOperation){
+    if(!request)return;
+    const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId);
+    if(active.current.groupId!==request.groupId)return;
+    if(r.status==='committed'){R(r.result);PendingOperation(null);saveLocal('pendingOperation',null);await refresh();}
+    else if(r.status==='uncommitted'){PendingOperation(null);saveLocal('pendingOperation',null);N('权威记录确认此操作未保存。填写内容已保留，可重新提交。');}
+    else N(r.status==='processing'?'原操作仍在处理中，请稍后查询。':'保存结果尚未明确，修改保持暂停。');
   }
   async function receipt() {
     if (!preview) return;
@@ -479,6 +508,7 @@ function App() {
   }
   const common = {
     schema,
+    direct: true,
     session: {
       guildId: groupId,
       userId: me?.user.id,
@@ -547,6 +577,7 @@ function App() {
             ["bag", "▣", "背包与交易"],
             ["explore", "▦", "探索地图"],
             ["battle", "⚑", "战术战斗"],
+            ["skills", "✧", "技能卡册"],
             ["activities", "☷", "团务与资料"],
             ...(gm ? [["gm", "⌘", "GM 工作台"]] : []),
             ["library", "▤", "公共模板库"],
@@ -572,14 +603,7 @@ function App() {
               <button
                 title="新建频道"
                 onClick={() => {
-                  const name = prompt("频道名称");
-                  if (name)
-                    run(() =>
-                      api("/groups/" + groupId + "/rooms", {
-                        name,
-                        kind: "chat",
-                      }).then(refresh),
-                    ).catch(() => {});
+                  Tab("settings");
                 }}
               >
                 ＋
@@ -737,6 +761,7 @@ function App() {
                   />
                 )}
               </Keep>
+              <Keep show={tab === "skills"}>{game&&<SkillBook {...{game,groupId,prepare}} userId={me.user.id} artStyle={me.user.preferences?.artStyle||"tactical"}/>}</Keep>
               <Keep show={tab === "activities"}>
                 {game && <ActivitiesPanel {...{ game, prepare }} />}
               </Keep>
@@ -898,14 +923,15 @@ function App() {
             </button>
           ))}
       </aside>
+      {killEffect&&<div className={"kill-overlay art-"+(me.user.preferences?.artStyle||"tactical")} role="status" key={killEffect.id}><img src="/effects/kill-v1.gif" alt=""/><div><small>CONFIRMED ELIMINATION</small><h2 className="art-title">敌人已击杀</h2>{killEffect.count>1&&<p>本次击杀 {killEffect.count} 名敌人</p>}</div><button onClick={()=>KillEffect(null)}>关闭特效</button></div>}
       {preview && (
-        <div className="modal">
+        <div className="legacy-draft">
           <section className="panel">
-            <span className="eyebrow">CONFIRM OPERATION</span>
-            <h3>核对后执行</h3>
+            <span className="eyebrow">SAVED DRAFT</span>
+            <h3>上个版本留下的草稿</h3>
             <p>
               有效至 {new Date(preview.expiresAt).toLocaleTimeString()} ·{" "}
-              {preview.id}
+
             </p>
             {error&&<div className="banner error" role="alert">{error}</div>}
             <Result value={preview.preview} />
@@ -921,7 +947,7 @@ function App() {
                 }
                 onClick={commit}
               >
-                {busy ? "正在保存…" : "确认执行"}
+                {busy ? "正在保存…" : "执行此草稿"}
               </button>
               <button
                 disabled={busy}
@@ -936,13 +962,14 @@ function App() {
           </section>
         </div>
       )}
+      {pendingOperation&&<section className="panel pending-operation"><h3>原操作正在核对</h3><p>不会自动重复提交；填写内容仍保留。</p><button onClick={()=>run(()=>checkDirect()).catch(()=>{})}>查询保存结果</button></section>}
       {result && (
-        <div className="modal">
+        <div className="inline-result">
           <section className="panel">
             <h3>结果已保存</h3>
             <Result value={result} />
             <button className="primary" onClick={() => R(null)}>
-              继续
+              收起结果
             </button>
           </section>
         </div>
@@ -1187,8 +1214,8 @@ function Chat({
                   : (m.characterName || m.authorName).slice(0, 1)}
               </div>
               <div className="message-content">
-                <div className="message-title">
-                  <b>{m.characterName || m.authorName}</b>
+                <div className={"message-title art-"+(window.webArtStyle||"tactical")}>
+                  <b className={m.kind==="rp"?"art-title":""}>{m.characterName || m.authorName}</b>
                   {m.kind === "rp" && <span className="badge">角色 RP</span>}
                   {m.system?.npcId && (
                     <span className="badge">NPC · 固定操作卡</span>
@@ -1403,6 +1430,7 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
     [q, Q] = useState(""),
     [sync, Sync] = useState(null),
     [resolutions, Resolutions] = useState({}),
+    [rejectReasons, RejectReasons] = useState({}),
     [p, P] = useState({ collection: "catalog", templateId: "" });
   async function load() {
     Entries(await api("/library"));
@@ -1438,7 +1466,7 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
             </button>
             <select
               value={p.collection}
-              onChange={(e) => P({ ...p, collection: e.target.value })}
+              onChange={(e) => P({ collection: e.target.value, templateId: "" })}
             >
               {[
                 ["catalog", "物品"],
@@ -1459,11 +1487,7 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
                 </option>
               ))}
             </select>
-            <input
-              placeholder="本团模板编号"
-              value={p.templateId}
-              onChange={(e) => P({ ...p, templateId: e.target.value })}
-            />
+            <label className="field"><span>本团模板</span><SearchSelect source={p.collection} value={p.templateId} onChange={templateId=>P({...p,templateId})}/></label>
             <button
               onClick={() =>
                 run(() =>
@@ -1485,11 +1509,11 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
             .map((e) => (
               <article key={e.id}>
                 <span className="badge">
-                  {e.collection} · 公共 v{e.version}
+                  {labels[e.collection]||"模板"} · 公共 v{e.version}
                 </span>
                 <h4>{e.template.name || e.template.title}</h4>
                 <p>{e.template.description || "已发布的共用模板"}</p>
-                <small>{e.templateId}</small>
+
               </article>
             ))}
         </div>
@@ -1505,7 +1529,7 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
               {sync.conflicts.map((c) => (
                 <label className="field" key={c.id}>
                   <span>
-                    {c.name || c.id}：{c.reason}
+                    {c.name || '相关模板'}：{c.reason}
                   </span>
                   <input
                     type="checkbox"
@@ -1545,7 +1569,7 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
               }).catch(() => {})
             }
           >
-            确认同步可更新项
+            同步可更新项
           </button>
           <button onClick={() => Sync(null)}>取消</button>
         </section>
@@ -1558,7 +1582,7 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
             .map((f) => (
               <article key={f.id}>
                 <h4>
-                  {f.template.name} · {f.collection}
+                  {f.template.name} · {labels[f.collection]||"模板"}
                 </h4>
                 <Result value={f.template} />
                 <button
@@ -1580,22 +1604,8 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
                 >
                   审核并发布
                 </button>
-                <button
-                  onClick={() => {
-                    const reason = prompt("驳回理由");
-                    if (reason)
-                      run(() =>
-                        api("/library/review", {
-                          id: f.id,
-                          reject: true,
-                          reason,
-                          operationId: id(),
-                        }).then(load),
-                      ).catch(() => {});
-                  }}
-                >
-                  驳回
-                </button>
+                <label className="field"><span>驳回理由</span><input maxLength={1000} value={rejectReasons[f.id]||""} onChange={e=>RejectReasons({...rejectReasons,[f.id]:e.target.value})}/></label>
+                <button disabled={!rejectReasons[f.id]?.trim()} onClick={()=>run(()=>api("/library/review",{id:f.id,reject:true,reason:rejectReasons[f.id],operationId:id()}).then(load)).catch(()=>{})}>驳回</button>
               </article>
             ))}
         </section>
@@ -1623,7 +1633,8 @@ function Settings({
     [users, Users] = useState([]),
     [secret, Secret] = useState(""),
     [p, P] = useState({}),
-    [invite, Invite] = useState("");
+    [invite, Invite] = useState(""),[deletion,Deletion]=useState(null),[preferences,Preferences]=useState(me.user.preferences||{artStyle:"tactical",killEffects:true});
+  useEffect(()=>{if(!deletion||deletion.status==="deleted")return;const t=setInterval(()=>api("/admin/groups/"+deletion.groupId+"/deletion").then(Deletion).catch(()=>{}),2500);return()=>clearInterval(t);},[deletion?.groupId,deletion?.status]);
   useEffect(() => {
     api("/auth/devices")
       .then(Devices)
@@ -1741,7 +1752,7 @@ function Settings({
               <div className="result-row" key={m.userId}>
                 <b>{m.name}</b>
                 <span>
-                  {m.role} · {m.active ? "有效" : "已移除"}
+                  {m.role === "gm" ? "GM" : "玩家"} · {m.active ? "有效" : "已移除"}
                 </span>
                 {me.user.admin && (
                   <button
@@ -1760,7 +1771,6 @@ function Settings({
                 )}
                 <button
                   onClick={() => {
-                    if (confirm("移除 " + m.name + " 的本团访问权限？"))
                       run(() =>
                         api("/groups/" + groupId + "/members", {
                           userId: m.userId,
@@ -1807,6 +1817,7 @@ function Settings({
         )}
       </section>
       <section className="panel">
+        <h3>展示偏好</h3><label className="field"><span>技能及 RP 标题风格</span><select value={preferences.artStyle} onChange={e=>Preferences({...preferences,artStyle:e.target.value})}><option value="tactical">战术 · 钢铁铭文</option><option value="magic">魔法 · 星火符文</option><option value="psychic">精神 · 幻象回响</option></select></label><label><input type="checkbox" checked={preferences.killEffects} onChange={e=>Preferences({...preferences,killEffects:e.target.checked})}/>播放击杀特效</label><button onClick={()=>run(async()=>{await api('/preferences',preferences);await boot();notice('展示偏好已保存。');}).catch(()=>{})}>保存展示偏好</button>
         <h3>账号安全</h3>
         <form
           onSubmit={(e) => {
@@ -1878,6 +1889,9 @@ function Settings({
       </section>
       {me.user.admin && (
         <section className="panel">
+          <h3>管理员团管理</h3>
+          {group&&<article className="delete-group"><h4>{group.name}</h4><p>永久删除此团的成员关系、邀请码、频道与私聊、消息、图片、角色资产、模板、地图、战斗及草稿。网站账号、其他团与已发布公共库保留。点击即执行，无法从网站恢复。</p><button className="danger" disabled={!!deletion&&deletion.status!=='deleted'} onClick={()=>run(async()=>{const r=await api('/admin/groups/'+group.id+'/delete',{operationId:id(),baseVersion:group.version});Deletion(r);Groups(await api('/groups'));notice('删除已开始，图片清理将在后台完成。');}).catch(()=>{})}>永久删除团</button></article>}
+          {deletion&&<p role="status">删除进度：{{deleting:'正在删除',deleted:'已删除',cleanup_error:'清理异常，后台将继续重试'}[deletion.status]}</p>}
           <h3>管理员账号管理</h3>
           {users.map((u) => (
             <div className="result-row" key={u.id}>
@@ -1896,11 +1910,6 @@ function Settings({
               <button
                 disabled={u.id === me.user.id}
                 onClick={() => {
-                  if (
-                    confirm(
-                      (u.disabled ? "恢复账号 " : "停用账号 ") + u.name + "？",
-                    )
-                  )
                     run(() =>
                       api("/admin/user", {
                         userId: u.id,

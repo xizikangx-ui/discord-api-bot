@@ -29,14 +29,14 @@ function migrate(state){if(state.ammunitionVersion===1)return false;
 }
 function round(t){return {weight:t.weight||0,effects:clone(t.effects||[]),damage:clone(t.damage||{}),conditions:clone(t.conditions||[]),template:clone(t)};}
 function attached(p,id){return Object.values(p.inventory).some(i=>i.magazineId===id);}
-function fill(p,magazineId,ammoId,quantity){normalize(p);const m=p.inventory[magazineId],a=p.inventory[ammoId];
+function fill(p,magazineId,ammoId,quantity){require('./conditions').requireAction(p,'ammo',null,'quick');normalize(p);const m=p.inventory[magazineId],a=p.inventory[ammoId];
   ok(m?.snapshot.kind==='弹夹'&&a?.snapshot.kind==='弹药','请选择弹夹和弹药。');ok(!attached(p,magazineId),'先抽出弹夹，再填弹。');
   ok(ammoCompatible(m.snapshot,a.snapshot),'弹药与弹夹不兼容。');
   const free=m.loaded.capacity-m.loaded.current,n=quantity==null?Math.min(free,a.quantity):C.number(quantity,'填弹数量',1,10000);
   ok(n>0&&n<=free&&n<=a.quantity,'弹夹已满或弹药不足。');m.loaded.rounds.push(...Array.from({length:n},()=>round(a.snapshot)));m.loaded.current=m.loaded.rounds.length;
   a.quantity-=n;if(!a.quantity)delete p.inventory[ammoId];p.ammoVersion=(p.ammoVersion||0)+1;return n;
 }
-function swap(p,weaponId,magazineId){normalize(p);const w=p.inventory[weaponId],m=p.inventory[magazineId];ok(w&&usesMagazine(w.snapshot),'该武器不支持弹夹／箭匣。');
+function swap(p,weaponId,magazineId){require('./conditions').requireAction(p,'ammo',null,'quick');normalize(p);const w=p.inventory[weaponId],m=p.inventory[magazineId];ok(w&&usesMagazine(w.snapshot),'该武器不支持弹夹／箭匣。');
   const old=w.magazineId||null;
   if(magazineId){ok(m?.snapshot.kind==='弹夹'&&!attached(p,magazineId),'弹夹不存在或已装入武器。');ok(magazineCompatible(w.snapshot,m.snapshot),'弹夹与武器不兼容。');
     ok(m.loaded.rounds.every(r=>ammoCompatible(w.snapshot,r.template||{id:w.snapshot.initialAmmo?.id,ammoType:w.snapshot.ammoType})),'弹夹中的弹药不兼容此武器。');
@@ -44,7 +44,7 @@ function swap(p,weaponId,magazineId){normalize(p);const w=p.inventory[weaponId],
   }else {ok(old,'武器没有可抽出的弹夹。');delete w.magazineId;w.loaded=empty(w.snapshot);}
   w.magazineStorage=true;p.ammoVersion=(p.ammoVersion||0)+1;return old;
 }
-function validateBattleOperation(state,b,turnId,op,context){const B=require('./combat'),M=require('./model'),W=require('./weapons');const {actor,p,turn}=context||B.readonlyCurrent(state,b,turnId);if(!context)normalize(p);
+function validateBattleOperation(state,b,turnId,op,context){const B=require('./combat'),M=require('./model'),W=require('./weapons');const {actor,p,turn}=context||B.readonlyCurrent(state,b,turnId);if(!context)normalize(p);require('./conditions').requireAction(p,'ammo',null,'quick');
  ok(!b.pending&&turn.quick>0,'需要自己的快速行动且没有待响应攻击。');if(actor.userId)for(const ref of [op.weapon,op.magazine,op.ammo].filter(Boolean))ok(M.available(state,actor.userId,ref)>0,'物品已被交易预留。');
  if(op.type==='fill'){const m=p.inventory[op.magazine],a=p.inventory[op.ammo];ok(m?.snapshot.kind==='弹夹'&&a?.snapshot.kind==='弹药','请选择弹夹和弹药。');ok(!attached(p,op.magazine),'先抽出弹夹，再填弹。');ok(ammoCompatible(m.snapshot,a.snapshot),'弹药与弹夹不兼容。');const free=m.loaded.capacity-m.loaded.current,available=actor.userId?M.available(state,actor.userId,op.ammo):a.quantity,n=op.quantity??Math.min(free,available||0);C.number(n,'填弹数量',1,10000);ok(n>0&&n<=free&&n<=a.quantity,'弹夹已满或弹药不足。');}
  else{ok(['extract','swap'].includes(op.type),'弹药操作无效。');ok(W.equipped(p).includes(op.weapon),'只能操作已装备的武器。');const w=p.inventory[op.weapon],m=p.inventory[op.magazine];ok(w&&usesMagazine(w.snapshot),'该武器不支持弹夹／箭匣。');if(op.type==='extract')ok(w.magazineId,'武器没有可抽出的弹夹。');else{ok(m?.snapshot.kind==='弹夹'&&!attached(p,op.magazine),'弹夹不存在或已装入武器。');ok(magazineCompatible(w.snapshot,m.snapshot),'弹夹与武器不兼容。');ok(m.loaded.rounds.every(r=>ammoCompatible(w.snapshot,r.template||{id:w.snapshot.initialAmmo?.id,ammoType:w.snapshot.ammoType})),'弹夹中的弹药不兼容此武器。');}}

@@ -53,6 +53,7 @@ function memoryRepository() {
         .sort((a, b) => a.sequence - b.sequence);
       return C.clone(after ? m.slice(0, limit) : m.slice(-limit));
     },
+    purgeGroup:async(group,rooms)=>{for(const [key,r] of records)if(r.scope===group||r.kind==='group'&&r.value.id===group)records.delete(key);for(const [id,m] of messages)if(rooms.includes(m.roomId))messages.delete(id);},
     tx: (id, fn) => {
       const p = tail
         .catch(() => {})
@@ -88,6 +89,7 @@ async function main() {
       acquireLease: async () => {},
       load: async (id) => C.clone(states.get(id) || null),
       save: async (id, b, s) => states.set(id, C.clone(s)),
+      deleteGuild: async id => states.delete(id),
     },
     key = crypto.randomBytes(32).toString("base64"),
     crypt = S.codec(key),
@@ -156,6 +158,12 @@ async function main() {
     x.generate(s, m);
     x.publish(s, m);
     x.join(s, m, u.id);
+    const Skill=require('../../src/rpg/skills'),B=require('../../src/rpg/combat');
+    for(const [name,primary,damage]of [['星火·苍穹断章','magical',{magical:'2d6'}],['钢铁回响','physical',{physical:'1d10'}],['无声王冠','mental',{mental:'1d8'}]]){
+      const t=Skill.publish(s,{...require('../../src/rpg/forms').defaults('skill'),name,primary,damage,rangeMeters:100,hit:100,description:'在荒原的残响中凝聚力量，让失落的誓约重新燃烧。'});Skill.grant(p,t);
+    }
+    const battle=B.createBattle(s,s.config.announcementChannelId,u.id,'灰烬营地 · 技能演练');B.join(s,battle,u.id);const enemy=M.newCharacter('荒原靶标',{strength:1,constitution:1,mind:1,appearance:1,intelligence:1,agility:1,knowledge:1});enemy.hp=1;
+    battle.actors.push({id:C.id('a'),name:enemy.name,team:'enemy',character:enemy,x:45,y:25,retreated:false,ai:{mode:'manual'}});battle.width=3;battle.height=3;B.start(s,battle,null,(lo)=>lo);
     return true;
   });
   const room = (await repo.list("room", g.id)).find((c) => c.kind === "chat");

@@ -1199,6 +1199,62 @@ test(
           }
         },
       );
+      await t.test('direct submission uses relevant versions, receipt recovery and concurrent independent grants',async()=>{
+        const u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'单次提交隔离验收'},crypto.randomUUID());await app.games.ensure(g.id);
+        const users=Array.from({length:50},()=>crypto.randomUUID());
+        for(const id of users){await repo.put('user',{id,name:id,displayName:'隔离成员',version:1});await repo.put('member',{id:g.id+':'+id,groupId:g.id,userId:id,role:'player',active:true,version:1},{scope:g.id});}
+        await app.games.store.transact(g.id,'direct-fixture',u.id,st=>{for(const uid of users){const p=M.newCharacter('隔离角色',{strength:5,constitution:5,mind:5,appearance:5,intelligence:5,agility:5,knowledge:5});p.userId=uid;st.players[uid]=p;}return true;});
+        for(const n of [20,50]){const view=await app.games.view(g.id,u.id),times=[];await Promise.all(users.slice(0,n).map(async(uid,i)=>{const begin=performance.now(),op=crypto.randomUUID(),params={rows:[{uid,characterId:view.roster.find(p=>p.userId===uid).id,type:'xp',quantity:1}]};const result=await app.games.execute(g.id,u.id,'grant',params,op,view.versions,true);assert.equal(result.status,'committed');times.push(performance.now()-begin);const duplicate=await app.games.execute(g.id,u.id,'grant',params,op,view.versions,true);assert.deepEqual(duplicate,result);const receipt=await app.games.operationReceipt(g.id,u.id,op);assert.deepEqual(receipt,result);}));times.sort((a,b)=>a-b);console.log(JSON.stringify({type:'direct-postgres-load',requests:n,resultP95ms:Math.round(times[Math.ceil(n*.95)-1]),environment:process.platform+' private Railway PG isolated namespaces, blocked renderer'}));}
+        const stale=await app.games.view(g.id,u.id),params={rows:[{uid:users[0],characterId:stale.roster[0].id,type:'xp',quantity:1}]};params.rows[0].characterId=stale.player?.id||stale.roster.find(p=>p.userId===users[0]).id;
+        await app.games.store.transact(g.id,'change-before-direct',u.id,st=>{st.players[users[0]].balance++;return true;});await assert.rejects(app.games.execute(g.id,u.id,'grant',params,crypto.randomUUID(),stale.versions,true),e=>e.code==='CONFLICT');
+        const player=users[1],pv=await app.games.view(g.id,player);const done=await app.games.execute(g.id,player,'character.profile',{characterId:pv.player.id,data:{profile:{background:'保存一次'}}},crypto.randomUUID(),pv.versions);assert.equal(done.status,'committed');
+        const secret=S.token(),csrf=S.token();await repo.put('session',{id:S.hash(secret),userId:player,csrf,expiresAt:Date.now()+60000},{scope:player});
+        const webUser={secret,csrf},view=await app.games.view(g.id,player),operationId=crypto.randomUUID(),body={operationId,command:'character.profile',params:{characterId:view.player.id,data:{name:'一次保存的角色'}},versions:view.versions};
+        const http=await call(webUser,'/groups/'+g.id+'/game/execute',body);assert.equal(http.status,200);assert.equal(http.data.status,'committed');assert.deepEqual((await call(webUser,'/groups/'+g.id+'/game/execute',body)).data,http.data);
+        assert.equal((await call(webUser,'/groups/'+g.id+'/game/execute',{...body,params:{...body.params,data:{name:'不应覆盖'}}})).status,409);
+        const Z=require('../src/rpg/conditions'),B=require('../src/rpg/combat');let index=0;
+        await app.games.store.transact(g.id,'all-conditions-once',u.id,st=>{for(const t of Z.templates())for(const severity of Object.keys(t.levels)){const p=st.players[users[index++]];B.applyCondition(st,p,{id:t.id,severity},lo=>lo);}return true;});
+        const before=require('../src/rpg/postgres').digest(await db.load(g.id));await app.games.store.recover(g.id);assert.equal(require('../src/rpg/postgres').digest(await db.load(g.id)),before);assert.equal(index,19);assert.equal(app.games.store.snapshot(g.id).conditionPackVersion,1);
+      });
+      async function accountsUser(){return app.accounts.user(admin.user.id);}
+      await t.test('permanent deletion fences game writes, purges DM/content/media, resumes failed cleanup and retains other groups',async()=>{
+        const u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'仅删除隔离测试团'},crypto.randomUUID());await app.games.ensure(g.id);
+        const rooms=await repo.list('room',g.id),publicRoom=rooms.find(r=>r.kind==='chat');
+        await app.chat.send(u.id,publicRoom.id,{clientId:crypto.randomUUID(),text:'必须永久清理的测试正文'});
+        const key='test/'+crypto.randomUUID();storage.set(key,Buffer.from('private'));await repo.put('media',{id:crypto.randomUUID(),key,groupId:g.id,owner:u.id,status:'ready'},{scope:g.id});
+        await content.put('proposal',{id:crypto.randomUUID(),groupId:g.id,template:{name:'未发布测试内容'}},{scope:g.id});
+        const member=crypto.randomUUID();await repo.put('user',{id:member,name:'delete-qa',displayName:'隔离成员',version:1});await repo.put('member',{id:g.id+':'+member,groupId:g.id,userId:member,role:'player',active:true},{scope:g.id});
+        const privateRoom=await app.chat.dm(await app.accounts.member(g.id,u.id),member);await app.chat.send(u.id,privateRoom.id,{clientId:crypto.randomUUID(),text:'必须清理的私聊'});
+        const BK=require('../src/web/backup'),oldBackup=await BK.snapshot(pool,{names:{platform:schemas[0],content:schemas[1],game:schemas[2]}});
+        const beforeOther=require('../src/rpg/postgres').digest(await db.load(other.id));
+        await assert.rejects(app.deletion.start(await app.accounts.user(alice.user.id),g.id,{operationId:crypto.randomUUID(),baseVersion:g.version}),/管理员/);
+        let entered,release;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+        const write=app.games.store.transact(g.id,'already-entered',u.id,async st=>{entered();await gate;st.config.test=1;return true;});await started;
+        const request={operationId:crypto.randomUUID(),baseVersion:g.version};const result=await app.deletion.start(u,g.id,request);assert.equal(result.status,'deleting');await assert.rejects(app.accounts.member(g.id,u.id),/不存在/);release();await write;await app.deletion.drain();
+        const failed=await app.deletion.status(u,g.id);assert.equal(failed.status,'cleanup_error');assert.equal(await db.load(g.id),null);assert.equal(await repo.get('group',g.id),null);
+        commands.DeleteObjectCommand=class{constructor(input){this.input=input;this.type='delete';}};const send=bucket.client.send;bucket.client.send=async c=>{if(c.type==='delete'){storage.delete(c.input.Key);return {};}return send(c);};
+        const resumed=require('../src/web/group-deletion').createDeletion({repo,content,accounts:app.accounts,games:app.games,database:db,storage:bucket});await resumed.resume();assert.equal((await resumed.status(u,g.id)).status,'deleted');assert.equal(storage.has(key),false);
+        assert.equal((await repo.list('room',g.id)).length,0);assert.equal((await content.list('proposal',g.id)).length,0);assert.equal((await repo.history(publicRoom.id)).length,0);assert.ok(await app.accounts.user(u.id));assert.equal(require('../src/rpg/postgres').digest(await db.load(other.id)),beforeOther);
+        assert.equal((await app.deletion.start(u,g.id,request)).status,'deleted');await assert.rejects(app.games.store.transact(g.id,'late-write',u.id,()=>true),/删除/);await assert.rejects(app.chat.send(u.id,publicRoom.id,{clientId:crypto.randomUUID(),text:'旧连接'}));await assert.rejects(app.games.ensure(g.id));
+        await assert.rejects(BK.restore(pool,oldBackup,{names:{platform:'web_test_restore_deleted_'+suffix,content:'web_test_restore_deleted_c_'+suffix,game:'rpg_test_restore_deleted_'+suffix}}),/永久删除/);
+        await assert.rejects(content.put('proposal',{id:crypto.randomUUID(),groupId:g.id,template:{name:'迟到申请'}},{scope:g.id}),/删除/);assert.equal((await repo.history(privateRoom.id)).length,0);
+        const tombstone=await repo.get('groupDeletion',g.id);assert.equal(tombstone.keys,undefined);assert.equal(tombstone.rooms,undefined);assert.doesNotMatch(JSON.stringify(tombstone),/正文|仅删除隔离测试团/);
+      });
+      await t.test('deletion waits for first game initialization and cannot resurrect an empty save',async()=>{
+        const u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'首次初始化并发删除验收'},crypto.randomUUID());
+        let entered,release;
+        const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r),originalLoad=db.load;
+        db.load=async id=>{if(id===g.id){entered();await gate;}return originalLoad(id);};
+        try{
+          const initializing=app.games.ensure(g.id);await started;
+          await app.deletion.start(u,g.id,{operationId:crypto.randomUUID(),baseVersion:g.version});
+          release();await assert.rejects(initializing,/删除/);await app.deletion.drain();
+          assert.equal(await originalLoad(g.id),null);
+          assert.equal((await app.deletion.status(u,g.id)).status,'deleted');
+          await assert.rejects(app.games.ensure(g.id),/删除/);
+          assert.equal(await originalLoad(g.id),null);
+        }finally{release();db.load=originalLoad;}
+      });
       await t.test(
         "encrypted data can be read from fresh repositories after restart",
         async () => {

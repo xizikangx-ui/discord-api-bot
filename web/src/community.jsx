@@ -26,12 +26,12 @@ export function GroupHome({ game, group, members, rooms, Preview }) {
       </section>
       {game?.actionDrafts?.length > 0 && (
         <section className="panel">
-          <h3>待确认操作</h3>
-          <p>刷新或断线后可继续核对原草稿，查询原编号的结果。</p>
+          <h3>旧版未执行草稿</h3>
+          <p>旧版草稿不会自动执行。可打开查看或返回修改。</p>
           {game.actionDrafts.map((f) => (
             <div className="result-row" key={f.id}>
               <span>
-                {f.command} · {new Date(f.expiresAt).toLocaleTimeString()}
+                {f.gm?"GM操作草稿":"玩家行动草稿"} · {new Date(f.expiresAt).toLocaleTimeString()}
               </span>
               <button onClick={() => Preview(f)}>继续核对</button>
             </div>
@@ -198,7 +198,7 @@ export function ChannelManager({ groupId, rooms, members, run, refresh }) {
               </button>
               <button
                 onClick={() => {
-                  if (confirm("关闭频道后，历史消息仍保留，成员无法继续访问。"))
+
                     save({ ...editing, archived: true });
                 }}
               >

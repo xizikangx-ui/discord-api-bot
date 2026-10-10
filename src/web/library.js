@@ -265,7 +265,14 @@ function createLibrary(repo) {
       return { imported: entries.length };
     });
   }
-  return { published, propose, approve, seed };
+  async function installConditions(){return repo.tx('content:conditions-v1',async r=>{
+    let added=0;for(const template of require('../rpg/conditions').templates()){
+      const id='conditionTemplates:'+template.id;
+      if(await repo.get('entry',id,r))continue;
+      await repo.put('entry',{id,collection:'conditionTemplates',templateId:template.id,version:1,template,at:Date.now(),source:'conditions-v1',approvedBy:'system:owner-approved-pack'},{scope:'conditionTemplates'},r);added++;
+    }return {added};
+  });}
+  return { published, propose, approve, seed, installConditions };
 }
 module.exports = {
   createLibrary,

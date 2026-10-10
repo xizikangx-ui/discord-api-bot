@@ -6,6 +6,7 @@ export function setCsrf(value) {
 export async function api(path, body) {
   const r = await fetch("/api/web/v1" + path, {
     method: body === undefined ? "GET" : "POST",
+    signal: AbortSignal.timeout(20000),
     headers:
       body === undefined
         ? {}

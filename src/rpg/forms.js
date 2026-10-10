@@ -24,8 +24,8 @@ function defaults(kind, itemKind = '杂物') {
     special: 'heart', keyCharges: 1, heal: '0', clearConditions: [], duration: { kind: 'actions', count: 3 }, action: 'formal', casting: 0 };
   if (kind === 'trait') return { name: '', description: '', effects: [] };
   if (kind === 'condition') return { name: '', description: '', type: 'physical', effectType: 'numeric',
-    levels: Object.fromEntries(C.SEVERITIES.map(s => [s, { enabled: s === '一般', difficulty: 10,
-      duration: { kind: 'actions', count: 3 }, worsenAfter: 0, description: '', effects: [] }])) };
+    levels: Object.fromEntries(C.SEVERITIES.map(s => [s, { enabled: s === '一般', difficulty: {'一般':10,'严重':14,'致命':18}[s],
+      duration: { kind: 'actions', count: 3 }, worsenAfter: 0, description: '', effects: [], restrictions: [], movementMultiplier: 1 }])) };
   if (kind === 'mapcategory') return { name: '', description: '' };
   if (kind === 'room') return { name: '', description: '', categoryIds: [], boxes: [], containerCounts: {}, supplyIds: [], supplyQuantities: {}, npcIds: [], npcQuantities: {}, keyIds: [], autoStart: true, spawn: {playerX:25,playerY:25,npcX:475,npcY:475}, obstacles: require('./encounter-layout').defaults(), randomContainers: [], randomSupplies: [], randomNpcs: [] };
   if (kind === 'npc') return { humanoid: false, baseXP: 0, name: '', description: '', attributes: Object.fromEntries(Object.keys(C.ATTRIBUTES).map(k => [k, 3])),
@@ -47,7 +47,7 @@ function fields(form) {
       list.push(field(prefix + 'enabled', s + '级是否启用', 'bool'), field(prefix + 'difficulty', s + '级豁免难度', 'number'),
         enumField(prefix + 'duration.kind', s + '级持续类型', [{ value: 'actions', label: '自身行动机会' }, { value: 'battle', label: '一场战斗' }, { value: 'until', label: '直到解除' }]),
         field(prefix + 'duration.count', s + '级持续行动次数', 'number'), field(prefix + 'worsenAfter', s + '级恶化次数（0关闭）', 'number'),
-        field(prefix + 'description', s + '级效果描述', 'long'), field(prefix + 'effects', s + '级扣除效果', 'conditionEffects'));
+        {...enumField(prefix+'restrictions',s+'级行动限制',Object.entries(require('./conditions').RESTRICTIONS).map(([value,label])=>({value,label}))),type:'multi'},field(prefix+'movementMultiplier',s+'级移动倍率（0—1）','number'),field(prefix + 'description', s + '级效果描述', 'long'), field(prefix + 'effects', s + '级扣除效果', 'conditionEffects'));
     }
     return list;
   }

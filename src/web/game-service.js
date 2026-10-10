@@ -37,6 +37,7 @@ const playerCommands = {
   "battle.join": "加入战斗",
   "battle.withdraw": "退出招募",
   "battle.action": "战斗行动",
+  "merchant.trade":"行商交易",
   "corpse.claim": "领取战利品",
   "check.roll": "进行鉴定",
   "session.join": "开团报名",
@@ -55,7 +56,7 @@ function normalizeAction(s, uid, p) {
     x = C.clone(p.params || {}),
     turnId = p.turnId;
   S.ok(
-    p.action === "defend" || b.current?.id === turnId,
+    p.action === "defend" || b.current?.id === turnId && b.current.actorId === a.id,
     "行动机会已经变化。",
     "CONFLICT",
   );
@@ -106,6 +107,7 @@ function normalizeAction(s, uid, p) {
   return x;
 }
 function applyPlayer(s, uid, command, p) {
+  if(command==="merchant.trade"){const V=require("../rpg/merchant"),f=V.quote(s,uid,p.mapId,p.cell,p.mode,p.itemId,p.quantity);return V.execute(s,uid,f.id);}
   if (command === "character.roll")
     return M.rollCharacter(s, uid, p.name, !!p.reroll);
   if (command === "character.confirm") {
@@ -373,6 +375,14 @@ function playerGuards(s, uid, command, p) {
       });
   return refs;
 }
+function actionRestrictions(b,p,uid){
+  if(!p)return {};
+  const Z=require('../rpg/conditions'),actor=b.actors.find(a=>a.userId===uid),abilities=B.abilities(p,true);
+  const result=Object.fromEntries(['move','flee','cast','item','switch','ammo','reload'].map(action=>[action,Z.reason(p,action,action==='cast'?abilities.find(a=>a.key===actor?.casting?.key)?.attack:null,action==='flee'?'formal':'quick')]));
+  const reasons=abilities.map(a=>Z.reason(p,'attack',a.attack,a.attack.action||'formal'));
+  result.attack=reasons.length&&reasons.every(Boolean)?reasons[0]:Z.reason(p,'attack',null,'quick');
+  return result;
+}
 function playerView(s, uid, { roomIds } = {}) {
   const visible = (o) => !roomIds || !o.channelId || roomIds.has(o.channelId);
   const p = s.players[uid],
@@ -400,9 +410,12 @@ function playerView(s, uid, { roomIds } = {}) {
         .map((f) => ({
           id: f.id,
           command: f.command,
+          label: playerCommands[f.command] || 'GM操作',
           at: f.at,
           result: f.result,
         })),
+      historicalDeathIds: Object.values(s.deaths).filter(d=>s.battles[d.battleId]&&visible(s.battles[d.battleId])).map(d=>d.id),
+      skills: p?B.abilities(p,true).filter(a=>a.attack.kind==="技能"):[],
       revision: s.revision,
       player: p ? { ...p, stats: M.stats(p), health: H.snapshot(p) } : null,
       draft: s.characterDrafts[uid],
@@ -492,6 +505,7 @@ function playerView(s, uid, { roomIds } = {}) {
           ap: B.actorCharacter(s, a).ap,
           nextCost: B.opportunityCost(b, a.id),
         })),
+        restrictions: actionRestrictions(b,p,uid),
         abilities:
           b.actors.some((a) => a.userId === uid && !a.deathId) && p
             ? B.abilities(p)

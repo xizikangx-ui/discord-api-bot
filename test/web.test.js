@@ -147,3 +147,14 @@ test("website player projection does not expose unvisited rooms or unopened cont
   assert.equal(v.maps[0].cells["0,0"].room.containers[0].result, undefined);
   assert.ok(!JSON.stringify(v).includes("秘密BOSS"));
 });
+test('kill effects require actual enemy deaths, aggregate completed AOE and ignore duplicate/history publications',async()=>{
+  const {eventDeaths}=require('../src/web/effects'),{freshKills}=await import('../web/src/kill-effects.js');
+  const state={deaths:{d1:{battleId:'b',team:'enemy'},d2:{battleId:'b',team:'enemy'},ally:{battleId:'b',team:'ally'}}},attack={type:'attack',details:{children:[{result:{deathId:'d1',killed:true}},{result:null}]}};
+  const b={id:'b',publicEvents:[attack]};assert.deepEqual(eventDeaths(state,b,attack),[]);
+  assert.deepEqual(eventDeaths(state,b,{type:'death',details:{deathId:'d1',killed:true}}),[]);
+  attack.details.children[1].result={deathId:'d2',killed:true};assert.deepEqual(eventDeaths(state,b,attack),['d1','d2']);
+  assert.deepEqual(eventDeaths(state,b,{type:'death',details:{deathId:'missing',killed:true}}),[]);
+  assert.deepEqual(eventDeaths(state,b,{type:'death',details:{deathId:'ally',killed:true}}),[]);
+  const seen=new Set(),event={type:'message',data:{system:{event:attack,effectDeaths:['d1','d2']}}};assert.deepEqual(freshKills(event,seen,false),[]);assert.deepEqual(freshKills({...event,type:'history'},seen,true),[]);assert.deepEqual(freshKills(event,seen,true),['d1','d2']);assert.deepEqual(freshKills(event,seen,true),[]);
+  const meta=await require('sharp')(require('node:path').join(__dirname,'../web/public/effects/kill-v1.gif')).metadata();assert.ok(meta.pages>=2&&meta.pages<=12);assert.equal(meta.loop,1);assert.ok(meta.delay.reduce((a,b)=>a+b,0)<=2100);assert.ok(require('node:fs').statSync(require('node:path').join(__dirname,'../web/public/effects/kill-v1.gif')).size<512*1024);
+});

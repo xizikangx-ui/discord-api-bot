@@ -4,7 +4,7 @@ const directions=[[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1]];
 const cellName=(x,y)=>String.fromCharCode(65+x)+(y+1),clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
 function fingerprint(s,b,a){const p=B.actorCharacter(s,a);return crypto.createHash('sha256').update(JSON.stringify([p.id,a.x,a.y,b.status,b.pending?.id,b.current?.id,b.current?.move,b.current?.moveSpent,M.stats(p).move,M.stats(p).overloaded,b.terrain])).digest('hex');}
 function motion(s,b,a){const p=B.actorCharacter(s,a);return {p,overloaded:M.stats(p).overloaded};}
-function legal(s,b,a,x,y,ctx=motion(s,b,a)){const p=ctx.p,turn=b.current;if(!H.canAct(p)||ctx.overloaded||b.status!=='active'||b.pending||turn?.actorId!==a.id)return null;x=C.round2(x);y=C.round2(y);if(x<0||y<0||x>=b.width*50||y>=b.height*50||b.terrain[Math.floor(x/50)+','+Math.floor(y/50)]==='blocked')return null;
+function legal(s,b,a,x,y,ctx=motion(s,b,a)){const p=ctx.p,turn=b.current;if(require('./conditions').reason(p,'move')||!H.canAct(p)||ctx.overloaded||b.status!=='active'||b.pending||turn?.actorId!==a.id)return null;x=C.round2(x);y=C.round2(y);if(x<0||y<0||x>=b.width*50||y>=b.height*50||b.terrain[Math.floor(x/50)+','+Math.floor(y/50)]==='blocked')return null;
  try{const cost=B.movementCost(b,a,{x,y});return cost>0&&cost<=turn.move+.000001?{x,y,cost,distance:C.round2(Math.hypot(x-a.x,y-a.y))}:null;}catch{return null;}}
 function points(s,b,a,x,y,ctx=motion(s,b,a)){const list=[],names=['左上','上方','右上','左侧','正中','右侧','左下','下方','右下'];for(const [n,dy] of [10,25,40].entries())for(const [k,dx] of [10,25,40].entries())list.push({...legal(s,b,a,x*50+dx,y*50+dy,ctx),label:names[n*3+k]});
  const near=legal(s,b,a,clamp(a.x,x*50,x*50+49.99),clamp(a.y,y*50,y*50+49.99),ctx);if(near)list.push({...near,label:'最近可达点'});

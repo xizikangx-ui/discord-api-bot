@@ -9,6 +9,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     displayName: u.displayName,
     admin: !!u.admin,
     disabled: !!u.disabled,
+    preferences: u.preferences || {artStyle:"tactical",killEffects:true},
   });
   async function user(id, r) {
     const u = await repo.get("user", id, r);
@@ -17,8 +18,8 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
   }
   async function member(group, account, r) {
     const u = await user(account, r),
-      g = await repo.get("group", group, r);
-    S.ok(g && !g.archived, "跑团不存在。", "NOT_FOUND");
+      g = await repo.get("group", group, r, !!r);
+    S.ok(g && !g.archived && !g.deleting, "跑团不存在。", "NOT_FOUND");
     const m = await repo.get("member", group + ":" + account, r, !!r);
     S.ok(u.admin || m?.active, "你不是此团的成员。", "FORBIDDEN");
     return { user: u, group: g, role: u.admin ? "admin" : m.role, member: m };
@@ -230,7 +231,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
         issuer: a.user.id,
         expiresAt: Date.now() + 7 * 86400000,
       };
-    await repo.put("invite", i, { scope: a.group.id });
+    await repo.tx("invite:"+i.id,async r=>{gm(await member(a.group.id,a.user.id,r));await repo.put("invite", i, { scope: a.group.id },r);return {issued:true};});
     return { code: secret, expiresAt: i.expiresAt };
   }
   async function join(u, code) {

@@ -212,13 +212,17 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const rows = [row(select('tab:' + prefix, '操作分页', [
     ['overview', '概览'], ['move', '移动'], ['quick', '快速行动'], ['formal', '正式行动'], ['status', '装备与状态']
   ].map(([value, label]) => ({ value, label, default: value === tab }))))];
+  const restricted=(action,t,group)=>require('./conditions').reason(p,action,t,group);
+  const controls=[...new Set(['move','flee','item','ammo','switch','cast'].map(action=>restricted(action,null,action==='flee'?'formal':'quick')).filter(Boolean))];
+  if(controls.length)body+='\n\n⛔ '+controls.join('\n');
+  const attackBlocked=group=>!B.abilities(p).some(a=>!restricted('attack',a.attack,group)&&(a.attack.kind!=='技能'||(a.attack.action||'formal')===group));
   const enabled = require('./health').canAct(p) && !!turn && b.status === 'active' && !b.pending;
-  if (tab === 'move') rows.push(row(button('move:' + prefix, '点地图移动', D.ButtonStyle.Primary, !enabled || s.overloaded),button('movement:shortcuts:'+b.id+':'+a.id,'靠近 / 远离敌人',undefined,!enabled||s.overloaded)));
-  if (tab === 'quick') rows.push(row(button('attackpick:' + prefix + ':quick:0', '快捷技能／超凡攻击', D.ButtonStyle.Primary, !enabled || !turn.quick),
-    button('ammo:b:'+b.id+':'+a.id+':home', '更换弹夹 / 填弹', undefined, !enabled || !turn.quick), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick),
-    button('itempick:' + prefix + ':0', '使用道具', undefined, !enabled || !turn.quick), button('cast:' + prefix, '确认吟唱', undefined, !enabled || !turn.quick)));
-  if (tab === 'formal') rows.push(row(button('attackpick:' + prefix + ':formal:0', '攻击／释放技能', D.ButtonStyle.Primary, !enabled || !turn.formal),
-    button('flee:' + prefix, '逃跑', undefined, !enabled || !turn.formal)));
+  if (tab === 'move') rows.push(row(button('move:' + prefix, '点地图移动', D.ButtonStyle.Primary, !enabled || s.overloaded || !!restricted('move')),button('movement:shortcuts:'+b.id+':'+a.id,'靠近 / 远离敌人',undefined,!enabled||s.overloaded||!!restricted('move'))));
+  if (tab === 'quick') rows.push(row(button('attackpick:' + prefix + ':quick:0', '快捷技能／超凡攻击', D.ButtonStyle.Primary, !enabled || !turn.quick || attackBlocked('quick')),
+    button('ammo:b:'+b.id+':'+a.id+':home', '更换弹夹 / 填弹', undefined, !enabled || !turn.quick || !!restricted('ammo')), button('weaponpick:' + prefix + ':0', '切换武器', undefined, !enabled || !turn.quick || !!restricted('switch')),
+    button('itempick:' + prefix + ':0', '使用道具', undefined, !enabled || !turn.quick || !!restricted('item')), button('cast:' + prefix, '确认吟唱', undefined, !enabled || !turn.quick || !!restricted('cast',B.abilities(p,true).find(x=>x.key===a.casting?.key)?.attack))));
+  if (tab === 'formal') rows.push(row(button('attackpick:' + prefix + ':formal:0', '攻击／释放技能', D.ButtonStyle.Primary, !enabled || !turn.formal || attackBlocked('formal')),
+    button('flee:' + prefix, '逃跑', undefined, !enabled || !turn.formal || !!restricted('flee',null,'formal'))));
   if (tab === 'status') rows.push(row(button(a.userId?'equippick:' + prefix + ':0':'npcui:b:'+b.id+':'+a.id+':gear:overview:0', '装备／卸下', D.ButtonStyle.Primary, !['paused', 'recruiting'].includes(b.status)),
     button('attachpick:' + prefix + ':0', '装配／拆下配件', undefined, !['paused', 'recruiting'].includes(b.status)),
     button('statuspage:' + prefix + ':' + (statusPage - 1), '上一页异常', undefined, statusPage === 0),

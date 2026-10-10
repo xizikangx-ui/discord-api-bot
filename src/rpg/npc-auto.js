@@ -101,7 +101,7 @@ function options(state,b,a) {
   }
   const nearest=enemies.sort((x,y)=>Math.hypot(a.x-x.x,a.y-x.y)-Math.hypot(a.x-y.x,a.y-y.y))[0];
   const to=!M.stats(p).overloaded && approach(b,a,nearest,b.current.move);
-  if(to)for(const group of ['quick','formal'])if(b.current[group])result.push({type:'move',key:'move',group,...to});
+  if(to)for(const group of ['quick','formal'])if(b.current[group]){const op={type:'move',key:'move',group,...to};if(legal(state,b,op))result.push(op);}
   return result;
 }
 function mean(expr){if(!expr)return 0;const s=String(expr).replace(/\s/g,'').toLowerCase(),m=s.match(/^r?(\d*)d(\d+)([+-]\d+)?$/);return m?Number(m[1]||1)*(Number(m[2])+1)/2+Number(m[3]||0):Number(s)||0;}

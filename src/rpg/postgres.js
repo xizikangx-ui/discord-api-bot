@@ -105,7 +105,8 @@ function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool
     await save(guild, null, state, { messageId });
     C.requireThat(digest(await load(guild)) === digest(state), '数据库导入校验失败，停止启用跑团。');
   }
+  async function deleteGuild(guild,runner){C.requireThat(schema!=="rpg", "禁止从网站删除Discord存档。");assertLease();for(const name of ["objects","audit","receipts","imports","guilds"])await runner.query(`DELETE FROM ${table(name)} WHERE guild_id=$1`,[guild]);}
   async function close() { lost = true; clearInterval(heartbeat); if (lease) { lease.release(true); lease = null; } await pool.end(); }
-  return { init, load, save, importState, acquireLease, assertLease, close, digest, pool };
+  return { init, load, save, importState, acquireLease, assertLease, close, digest, pool, deleteGuild };
 }
 module.exports = { createPostgres, COLLECTIONS, digest };

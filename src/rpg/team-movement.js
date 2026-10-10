@@ -11,7 +11,7 @@ function valid(state,m,r,now=Date.now()){
 }
 function expire(state,m,now=Date.now()) {const r=m.moves?.[m.moveRequestId];if(r?.status==='pending'&&!valid(state,m,r,now)){r.status=r.expiresAt<=now?'expired':'cancelled';r.reason=r.status==='expired'?'四分钟内未全员确认':'地图、队伍或角色状态已经变化';return r;}return null;}
 function checks(state,m,r){require('./rp').check(m);ok(valid(state,m,r),'移动申请已过期或队伍状态变化，请重新发起。');
-  for(const uid of r.members){const {p,part}=X.participant(state,m,uid);ok(part.cell===r.from,'全队必须在同一格。');ok(!M.stats(p).overloaded,p.name+'超重，无法移动。');}
+  for(const uid of r.members){const {p,part}=X.participant(state,m,uid);require('./conditions').requireAction(p,'move');ok(part.cell===r.from,'全队必须在同一格。');ok(!M.stats(p).overloaded,p.name+'超重，无法移动。');}
   if(r.kind&&r.kind!=='move'){require('./map-links').check(state,m,r);return;}
   ok(X.neighbors(m,r.from).includes(r.to),'只能移动到相邻可通行格。');
   const origin=m.cells[r.from]?.room;ok(!origin||origin.encounter==='resolved','先完成当前房间遭遇。');

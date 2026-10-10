@@ -59,6 +59,11 @@ async function restore(pool, archive, { names } = {}) {
   const r = await pool.connect();
   try {
     await r.query("BEGIN");
+    const source=archive.sourceSchemas?.platform||'web_platform';S.ok(valid(source),'备份来源命名空间无效。');
+    const marks=(await r.query('SELECT id FROM "'+source+'".records WHERE kind=$1',['groupDeletion'])).rows;
+    const groups=new Set((archive.namespaces.game.guilds||[]).map(g=>g.guild_id));
+    for(const row of archive.namespaces.platform.records||[])if(row.kind==='group')groups.add(row.id);
+    S.ok(!marks.some(m=>groups.has(m.id)),'备份包含已永久删除的团，禁止恢复以免复活。');
     for (const [key, d] of Object.entries(definitions)) {
       const schema = names[key];
       S.ok(

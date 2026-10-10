@@ -185,8 +185,9 @@ function createGames({
   async function ensure(id) {
     if (store.guilds().includes(id)) return;
     if (loading.has(id)) return loading.get(id);
-    const job = (async () => {
-      S.ok(await repo.get("group", id), "跑团不存在。");
+    const job = store.initialize(id, async () => {
+      const group = await repo.get("group", id);
+      S.ok(group && !group.deleting && !(await repo.get("groupDeletion", id)), "跑团不存在或已删除。");
       let s = await database.load(id);
       if (!s) {
         s = C.newState(id);
@@ -199,13 +200,13 @@ function createGames({
         require("../rpg/skills").migrate(s);
         require("../rpg/ammunition").migrate(s);
         const entries = await library.published();
-        if (entries.length)
-          for (const collection of L.collections) s[collection] = {};
+        if (entries.some(e=>e.source!=="conditions-v1"))
+          for (const collection of L.collections) if(collection!=="conditionTemplates")s[collection] = {};
         L.applySync(s, entries, L.planSync(s, entries));
         await database.save(id, null, s);
       }
       await store.load(id);
-    })();
+    });
     loading.set(id, job);
     try {
       await job;
@@ -393,6 +394,12 @@ function createGames({
           f.params,
           f.gm,
         );
+        return applyForm(s, uid, f, operationId);
+      },
+      "网站 · " + id,
+    );
+  }
+  async function applyForm(s, uid, f, operationId) {
         let result;
         if (!f.gm && f.command === "battle.action") {
           const p = f.params,
@@ -459,9 +466,42 @@ function createGames({
           x.version++;
         }
         return f.result;
-      },
-      "网站 · " + id,
-    );
+  }
+  const directId=(uid,op)=>'wd_'+S.hash(uid+':'+op).slice(0,32);
+  async function execute(group,uid,command,params,clientId,expected,gm=false) {
+    operation(clientId);
+    S.ok(typeof command==='string' && params && typeof params==='object' && !Array.isArray(params),'操作参数格式无效。');
+    G.rowsFor(command,params);
+    const a=await authorize(group,uid,gm);
+    S.ok(gm || P.playerCommands[command],'操作不存在。');
+    if(gm)S.ok(!['config.save','publication.repair'].includes(command),'请使用网站配置入口。');
+    await validateReferences(a,command,params,gm);
+    const id=directId(uid,clientId), operationId='web-direct:'+uid+':'+clientId;
+    const prior=store.select(group,s=>s.forms[id]);if(prior)S.ok(prior.command===command && G.fingerprint(prior.originalParams)===G.fingerprint(params),"同一操作编号不可用于不同操作。","CONFLICT");
+    const result=await store.transact(group,operationId,uid,async s=>{
+      await authorize(group,uid,gm);
+      const previous=s.forms[id];
+      if(previous){S.ok(previous.command===command && G.fingerprint(previous.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');return previous.result;}
+      const guards=gm?G.guards(s,command,params):P.playerGuards(s,uid,command,params);
+      S.ok(expected && typeof expected==='object','页面版本缺失，请刷新后重新操作。','CONFLICT');
+      const conflicts=guards.filter(g=>expected[g.source+':'+(g.id||'')]!==g.hash);
+      if(conflicts.length){const e=Error('相关内容已变化，已保留输入。请核对最新状态后再次提交。');e.code='CONFLICT';e.details=conflicts.map(g=>({source:g.source,name:(g.id?s[g.source]?.[g.id]:null)?.name||'相关设置',current:g.id?s[g.source]?.[g.id]:undefined}));throw e;}
+      await validateReferences(await accounts.member(group,uid),command,params,gm);
+      const normalized=C.clone(params);let expiresAt=C.confirmationDeadline(300000);
+      if(!gm && command==='battle.action'){
+        normalized.params=P.normalizeAction(s,uid,params);
+        if(params.action==='defend'){const hit=require('../rpg/aoe').hit(s.battles[params.battleId],normalized.params.hitId);S.ok(hit,'防守已结算。');expiresAt=Math.min(expiresAt,hit.expiresAt);}
+      }
+      const f={id,kind:'webAction',owner:uid,gm,command,params:normalized,originalParams:C.clone(params),guards,expiresAt,status:'ready',at:Date.now(),direct:true};
+      s.forms[id]=f;
+      return applyForm(s,uid,f,operationId);
+    },'网站直接执行 · '+(P.playerCommands[command]||command));
+    const saved=store.select(group,s=>s.forms[id]);S.ok(saved?.command===command && G.fingerprint(saved.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');
+    return result;
+  }
+  async function operationReceipt(group,uid,clientId){
+    await authorize(group,uid);operation(clientId);
+    return store.select(group,s=>s.forms[directId(uid,clientId)]?.result||{status:store.frozen(group)?'uncertain':'uncommitted'});
   }
   async function receipt(group, uid, id) {
     await authorize(group, uid);
@@ -559,6 +599,7 @@ function createGames({
         system = {
           battleId: b.id,
           event: e,
+          effectDeaths: require("./effects").eventDeaths(s,b,e),
           npcId: j.npcId,
           cardKey: j.npcId ? b.id + ":" + j.npcId : undefined,
         };
@@ -702,7 +743,7 @@ function createGames({
         await publishJobs(group);
         const g = await repo.get("group", group);
         if (
-          g.autoSync !== false &&
+          g && !g.deleting && g.autoSync !== false &&
           now - (s.librarySync?.lastSyncAt || 0) >= 86400000
         ) {
           const entries = await library.published();
@@ -740,6 +781,8 @@ function createGames({
     ensure,
     authorize,
     preview,
+    execute,
+    operationReceipt,
     commit,
     receipt,
     sync,
@@ -759,9 +802,9 @@ function createGames({
       await store.drain();
     },
     view: async (group, uid) => {
-      await authorize(group, uid);
+      const a=await authorize(group, uid);
       const roomIds = new Set((await chat.rooms(group, uid)).map((r) => r.id));
-      return store.select(group, (s) => P.playerView(s, uid, { roomIds }));
+      return store.select(group, (s) => ({...P.playerView(s, uid, { roomIds }),versions:require("./versions").versions(s,{uid,roomIds,gm:["admin","gm"].includes(a.role)})}));
     },
   };
 }

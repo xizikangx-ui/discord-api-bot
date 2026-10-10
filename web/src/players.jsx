@@ -2,6 +2,7 @@ import {gridCells} from '../../gm-web/src/ui-state';
 import React, { useState, useEffect, useRef } from "react";
 import { api, id, mediaUrl } from "./api";
 import { Result } from "../../gm-web/src/main";
+const statuses={active:'进行中',paused:'已暂停',ended:'已结束',recruiting:'招募中',draft:'草稿',editing:'协商中',ready:'待双方同意',completed:'已完成',cancelled:'已取消',expired:'已过期',locked:'未开启',opened:'已开启',claimed:'已领取'};
 const attrs = {
     strength: "力量",
     constitution: "体质",
@@ -112,7 +113,7 @@ export function PlayerPanel({
           className="primary"
           onClick={() => prepare("character.roll", { name })}
         >
-          生成待确认角色
+          生成角色属性
         </button>
         {game.draft && (
           <>
@@ -144,7 +145,7 @@ export function PlayerPanel({
                   })
                 }
               >
-                确认角色
+                采用角色
               </button>
               <button
                 onClick={() =>
@@ -207,7 +208,7 @@ export function PlayerPanel({
               })
             }
           >
-            预览分配
+            分配属性点
           </button>
         </section>
         <section className="panel">
@@ -274,7 +275,7 @@ export function PlayerPanel({
               })
             }
           >
-            预览保存资料
+            保存资料
           </button>
           <div className="toolbar">
             <Select
@@ -474,7 +475,7 @@ export function PlayerPanel({
                         })
                       }
                     >
-                      预览修复
+                      修复装备
                     </button>
                   </>
                 )}
@@ -509,7 +510,7 @@ export function PlayerPanel({
                         })
                       }
                     >
-                      预览使用／治疗
+                      使用／治疗
                     </button>
                   )}
                   <button
@@ -597,7 +598,7 @@ export function PlayerPanel({
                 })
               }
             >
-              预览转账
+              转账
             </button>
           </div>
           {game.offers.map((o) => (
@@ -608,7 +609,7 @@ export function PlayerPanel({
                   : o.type === "buyback"
                     ? "GM收购"
                     : "玩家交换"}{" "}
-                · {o.status}
+                · {statuses[o.status]||'待处理'}
               </h4>
               <Result value={o.sides} />
               {o.type === "trade" &&
@@ -645,7 +646,7 @@ export function PlayerPanel({
                     {(offers[o.id] || []).map((row, n) => (
                       <div className="result-row" key={n}>
                         <span>
-                          {p.inventory[row.id]?.snapshot.name || row.id} ×
+                          {p.inventory[row.id]?.snapshot.name || "对方物品"} ×
                           {row.quantity}
                         </span>
                         <button
@@ -678,7 +679,7 @@ export function PlayerPanel({
                         })
                       }
                     >
-                      预览提交报价
+                      提交报价
                     </button>
                   </>
                 )}
@@ -733,7 +734,7 @@ export function PlayerPanel({
                   })
                 }
               >
-                预览兑换
+                兑换
               </button>
             </article>
           ))}
@@ -796,7 +797,7 @@ export function PlayerPanel({
               })
             }
           >
-            预览展示
+            保存展示
           </button>
         </section>
       )}
@@ -892,7 +893,7 @@ function AdvancedInventory({ item, selected, p, form, set, prepare }) {
             prepare("inventory.special", { itemId: selected, slot: form.slot })
           }
         >
-          预览特殊道具
+          使用特殊道具
         </button>
       </div>
     </details>
@@ -1077,7 +1078,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
           {room.containers?.map((c) => (
             <article key={c.id}>
               <h4>
-                {c.name || c.box || "容器"} · {c.status}
+                  {c.name || c.box || "容器"} · {statuses[c.status]||'待处理'}
               </h4>
               <button
                 onClick={() => prepare("map.open", { mapId: m.id, ref: c.id })}
@@ -1113,22 +1114,9 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
                     库存 {i.remaining} · 标价 {i.template.value}
                   </span>
                   <button
-                    onClick={() =>
-                      run(async () =>
-                        ((quote)=>{if(mapRef.current===m.id)Merchant(quote);})(
-                          await api("/groups/" + groupId + "/merchant/quote", {
-                            mapId: m.id,
-                            cell: part.cell,
-                            mode: "purchase",
-                            itemId: i.id,
-                            quantity: choice.quantity,
-                            clientId: id(),
-                          }),
-                        ),
-                      ).catch(() => {})
-                    }
+                    onClick={()=>prepare('merchant.trade',{mapId:m.id,cell:part.cell,mode:'purchase',itemId:i.id,quantity:choice.quantity})}
                   >
-                    购买预览
+                    购买
                   </button>
                 </div>
               ))}
@@ -1139,50 +1127,13 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh }) {
                 onChange={(v) => Choice({ ...choice, itemId: v })}
               />
               <button
-                onClick={() =>
-                  run(async () =>
-                    Merchant(
-                      await api("/groups/" + groupId + "/merchant/quote", {
-                        mapId: m.id,
-                        cell: part.cell,
-                        mode: "sell",
-                        itemId: choice.itemId,
-                        quantity: choice.quantity,
-                        clientId: id(),
-                      }),
-                    ),
-                  ).catch(() => {})
-                }
+                onClick={()=>prepare('merchant.trade',{mapId:m.id,cell:part.cell,mode:'sell',itemId:choice.itemId,quantity:choice.quantity})}
               >
-                按标价110%出售预览
+                按标价110%出售
               </button>
             </>
           )}
         </section>
-      )}
-      {merchant && (
-        <div className="modal">
-          <section className="panel">
-            <h3>核对行商交易</h3>
-            <Result value={merchant} />
-            <button
-              className="primary"
-              onClick={() =>
-                run(async () => {
-                  const quote=merchant;
-                  try{await api("/groups/"+groupId+"/merchant/commit",{id:quote.id});}
-                  catch(e){const receipt=await api("/groups/"+groupId+"/merchant/receipt/"+quote.id).catch(()=>null);if(receipt?.status!=="committed")throw e;}
-                  if(mapRef.current!==m.id)return;
-                  Merchant(null);
-                  await refresh();
-                }).catch(() => {})
-              }
-            >
-              确认交易
-            </button>
-            <button onClick={() => Merchant(null)}>返回</button>
-          </section>
-        </div>
       )}
     </>
   );
@@ -1243,7 +1194,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
         {b && (
           <>
             <div className="toolbar">
-              <span className="badge">{b.status}</span>
+              <span className="badge">{statuses[b.status]||'待处理'}</span>
               <span>行动轮 {b.actionRound?.number}</span>
               <button onClick={() => Image(!image)}>
                 {image ? "收起大图" : "静态战场大图"}
@@ -1408,7 +1359,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
                 {Object.entries(actions).map(([key, label]) => (
                   <button
                     key={key}
-                    className={action === key ? "active" : ""}
+                    title={b.restrictions?.[key]||""} disabled={!!b.restrictions?.[key]} className={action === key ? "active" : ""}
                     onClick={() => {
                       Action(key);
 
@@ -1418,6 +1369,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
                   </button>
                 ))}
               </div>
+              {Object.values(b.restrictions||{}).some(Boolean)&&<p className="error" role="status">{[...new Set(Object.values(b.restrictions).filter(Boolean))].join(' ')}</p>}
               {action === "attack" && (
                 <>
                   <Select
@@ -1690,7 +1642,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh }) {
                     )
                   }
                 >
-                  {rp ? "RP 并行动 · 预览" : "直接执行 · 预览"}
+                  {rp ? "RP 并行动" : "执行行动"}
                 </button>
               )}
             </>
@@ -1785,7 +1737,7 @@ export function ActivitiesPanel({ game, prepare }) {
         {game.actionHistory?.map((f) => (
           <details key={f.id}>
             <summary>
-              {f.command} · {new Date(f.at).toLocaleString()}
+              {f.label||'已保存操作'} · {new Date(f.at).toLocaleString()}
             </summary>
             <Result value={f.result} />
           </details>

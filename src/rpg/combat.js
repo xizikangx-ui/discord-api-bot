@@ -36,7 +36,10 @@ function validateCondition(raw) {
     level.description = C.text(level.description || '', '等级效果描述', 2000, true);
     level.effects ||= [];
     ok(Array.isArray(level.effects) && level.effects.length <= 20, '每级最多20项效果。');
-    if (t.effectType === 'numeric') ok(level.effects.length, '数值型异常须填写扣除项。');
+    level.restrictions ||= [];
+    ok(Array.isArray(level.restrictions) && level.restrictions.every(r=>Object.hasOwn(require('./conditions').RESTRICTIONS,r)), '异常行动限制无效。');
+    if(level.movementMultiplier !== undefined) level.movementMultiplier=num(level.movementMultiplier,'移动倍率',0,1,false);
+    if (t.effectType === 'numeric') ok(level.effects.length || level.restrictions.length || level.movementMultiplier !== undefined, '数值型异常须填写扣除项或行动限制。');
     for (const e of level.effects) {
       ok(C.CONDITION_TARGETS.includes(e.target), '异常扣除目标无效。');
       const result = C.dice(e.amount, 'normal', min => min);
@@ -74,12 +77,17 @@ function applyCondition(state, p, ref, rng = randomInt, source = null) {
   ok(template?.published && template.levels[ref.severity], '异常模板或等级不存在。');
   const save = saveRoll(p, template, ref.severity, rng);
   if (save.success) return { name: template.name, severity: ref.severity, save };
+  for (const b of Object.values(state.battles || {})) if (b.current) {
+    const actor = b.actors.find(a => a.id === b.current.actorId);
+    if (actor && actorCharacter(state, actor).id === p.id) b.current.movementLimit ??= M.stats(p).move;
+  }
   const old = p.conditions.find(c => c.templateId === ref.id);
   const severity = old && C.SEVERITIES.indexOf(old.severity) > C.SEVERITIES.indexOf(ref.severity) ? old.severity : ref.severity;
   if (old && severity === old.severity) {
     old.elapsed = 0;
     const stage = old.template.levels[old.severity];
     old.remaining = stage.duration.kind === 'actions' ? stage.duration.count : null;
+    require('./conditions').interrupt(state,p);
     return { name: old.template.name, severity: old.severity, save, refreshed: true };
   }
   const next = { id: old?.id || id('z'), templateId: ref.id, template: clone(template), severity,
@@ -87,6 +95,7 @@ function applyCondition(state, p, ref, rng = randomInt, source = null) {
   p.conditions = p.conditions.filter(c => c.templateId !== ref.id);
   p.conditions.push(next);
   stageModifiers(next, p, rng);
+  require('./conditions').interrupt(state,p);
   return { name: template.name, severity, save };
 }
 function beginConditions(p, battle, actor, rng, state) {
@@ -322,7 +331,7 @@ function nextOpportunity(state, b, rng = randomInt) {
     if (a.casting && a.casting.count < a.casting.required) a.casting.count++;
     beginConditions(p, b, a, rng, state);
     if (p.hp <= 0) { completeOpportunity(b,{actorId:a.id,free:queued.free,roundNumber:round.number}); endConditions(p, b, a, rng); record(b, a.name + (a.deathId ? '已死亡，跳过主动行动。' : '失能，跳过主动行动。')); continue; }
-    b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, moveSpent: 0, startedAt: Date.now(), free: queued.free,
+    b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, movementLimit: M.stats(p).move, moveSpent: 0, startedAt: Date.now(), free: queued.free,
       roundNumber: round.number, opportunity: queued.free ? 0 : round.counts[a.id], apCost };
     record(b, '轮到' + a.name + '行动。' + (queued.free ? '免费偷袭机会。' : '第' + round.number + '轮，第' + b.current.opportunity + '次，扣除' + apCost + ' AP。'),
       { actorId: a.id, turnId: b.current.id, roundNumber: round.number, opportunity: b.current.opportunity, apCost, apRemaining: p.ap });
@@ -349,7 +358,9 @@ function current(state, b, turnId) {
   const expired = M.expireEffects(p);
   ok(p.hp > 0 && !a.retreated, '角色已经失能或离场。');
   const remaining = C.round2(Math.max(0, M.stats(p).move - (b.current.moveSpent || 0)));
-  b.current.move = expired.length ? remaining : Math.min(b.current.move, remaining);
+  const limit = M.stats(p).move;
+  b.current.move = expired.length || b.current.movementLimit !== undefined && b.current.movementLimit !== limit ? remaining : Math.min(b.current.move, remaining);
+  b.current.movementLimit = limit;
   return { actor: a, p, turn: b.current };
 }
 function finish(state, b, turnId, rng = randomInt) {
@@ -389,6 +400,7 @@ function movementCost(b, from, to) {
 }
 function move(state, b, turnId, x, y) {
   const { actor, p, turn } = current(state, b, turnId);
+  require('./conditions').requireAction(p,'move');
   ok(!b.pending && !M.stats(p).overloaded, '等待攻防响应或超重时无法移动。');
   const to = { x: C.round2(num(x, '横向米数', 0, b.width * 50 - 0.01, false)),
     y: C.round2(num(y, '纵向米数', 0, b.height * 50 - 0.01, false)) };
@@ -399,22 +411,23 @@ function move(state, b, turnId, x, y) {
   turn.moveSpent = C.round2((turn.moveSpent || 0) + cost);
   record(b, actor.name + '移动至(' + actor.x + ',' + actor.y + ')。',{actorId:actor.id,turnId,position:{x:actor.x,y:actor.y},remaining:turn.move});
 }
-function abilities(p) {
+function abilities(p, includeUnavailable=false) {
   require('./ammunition').normalize(p);
   const weapons = W.equipped(p).filter(ref => Dur.usable(p.inventory[ref]));
   const hasWeapon=weapons.length>0;
   const result = weapons.map(ref => ({ key: ref, attack: p.inventory[ref].snapshot }));
-  for (const item of Object.values(p.inventory)) if (item.snapshot.kind === '技能'&&hasWeapon) result.push({key:item.id,attack:{...item.snapshot,requiresWeapon:item.snapshot.requiresWeapon??true}});
-  for(const e of Object.values(p.learnedSkills||{}))if(!e.snapshot.requiresWeapon||hasWeapon)result.push({key:e.id,attack:e.snapshot});
+  for (const item of Object.values(p.inventory)) if (item.snapshot.kind === '技能'&&(hasWeapon||includeUnavailable)) result.push({key:item.id,attack:{...item.snapshot,requiresWeapon:item.snapshot.requiresWeapon??true}});
+  for(const e of Object.values(p.learnedSkills||{}))if(includeUnavailable||!e.snapshot.requiresWeapon||hasWeapon)result.push({key:e.id,attack:e.snapshot});
   for (const ref of p.equipped.cards) {
     const item = p.inventory[ref];
-    for (const [n, skill] of (item?.snapshot.skills || []).entries()) if(!skill.requiresWeapon||hasWeapon)result.push({ key: ref + '~' + n, attack: skill });
+    for (const [n, skill] of (item?.snapshot.skills || []).entries()) if(includeUnavailable||!skill.requiresWeapon||hasWeapon)result.push({ key: ref + '~' + n, attack: skill });
   }
   return result;
 }
 function attackPlan(state,b,{actor,p,turn},abilityKey,targetId,action='formal',firing={}){const A=require('./aoe'),AM=require('./ammunition');
   ok(!b.pending,'已有攻击等待防守。');
   const ability=abilities(p).find(a=>a.key===abilityKey);ok(ability,'武器／技能当前不可用。');const t=ability.attack;
+  require('./conditions').requireAction(p,'attack',t,action);
   ok(t.kind==='技能'&&!t.requiresWeapon || W.equipped(p).some(ref=>Dur.usable(p.inventory[ref])),'必须先装备可用武器才能攻击或释放此技能。');
   ok(['quick','formal'].includes(action)&&turn[action]>0,'该行动次数已用完。');
   if(t.kind==='技能')ok(action===(t.action||'formal'),'技能须使用指定的行动类型。');else if(action==='quick')ok(t.supernatural,'普通武器攻击需要正式行动。');
@@ -502,8 +515,8 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
   return result;
 }
 // Candidate checks copy only the acting character; they never roll or alter the live battle.
-function readonlyCurrent(state,b,turnId){ok(b.status==='active'&&b.current?.id===turnId,'当前行动已变化或战斗暂停，请重新打开面板。');const actor=actorById(b,b.current.actorId),p=clone(actorCharacter(state,actor));const expired=M.expireEffects(p);ok(p.hp>0&&!actor.retreated,'角色已经失能或离场。');const remaining=C.round2(Math.max(0,M.stats(p).move-(b.current.moveSpent||0)));return {actor,p,turn:{...b.current,move:expired.length?remaining:Math.min(b.current.move,remaining)}};}
-function validateQuick(state,b,{actor,p,turn},op){ok(!b.pending&&turn.quick>0,'快速行动不可用。');
+function readonlyCurrent(state,b,turnId){ok(b.status==='active'&&b.current?.id===turnId,'当前行动已变化或战斗暂停，请重新打开面板。');const actor=actorById(b,b.current.actorId),p=clone(actorCharacter(state,actor));const expired=M.expireEffects(p);ok(p.hp>0&&!actor.retreated,'角色已经失能或离场。');const remaining=C.round2(Math.max(0,M.stats(p).move-(b.current.moveSpent||0)));const limit=M.stats(p).move,move=expired.length||b.current.movementLimit!==undefined&&b.current.movementLimit!==limit?remaining:Math.min(b.current.move,remaining);return {actor,p,turn:{...b.current,move,movementLimit:limit}};}
+function validateQuick(state,b,{actor,p,turn},op){require('./conditions').requireAction(p,op.type,op.type==='cast'?abilities(p).find(e=>e.key===actor.casting?.key)?.attack:null,'quick');ok(!b.pending&&turn.quick>0,'快速行动不可用。');
  if(op.type==='cast')ok(actor.casting&&actor.casting.count>=actor.casting.required,'吟唱未完成或快速行动已用完。');
  else if(op.type==='switch'){ok(['main','off','auto'].includes(op.hand||'auto'),'请选择主手或副手。');if(op.item){ok(p.inventory[op.item]?.snapshot.kind==='武器','武器不可用。');if(actor.userId)ok(M.available(state,actor.userId,op.item)>0,'武器已被交易预留。');}}
  else if(op.type==='heal'){const item=p.inventory[op.item];ok([...C.CONSUMABLES,'修复道具'].includes(item?.snapshot.kind),'该道具没有已录入的使用效果。');if(actor.userId)ok(M.available(state,actor.userId,op.item)>0,'道具已预留。');if(item.snapshot.kind!=='修复道具'){ok(item.quantity>0,'请选择食物、药品或消耗品。');const t=item.snapshot;if(t.effects?.length&&t.duration)ok(['actions','minutes'].includes(t.duration.kind),'持续时间无效。');}}
@@ -513,7 +526,7 @@ function validateOperation(state,b,op){const context=readonlyCurrent(state,b,b.c
  if(op.type==='attack'){const actor=context.actor,shadow={...b,actors:b.actors.map(a=>a.id===actor.id&&!actor.userId?{...a,character:context.p,finalCharacter:undefined}:a)},s=actor.userId?{...state,players:{...state.players,[actor.userId]:context.p}}:state;return attackPlan(s,shadow,context,op.ability,op.target,op.group,op.firing||{});}
  if(['reload','extract','fill'].includes(op.type))return require('./ammunition').validateBattleOperation(state,b,b.current.id,{...op,type:op.type==='reload'?'swap':op.type},context);
  if(['cast','switch','heal'].includes(op.type))return validateQuick(state,b,context,op);
- if(op.type==='move'){ok(!b.pending&&!M.stats(context.p).overloaded,'当前不能移动。');const to={x:C.round2(Number(op.x)),y:C.round2(Number(op.y))};ok(to.x>=0&&to.y>=0&&to.x<b.width*50&&to.y<b.height*50,'位置超出地图。');ok(movementCost(b,context.actor,to)<=context.turn.move+.000001,'移动预算不足。');return true;}
+ if(op.type==='move'){require('./conditions').requireAction(context.p,'move');ok(!b.pending&&!M.stats(context.p).overloaded,'当前不能移动。');const to={x:C.round2(Number(op.x)),y:C.round2(Number(op.y))};ok(to.x>=0&&to.y>=0&&to.x<b.width*50&&to.y<b.height*50,'位置超出地图。');ok(movementCost(b,context.actor,to)<=context.turn.move+.000001,'移动预算不足。');return true;}
  ok(['pass','finish'].includes(op.type)&&!b.pending,'当前不能结束行动。');return true;
 }
 function confirmCasting(state, b, turnId) {
@@ -552,6 +565,7 @@ function useItem(state, b, turnId, itemId, rng = randomInt, repairTarget, recipi
 }
 function flee(state, b, turnId, rng = randomInt) {
   const { actor, p, turn } = current(state, b, turnId);
+  require('./conditions').requireAction(p,'flee',null,'formal');
   ok(!b.pending && turn.formal > 0, '正式行动不可用。');
   turn.formal--; actor.retreated = true;
   record(b, actor.name + '离开战斗。',{actorId:actor.id,eventType:'flee'});

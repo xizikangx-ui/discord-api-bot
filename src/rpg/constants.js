@@ -141,7 +141,7 @@ function newState(guildId) {
   return { kind: 'tabletop-rpg', schema: 1, upgrade: 9, guildId, revision: 0,
     config: { gmRoleIds: [], playerRoleIds: [], announcementChannelId: null },
     players: {}, characterDrafts: {}, forms: {}, catalog: seedCatalog(), skillTemplates: {}, checkSkillTemplates: {}, checks: {}, sessions: {}, lootPublications: {},
-    traits: { neutral: { id: 'neutral', version: 1, published: true, name: '无附加效果', description: '只展示，不修改数值。', effects: [] } }, conditionTemplates: {},
+    traits: { neutral: { id: 'neutral', version: 1, published: true, name: '无附加效果', description: '只展示，不修改数值。', effects: [] } }, conditionPackVersion: 1, conditionTemplates: Object.fromEntries(require("./conditions").templates().map(t=>[t.id,t])),
     mapCategories: {}, roomTemplates: {}, explorations: {}, deaths: {}, corpses: {}, npcTemplates: {}, battles: {}, offers: {}, rolePanels: {}, couponPools: {}, couponRedemptions: {}, glossaryTerms: {}, bossPools: {}, merchantTemplates: {}, merchantTrades: {}, gmWebDevices: {}, receipts: {}, events: [] };
 }
 module.exports = { DEFAULT_GUILD_ID, ATTRIBUTES, DAMAGE_TYPES, RARITIES, BOXES, QUALITIES, WEAPON_TYPES,

@@ -94,7 +94,7 @@ function stats(p, extraEffects = []) {
   const limit = (attributes.strength + attributes.constitution) * 500;
   const burdened = carried > limit / 2;
   const overloaded = carried > limit;
-  const move = overloaded ? 0 : C.round2(modify(effects, 'move', Math.max(0, attributes.agility - (burdened ? 2 : 0)) * 3));
+  const move = overloaded ? 0 : C.round2(Math.max(0,modify(effects, 'move', Math.max(0, attributes.agility - (burdened ? 2 : 0)) * 3))*require('./conditions').movement(p));
   const luck = Math.max(-9, Math.min(11, Math.floor(signedModifier(effects, 'attr:luck', p.luck ?? 1))));
   return { luck, attributes, defenses, maxHP, carried, limit, burdened, overloaded, move, effects,
     apGain: modify(effects, 'apGain', attributes.agility * 5),
@@ -379,6 +379,7 @@ function equip(state, userId, itemId, remove = false, hand = 'auto') {
   const p = player(state, userId); require('./health').requireAction(p); const item = p.inventory[itemId];
   ok(item && available(state, userId, itemId) >= 1 && !isAttached(p, itemId), '物品不存在、已预留或作为配件装配。');
   const t = item.snapshot;
+  require('./conditions').requireAction(p,t.kind==='武器'?'switch':'equip',t,'quick');
   const battle = battleFor(state, userId);
   if (battle?.status === 'active') ok(t.kind === '武器', '防具、饰品、配件和卡牌调整需要GM暂停战斗。');
   return equipCharacter(p, itemId, remove, hand);
@@ -437,6 +438,7 @@ function useSpecial(state, userId, itemId, slot) {
   return p.slots;
 }
 function consume(p, itemId, rng = randomInt, turnId = null, now = Date.now(), recipient = p) {
+  require('./conditions').requireAction(p,'item',null,'quick');
   require('./health').requireAction(p);
   const item = p.inventory[itemId];
   ok(C.CONSUMABLES.includes(item?.snapshot.kind) && item.quantity > 0, '请选择食物、药品或消耗品。');

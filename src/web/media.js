@@ -80,9 +80,10 @@ function createMedia(
         }),
       );
       record.status = "ready";
-      await repo.put("media", record, { scope: a.group.id });
+      await repo.tx("upload-ready:"+id,async r=>{await accounts.member(a.group.id,a.user.id,r);await repo.put("media", record, { scope: a.group.id },r);return {id};});
       return { id };
     } catch {
+      if(await repo.get("groupDeletion",a.group.id)){await repo.put('mediaCleanup',{id,key:record.key,groupId:a.group.id});try{await client.send(new commands.DeleteObjectCommand({Bucket:bucket,Key:record.key}));await repo.remove('mediaCleanup',id);}catch{/* durable cleanup retries this key */}S.fail("此团已删除，图片不会发布。","NOT_FOUND");}
       record.status = "uncertain";
       await repo.put("media", record, { scope: a.group.id }).catch(() => {});
       S.fail("图片上传结果待核对，原操作编号已保留。", "UNCERTAIN");
@@ -136,7 +137,7 @@ function createMedia(
       "UNCERTAIN",
     );
     f.status = "ready";
-    await repo.put("media", f, { scope: f.groupId });
+    await repo.tx("upload-reconcile:"+id,async r=>{await accounts.member(f.groupId,a.user.id,r);await repo.put("media", f, { scope: f.groupId },r);return {id};});
     return { id };
   }
   return { upload, read, reconcile };

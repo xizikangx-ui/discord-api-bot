@@ -9,7 +9,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
   const actor = () => systemActorId || client.user.id;
   const states = new Map(), messages = new Map(), queues = new Map(), frozen = new Map();
   const depths = new Map(), listeners = new Set(), backupMessages = new Map(), backedUp = new Map(), backupJobs = new Map();
-  const loadedDatabaseGuilds = new Set();
+  const loadedDatabaseGuilds = new Set(), removedGuilds = new Set();
   const marker = guild => 'discord-api-bot-rpg-v1:' + guild;
   function pack(state) {
     return Buffer.from(encrypt({ kind: 'rpg-gzip', guildId: state.guildId, revision: state.revision,
@@ -70,6 +70,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
     return job;
   }
   async function load(guild) {
+    C.requireThat(!removedGuilds.has(guild), "此团已删除，不能恢复。");
     let state, message;
     if (database) {
       state = await database.load(guild);
@@ -95,12 +96,23 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       state.events.push({ id: 'rpg-upgrade-' + state.upgrade, at: Date.now(), actorId: actor(), label: '跑团存档升级', result: migration, revision: state.revision });
       if (database) await database.save(guild, before, state); else await persist(guild, state);
     }
+    const conditionBefore=C.clone(state), conditionPack=require('./conditions').install(state);
+    if(conditionPack){state.revision++;state.events.push({id:'rpg-conditions-v1',at:Date.now(),actorId:actor(),label:'安装基础异常内容',result:conditionPack,revision:state.revision});if(database)await database.save(guild,conditionBefore,state);else await persist(guild,state);}
     states.set(guild, state); frozen.delete(guild);
     return C.clone(state);
   }
   async function recover(guild) { return serial(guild, () => load(guild)); }
+  // First creation must share the write queue with deletion. Otherwise a lazy
+  // initializer could save an empty game after deletion has purged its rows.
+  async function initialize(guild, fn) {
+    return serial(guild, async () => {
+      C.requireThat(!removedGuilds.has(guild), '此团正在删除或已删除。');
+      return fn();
+    });
+  }
   async function transact(guild, operation, actorId, fn, label = '操作', options = {}) {
     return serial(guild, async () => {
+      C.requireThat(!removedGuilds.has(guild), '此团正在删除或已删除。');
       C.requireThat(states.has(guild), '跑团存档尚未读取，请稍后。');
       C.requireThat(!frozen.has(guild), '存档写入结果待核对，跑团已暂停。GM请使用 /gm 恢复存档。');
       const before = states.get(guild);
@@ -191,8 +203,9 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       if (copy.key === 'latest') backedUp.set(guild, state.revision);
     }
   }
-  return { load, recover, transact, snapshot, select, enqueue, backup, database, backgroundPublications, get clientId(){return systemActorId || client.user?.id;},
-    guilds: () => [...states.keys()], drain: () => Promise.allSettled([...queues.values(),...backupJobs.values()]), onCommit: listener => { listeners.add(listener); return () => listeners.delete(listener); },
+  async function removeGuild(guild, cleanup){removedGuilds.add(guild);return serial(guild,async()=>{await cleanup();states.delete(guild);messages.delete(guild);frozen.delete(guild);});}
+  return { load, recover, initialize, transact, snapshot, select, enqueue, backup, database, removeGuild, backgroundPublications, get clientId(){return systemActorId || client.user?.id;},
+    guilds: () => [...states.keys()].filter(id=>!removedGuilds.has(id)), drain: () => Promise.allSettled([...queues.values(),...backupJobs.values()]), onCommit: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     freeze: guild => frozen.set(guild, '运行锁已丢失'), frozen: guild => frozen.has(guild), pack };
 }
 module.exports = { createStore };

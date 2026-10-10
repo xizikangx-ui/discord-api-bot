@@ -5,6 +5,7 @@ function createRepository(pool, crypt, { schema = "web_platform" } = {}) {
     /^(web_platform|web_content|web_test_[a-z0-9_]+)$/.test(schema),
     "网站数据库命名空间无效。",
   );
+  let groupRepository;
   const uncertain = new Set();
   const table = '"' + schema + '".records',
     messages = '"' + schema + '".messages';
@@ -55,6 +56,8 @@ function createRepository(pool, crypt, { schema = "web_platform" } = {}) {
     r = pool,
   ) {
     ok(value.id, "记录缺少编号。");
+    if(scope && r===pool){const runner=await pool.connect();try{await runner.query('BEGIN');const result=await put(kind,value,{scope,lookup},runner);await runner.query('COMMIT');return result;}catch(e){await runner.query('ROLLBACK').catch(()=>{});throw e;}finally{runner.release();}}
+    if(scope){const owner=groupRepository||{get};const group=await owner.get('group',scope,r,true);ok(!group?.deleting,'此团正在删除。','NOT_FOUND');const deletion=await owner.get("groupDeletion",scope,r);ok(!deletion,"此团正在删除或已删除。","NOT_FOUND");}
     await r.query(
       `INSERT INTO ${table}(kind,id,scope,lookup,version,payload) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(kind,id) DO UPDATE SET scope=EXCLUDED.scope,lookup=EXCLUDED.lookup,version=EXCLUDED.version,payload=EXCLUDED.payload`,
       [
@@ -159,6 +162,18 @@ function createRepository(pool, crypt, { schema = "web_platform" } = {}) {
     ).rows[0];
     return row ? crypt.open("message", id, row.payload) : null;
   }
+  async function purgeGroup(group,rooms,r){
+    await r.query(`DELETE FROM ${messages} WHERE room_id=ANY($1::text[])`,[rooms]);
+    const owned=new Set([group,...rooms]);
+    const rows=(await r.query(`SELECT kind,id,payload FROM ${table} WHERE scope=$1 OR (kind='group' AND id=$1)`,[group])).rows;
+    for(const row of rows)owned.add(row.id);
+    for(const row of (await r.query(`SELECT id,payload FROM ${table} WHERE kind='receipt'`)).rows){
+      const receipt=crypt.open('receipt',row.id,row.payload);
+      const contains=v=>typeof v==='string'?owned.has(v):v&&typeof v==='object'?Object.values(v).some(contains):false;
+      if(contains(receipt.result))await put('receipt',{id:row.id,result:{groupId:group,status:'deleted'},at:receipt.at},{},r);
+    }
+    await r.query(`DELETE FROM ${table} WHERE scope=$1 OR (kind='group' AND id=$1)`,[group]);
+  }
   async function dump() {
     const r = await pool.connect();
     try {
@@ -183,6 +198,7 @@ function createRepository(pool, crypt, { schema = "web_platform" } = {}) {
     return { recovered: true };
   }
   return {
+    setGroupRepository: value => { groupRepository=value; },
     reconcile,
     uncertain,
     init,
@@ -198,6 +214,7 @@ function createRepository(pool, crypt, { schema = "web_platform" } = {}) {
     updateMessage,
     findMessage,
     dump,
+    purgeGroup,
     pool,
     schema,
   };
