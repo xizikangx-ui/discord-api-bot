@@ -12,7 +12,8 @@
     "test:gm-web": "npm --prefix gm-web test",
     "start:web": "node --env-file-if-exists=.env src/web/server.js",
     "build:web": "npm --prefix web ci --no-fund && npm --prefix web run build",
-    "test:web": "node --test test/web.test.js test/web-postgres.test.js"
+    "test:web": "node --test test/web.test.js test/web-postgres.test.js",
+    "test:economy": "node --test test/economy.test.js"
   },
   "engines": {
     "node": ">=24.5"

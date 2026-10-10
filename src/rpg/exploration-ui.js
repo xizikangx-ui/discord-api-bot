@@ -24,7 +24,7 @@ function board(m) {
   const v = payload('探索地图 · ' + m.name, '**' + labels[m.status] + '** · ' + Object.keys(m.participants).length + '人参与\n' + '🟦 队伍　🟩 房间　🟪 楼梯　⬛ 墙　深色：迷雾', [
     row(button('map:join:' + m.id, '参与探索', D.ButtonStyle.Success, m.status !== 'active'),
       button('map:personal:' + m.id, '探索操作', D.ButtonStyle.Primary), button('map:manage:' + m.id, 'GM管理')),
-    row(button('map:mapview:'+m.id+':wide','横版大图'))
+    row(button('map:mapview:'+m.id+':wide','查看横版图片'))
   ], 0x2e8b57);
   const visible=Object.keys(m.revealed).length,total=Object.values(m.cells).filter(c=>c.type!=='wall').length;
   if(require('./rp').waiting(m))v.embeds[0].addFields(U.field('RP环境','等待GM公开环境描述，房间操作暂时锁定。'));
@@ -89,7 +89,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
         button('map:endpreview:' + m.id, '结束探索', D.ButtonStyle.Danger, m.status === 'ended')),
       row(button('rp:toggle:'+m.id,m.rpEnabled?'关闭RP':'开启RP'),button('rp:home:'+m.id+':'+(m.rpPendingId||'_'),'环境草稿 / 等待',undefined,!m.rpPendingId),button('mapx:layout:'+m.id+':'+m.version,'重新随机布局',undefined,m.status!=='draft'||m.mode==='fixed'),button('gmstory:bossassign:'+m.id,'分配BOSS房',undefined,!['draft','paused'].includes(m.status)),button('merchant:assign:'+m.id,'行商节点',undefined,!['draft','paused'].includes(m.status))),
       ...(m.moveRequestId?[row(button('map:moveinfo:'+m.id+':'+m.moveRequestId+':0','当前移动申请'),button('map:moverepost:'+m.id+':'+m.moveRequestId,'核对后补发移动确认'))]:[]),
-      row(button('map:manage:' + m.id, '刷新'), button('map:repost:' + m.id, '核对后补发地图', undefined, m.status === 'draft'), button('map:home', '返回地图列表'), button('map:celldraft:' + m.id, '继续格子草稿', undefined, !Object.keys(m.cellDrafts || {}).length),button('map:mapview:'+m.id+':wide:gm','横版完整图'))
+      row(button('map:manage:' + m.id, '刷新'), button('map:repost:' + m.id, '核对后补发地图', undefined, m.status === 'draft'), button('map:home', '返回地图列表'), button('map:celldraft:' + m.id, '继续格子草稿', undefined, !Object.keys(m.cellDrafts || {}).length),button('map:mapview:'+m.id+':wide:gm','查看完整图片'))
     ]);
     return require('./map-image').prepare(v,{kind:'exploration',m,full:true});
   }
@@ -203,7 +203,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     const gm = U.gm(s, member);
     if(action==='mapview'){
       const m=map(s,ref);if(extra==='gm')needGM(s,member);else ok(['active','paused','ended'].includes(m.status),'地图尚未公开。');
-      const v=board(m);v.rpgMap.full=extra==='gm';v.rpgMap.layout=arg==='wide'?'wide':'portrait';
+      const v=board(m);v.rpgImageRequested=true;v.rpgMap.full=extra==='gm';v.rpgMap.layout=arg==='wide'?'wide':'portrait';
       v.components=[row(button('map:mapview:'+m.id+':'+(arg==='wide'?'portrait':'wide')+(extra==='gm'?':gm':''),arg==='wide'?'手机竖版':'横版大图'),button(extra==='gm'?'map:manage:'+m.id:'map:personal:'+m.id,'返回操作'))];return v;
     }
     if(['movevote','moveinfo','movecancel','moverepost'].includes(action)){

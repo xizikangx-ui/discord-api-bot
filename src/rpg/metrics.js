@@ -44,6 +44,7 @@ function createMetrics({ enabled = false, emit = line => console.log(line) } = {
       if(Number.isFinite(after)&&after>0)observe('discord.http429Wait.'+restFamily(data.route)+'.'+kind,after);
     }
   }
+  let previousCpu=process.cpuUsage(),previousAt=performance.now();
   function report() {
     if (!enabled) return;
     const stages = {};
@@ -51,7 +52,8 @@ function createMetrics({ enabled = false, emit = line => console.log(line) } = {
       const sorted = [...values].sort((a, b) => a - b);
       stages[stage] = { count: sorted.length, p50: Math.round(sorted[Math.max(0,Math.ceil(sorted.length*.5)-1)]), p95: Math.round(sorted[Math.max(0,Math.ceil(sorted.length*.95)-1)]) };
     }
-    emit(JSON.stringify({ type: 'rpg-performance', stages,counters:Object.fromEntries(counters), gauges: Object.fromEntries(gauges), eventLoopP95: Math.round((delay?.percentile(95) || 0) / 1e6) }));
+    const mem=process.memoryUsage(),cpu=process.cpuUsage(previousCpu),elapsed=performance.now()-previousAt;previousCpu=process.cpuUsage();previousAt=performance.now();
+    emit(JSON.stringify({ type: 'rpg-performance',memory:{rss:mem.rss,heapUsed:mem.heapUsed,heapTotal:mem.heapTotal,external:mem.external,arrayBuffers:mem.arrayBuffers},cpuCores:(cpu.user+cpu.system)/1000/elapsed, stages,counters:Object.fromEntries(counters), gauges: Object.fromEntries(gauges), eventLoopP95: Math.round((delay?.percentile(95) || 0) / 1e6) }));
     samples.clear();counters.clear(); delay?.reset();
   }
   const timer = enabled ? setInterval(report, 60000) : null; timer?.unref();

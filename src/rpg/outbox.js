@@ -40,7 +40,7 @@ function derive(before, next) {
   for (const [ref, s] of Object.entries(next.sessions || {})) if (fingerprint(before.sessions?.[ref]) !== fingerprint(s)) put(next, 'session', ref);
 }
 function createOutbox({ store, handlers, client, logFailure, metrics, concurrency = 3 }) {
-  const active = new Set(), urgent = new Set(); let timer, stopped = true, pumping = false;
+  const active = new Set(), urgent = new Set(); let timer, fallback, unsubscribe, queued = false, stopped = true, pumping = false;
   async function run(guild, task) {
     const token = guild + ':' + task.key, version = task.desiredRevision;
     active.add(token); if(task.kind==='defense')urgent.add(token); metrics?.observe('publication.wait',Date.now()-(task.queuedAt||Date.now()));const end = metrics?.start('publication.' + task.kind);
@@ -67,21 +67,24 @@ function createOutbox({ store, handlers, client, logFailure, metrics, concurrenc
   async function pump() {
     if (stopped || pumping) return; pumping = true;
     try {
-      const work = [];
-      for (const guild of store.guilds()) if (!store.frozen(guild)) for (const task of store.select(guild, st => Object.values(st.deliveryJobs || {}))) {
-        if (['pending', 'running'].includes(task.status) && (task.availableAt || 0) <= Date.now() && !active.has(guild + ':' + task.key)) work.push({ guild, task });
+      const work = []; let next = Infinity;
+      clearTimeout(timer);
+      for (const guild of store.guilds()) if (!store.frozen(guild)) for (const task of store.select(guild, st => Object.values(st.deliveryJobs || {}).filter(t=>['pending','running'].includes(t.status)&&!active.has(guild+':'+t.key)).map(({key,kind,ref,priority,availableAt,desiredRevision,queuedAt,force})=>({key,kind,ref,priority,availableAt,desiredRevision,queuedAt,force})))) {
+        if ((task.availableAt || 0) <= Date.now()) work.push({ guild, task });
+        else next = Math.min(next, task.availableAt);
       }
       work.sort((a, b) => a.task.priority - b.task.priority || a.task.availableAt - b.task.availableAt);
       metrics?.gauge('publication.queue', work.length);
       // A reserved notification lane cannot be occupied by render/upload waits.
       for (const { guild, task } of work.filter(w=>w.task.kind==='defense').slice(0,Math.max(0,1-urgent.size))) void run(guild,task);
       for (const { guild, task } of work.filter(w=>w.task.kind!=='defense').slice(0, Math.max(0, concurrency - (active.size-urgent.size)))) void run(guild, task);
+      if (Number.isFinite(next)) { timer=setTimeout(wake, Math.max(1,next-Date.now())); timer.unref(); }
     } finally { pumping = false; }
   }
-  function wake() { if (!stopped) setImmediate(() => pump().catch(e => logFailure('后台跑团队列扫描失败。', e))); }
-  function start() { if (!stopped) return; stopped = false; timer = setInterval(wake, 250); timer.unref(); wake(); }
+  function wake() { if (!stopped&&!queued) { queued=true; setImmediate(() => {queued=false; return pump().catch(e => logFailure('后台跑团队列扫描失败。', e));}); } }
+  function start() { if (!stopped) return; stopped = false; unsubscribe=store.onCommit?.(wake); fallback = setInterval(wake, 30000); fallback.unref(); wake(); }
   async function drain() { while (active.size) await new Promise(resolve => setTimeout(resolve, 20)); }
-  function stop() { stopped = true; clearInterval(timer); }
+  function stop() { stopped = true; clearTimeout(timer); clearInterval(fallback); unsubscribe?.(); unsubscribe=null; }
   return { start, stop, wake, drain, active, register(kind,handler){handlers[kind]=handler;} };
 }
 module.exports = { fingerprint, put, derive, createOutbox,needsRecovery };

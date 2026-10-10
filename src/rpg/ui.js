@@ -64,6 +64,7 @@ function characterView(p, privateView = false, page = 0) {
     button('cardpage:' + p.userId + ':' + p.id + ':' + Math.min(pages-1,page+1), '下一页 / 个人描述', undefined, page >= pages-1))];
   if(p.userId)v.components.push(row(button('profile:home:'+p.userId+':'+p.id,'角色设置 / 分配自由点'),button('gear:view:'+p.userId+':'+p.id+':overview:0','装备槽位',D.ButtonStyle.Primary),button('checkskill:own:'+p.userId+':'+p.id+':0','鉴定技能'),button('features:showcase:view:'+p.userId+':0','收藏柜')));
   v.rpgPortraits = p.portraits || {};
+  v.rpgCharacter={userId:p.userId,id:p.id};
   v.embeds[0].setFooter({ text: '角色 ' + p.id + ' · '+(page+1)+'/'+pages+' · ' + (privateView ? '本人及GM可见' : '公开属性') }); return v;
 }
 function draftView(d) {
@@ -170,7 +171,7 @@ function battleView(state, b, page = 0, layout = 'portrait') {
     button('withdraw:' + b.id, '撤回报名'), button('start:' + b.id, 'GM正式开战', D.ButtonStyle.Primary),
     button('battle:' + b.id, '查看战场'))] : [row(button('personal:' + b.id, '开始行动／个人面板', D.ButtonStyle.Primary),
       button('battle:' + b.id, '刷新战场'), button('control:' + b.id, 'GM操作'))];
-  if(b.status!=='ended')rows.push(row(button('battle:'+b.id+':'+page+':'+(layout==='wide'?'portrait':'wide'),layout==='wide'?'手机竖版':'横版大图'),button('event:'+b.id+':retry:0','GM核对后补发操作卡')));
+  if(b.status!=='ended')rows.push(row(button('picture:battle:'+b.id+':'+(layout==='wide'?'portrait':'wide'),layout==='wide'?'查看竖版图片':'查看横版图片'),button('event:'+b.id+':retry:0','GM核对后补发操作卡')));
   if (pages > 1 && b.status!=='ended') rows.push(row(button('battle:'+b.id+':'+(page-1)+':'+layout,'上一页名单',undefined,!page),button('battle:'+b.id+':'+(page+1)+':'+layout,'下一页名单',undefined,page===pages-1)));
   if (b.pending) rows.push(row(button('defense:' + b.id + ':' + b.pending.id, '打开防守面板', D.ButtonStyle.Danger)));
   const color = b.status === 'ended' ? 0x95a5a6 : 0x5865f2;
@@ -230,6 +231,7 @@ function personalView(state, b, a, viewer, tab = 'overview', statusPage = 0) {
   const v = payload('个人行动面板 · ' + a.name, body, rows);
   v.rpgPanel={kind:'battle',battleId:b.id,actorId:a.id,tab};v.embeds[0].setFooter({text:'面板 '+b.id+' '+a.id+' '+p.id+' '+tab});
   v.rpgPortraits = p.portraits || {};
+  v.rpgCharacter={userId:p.userId,id:p.id};
   v.embeds[0].addFields(...characterView(p, true, statusPage).embeds[0].data.fields);
   return require('./map-image').prepare(v,{kind:'personal',state,b,a});
 }

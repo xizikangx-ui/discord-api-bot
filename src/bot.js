@@ -29,7 +29,7 @@ const {
   ContextMenuCommandBuilder, ApplicationCommandType,
   PermissionFlagsBits, AuditLogEvent, MessageFlags, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, ChannelSelectMenuBuilder, RoleSelectMenuBuilder, UserSelectMenuBuilder,
-  ModalBuilder, LabelBuilder, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials,
+  ModalBuilder, LabelBuilder, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder, Partials, Options,
 } = require('discord.js');
 const { createMiddleApplications, configurationCommand: middleApplicationCommand } = require('./middle-applications');
 const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
@@ -52,6 +52,7 @@ function logFailure(label, error) {
   if (code === 50035) console.error(JSON.stringify(error?.rawError?.errors || error?.errors || {}, null, 2));
 }
 
+const { archiveReminders, discordCacheOptions, renewLongTimeouts, processWarnings } = require('./economy');
 const DAY = 24 * 60 * 60 * 1000;
 const MANAGEMENT_SPEECH_TITLE = '管理组正式发言';
 const MANAGEMENT_SPEECH_FOOTER = '管理组认证：';
@@ -68,6 +69,7 @@ const claimedPunishments = new Set();
 const activePunishmentLocks = new Set();
 const pendingPunishmentTargetClaims = new Set();
 const managementSyncTimers = new Map();
+const rosterTimers = new Map(), rosterUpdatedAt = new Map(), rosterSignatures = new Map(), rosterManualAt = new Map();
 const activeManagementPanelSyncs = new Map();
 let scheduleProcessing = false;
 const activeReactionCleanups = new Set();
@@ -335,21 +337,7 @@ const commands = [
     .setDefaultMemberPermissions(null)
     .addStringOption((o) => o.setName('处罚编号').setDescription('处罚记录中的编号').setRequired(true).setMaxLength(32))
     .addStringOption((o) => o.setName('理由').setDescription('撤销理由，会记入撤销公示和留档').setRequired(true).setMaxLength(400)),
-  new SlashCommandBuilder()
-    .setName('定时提醒').setDescription('管理定时提及提醒')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addSubcommand((s) => s.setName('添加').setDescription('添加定时提醒（到期后自动重复，间隔为 0 表示只提醒一次）')
-      .addChannelOption((o) => o.setName('频道').setDescription('发送提醒的频道').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-      .addIntegerOption((o) => o.setName('重复间隔分钟').setDescription('0 表示只发送一次；最小重复间隔 10 分钟').setRequired(true).setMinValue(0).setMaxValue(525600))
-      .addStringOption((o) => o.setName('内容').setDescription('提醒文字').setRequired(true).setMaxLength(1500))
-      .addIntegerOption((o) => o.setName('分钟后').setDescription('首次提醒在多少分钟后发送；与“秒后”二选一').setRequired(false).setMinValue(1).setMaxValue(525600))
-      .addIntegerOption((o) => o.setName('秒后').setDescription('首次提醒在多少秒后发送（最少 5 秒；与“分钟后”二选一）').setRequired(false).setMinValue(5).setMaxValue(31536000))
-      .addUserOption((o) => o.setName('提及成员').setDescription('要提醒的某个人（可选）').setRequired(false))
-      .addStringOption((o) => o.setName('提及多人').setDescription('多个成员提及，粘贴成员提及并用空格或逗号分隔，最多 25 人').setRequired(false).setMaxLength(600))
-      .addRoleOption((o) => o.setName('提及身份组').setDescription('要提醒的身份组（可选）').setRequired(false)))
-    .addSubcommand((s) => s.setName('列表').setDescription('查看本服务器的定时提醒'))
-    .addSubcommand((s) => s.setName('删除').setDescription('按编号删除一个定时提醒')
-      .addStringOption((o) => o.setName('编号').setDescription('在提醒列表中查看编号').setRequired(true).setMaxLength(40))),
+
 ];
 
 async function registerCommands() {
@@ -1055,59 +1043,7 @@ async function processSchedules() {
 }
 
 async function processSchedulesUnlocked() {
-  const now = Date.now();
-  let changed = false;
-  for (const reminder of [...guildData.reminders]) {
-    if (reminder.nextAt > now) continue;
-    try {
-      const guild = await client.guilds.fetch(reminder.guildId);
-      const channel = await guild.channels.fetch(reminder.channelId);
-      const userIds = reminder.userIds || (reminder.userId ? [reminder.userId] : []);
-      const mentions = [...userIds.map((id) => `<@${id}>`), ...(reminder.roleId ? [`<@&${reminder.roleId}>`] : [])];
-      await channel.send({ content: `${mentions.join(' ')} ${reminder.content}`.trim(),
-        allowedMentions: { users: userIds, roles: reminder.roleId ? [reminder.roleId] : [] } });
-      if (reminder.intervalMs > 0) reminder.nextAt = now + reminder.intervalMs;
-      else guildData.reminders = guildData.reminders.filter((item) => item.id !== reminder.id);
-      changed = true;
-    } catch (error) {
-      logFailure('A scheduled reminder could not be sent.', error);
-      reminder.nextAt = now + 5 * 60 * 1000;
-      changed = true;
-    }
-  }
-  for (const followup of [...guildData.warningFollowups]) {
-    if (followup.dueAt > now) continue;
-    try {
-      const user = await client.users.fetch(followup.userId);
-      await user.send(`再次提醒：你在“${followup.guildName}”收到警告。原因：${followup.reason}`);
-    } catch (error) {
-      logFailure('A warning follow-up could not be sent.', error);
-    }
-    guildData.warningFollowups = guildData.warningFollowups.filter((item) => item.id !== followup.id);
-    changed = true;
-  }
-  for (const expiration of [...guildData.warningExpirations]) {
-    if (expiration.expiresAt > now) continue;
-    try {
-      const guild = await client.guilds.fetch(expiration.guildId);
-      const member = await guild.members.fetch(expiration.userId);
-      const role = await guild.roles.fetch(expiration.roleId);
-      if (member && role && member.roles.cache.has(role.id)) {
-        await member.roles.remove(role, `警告期限结束（处罚 ${expiration.caseId}）`);
-      }
-      guildData.warningExpirations = guildData.warningExpirations.filter((item) => item.id !== expiration.id);
-      changed = true;
-    } catch (error) {
-      if (error.code === 10007 || error.code === 10011) {
-        guildData.warningExpirations = guildData.warningExpirations.filter((item) => item.id !== expiration.id);
-      } else {
-        logFailure('A warning role expiration failed.', error);
-        expiration.expiresAt = now + 5 * 60 * 1000;
-      }
-      changed = true;
-    }
-  }
-  if (changed) await saveGuildData();
+  await processWarnings({state:()=>guildData,fetchUser:id=>client.users.fetch(id),fetchGuild:id=>client.guilds.fetch(id),save:saveGuildData,onError:logFailure});
 }
 
 function punishmentPanelEmbed(guildId) {
@@ -2224,6 +2160,11 @@ function memberHasCachedRole(member, roleId) {
   return Boolean(member?.roles?.cache?.has?.(roleId));
 }
 
+function scheduleManagementRoster(guild,tier='senior',roleId=null){
+  const key=guild.id+':'+tier+':'+(roleId||'');if(rosterTimers.has(key))return;
+  const timer=setTimeout(()=>{rosterTimers.delete(key);updateManagementRoster(guild,tier,roleId).catch(e=>logFailure('管理名单公示刷新失败。',e));},Math.max(1000,15*60000-(Date.now()-(rosterUpdatedAt.get(key)||0))));
+  timer.unref();rosterTimers.set(key,timer);
+}
 async function updateManagementRoster(guild, tier = 'senior', roleId = null) {
   const setting = settingsFor(guild.id);
   const track = managementTrack(setting, tier, roleId);
@@ -2232,6 +2173,10 @@ async function updateManagementRoster(guild, tier = 'senior', roleId = null) {
   if (!channel?.isTextBased()) return false;
   if (channel.isThread() && channel.archived) await channel.setArchived(false, '刷新管理组公示名单');
   const embeds = managementRosterEmbeds(guild.id, tier, track.roleId);
+  const rosterKey=guild.id+':'+tier+':'+(roleId||'');
+  const signature=JSON.stringify({channel:track.channelId,ids:track.rosterMessageIds||[],embeds:embeds.map(e=>{const v=e.toJSON();delete v.timestamp;return v;})});
+  rosterUpdatedAt.set(rosterKey,Date.now());
+  if(rosterSignatures.get(rosterKey)===signature)return true;
   const existing = [];
   for (const messageId of track.rosterMessageIds || (track.rosterMessageId ? [track.rosterMessageId] : [])) {
     const message = await channel.messages.fetch(messageId).catch((error) => {
@@ -2256,6 +2201,7 @@ async function updateManagementRoster(guild, tier = 'senior', roleId = null) {
     setManagementTrackRosterMessage(setting, track, nextIds);
     await saveGuildData();
   }
+  rosterSignatures.set(rosterKey,JSON.stringify({channel:track.channelId,ids:track.rosterMessageIds||[],embeds:embeds.map(e=>{const v=e.toJSON();delete v.timestamp;return v;})}));
   return true;
 }
 
@@ -2394,7 +2340,7 @@ async function syncManagementRole(guild, tier = 'senior', memberList = null, rol
     await announceManagementChange(guild, { action: '卸任', records: removed, moderator: client.user, tier, roleId: track.roleId,
       endedAt: now, showReason: false });
   }
-  if (!newlyDetected.length && !removed.length) await updateManagementRoster(guild, tier, track.roleId);
+  if (!newlyDetected.length && !removed.length) scheduleManagementRoster(guild, tier, track.roleId);
   return true;
 }
 
@@ -2412,7 +2358,7 @@ function queueManagementPanelSync(guild, work, label) {
 }
 
 async function reconcileManagementMember(member, hasRole, tier = 'senior', roleId = null) {
-  if (member.user.bot) return;
+  if (member.user?.bot) return;
   const guild = member.guild;
   const setting = settingsFor(guild.id);
   const track = managementTrack(setting, tier, roleId);
@@ -2447,7 +2393,11 @@ function scheduleManagementMemberSync(member, hasRole, tier = 'senior', roleId =
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
     managementSyncTimers.delete(key);
-    reconcileManagementMember(member, hasRole, tier, roleId).catch((error) => logFailure(`${managementTrack(settingsFor(member.guild.id), tier, roleId).label}成员同步失败。`, error));
+    const current=async()=>{
+      const fresh=await member.guild.members.fetch({user:member.id,force:true,cache:false}).catch(e=>{if(Number(e.code)===10007)return null;throw e;});
+      await reconcileManagementMember(fresh||member,!!fresh?.roles.cache.has(managementTrack(settingsFor(member.guild.id),tier,roleId).roleId),tier,roleId);
+    };
+    current().catch((error) => logFailure(`${managementTrack(settingsFor(member.guild.id), tier, roleId).label}成员同步失败。`, error));
   }, 1200);
   managementSyncTimers.set(key, timer);
 }
@@ -2476,7 +2426,7 @@ async function announceManagementChange(guild, { action, records, moderator, sta
       ...(showReason ? [{ name: '理由', value: (reason || '未填写').slice(0, 1024), inline: false }] : []),
     ).setTimestamp();
   await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
-  await updateManagementRoster(guild, tier, track.roleId);
+  scheduleManagementRoster(guild, tier, track.roleId);
   return true;
 }
 
@@ -2573,32 +2523,14 @@ async function executeManagementAction(guild, { action, memberIds, moderator, re
   return { message: `已为 ${records.length} 人办理卸任。${announced ? '公示和当前名单已更新。' : '公示发送失败，请检查频道权限。'}`, updated: true };
 }
 
+let renewingTimeouts=false;
 async function reconcileLongTimeouts() {
-  const now = Date.now();
-  const active = [];
-  for (const job of longTimeouts) {
-    if (job.endAt <= now) {
-      console.log('A long timeout schedule ended.');
-      continue;
-    }
-    try {
-      const guild = await client.guilds.fetch(job.guildId);
-      const member = await guild.members.fetch(job.userId);
-      if (job.nextRefreshAt <= now) {
-        const until = Math.min(job.endAt, now + TIMEOUT_REFRESH);
-        await member.timeout(until - now, job.reason || 'Scheduled long timeout refresh');
-        job.nextRefreshAt = until >= job.endAt ? job.endAt : until - DAY;
-        console.log('A long timeout schedule was refreshed.');
-      }
-      active.push(job);
-    } catch (error) {
-      // A departed member or removed bot permission should not prevent other schedules from running.
-      logFailure('Could not refresh a long timeout.', error);
-      active.push(job);
-    }
-  }
-  longTimeouts = active;
-  await saveTimeouts();
+  if(renewingTimeouts)return;renewingTimeouts=true;
+  try {await renewLongTimeouts({jobs:()=>longTimeouts,remove:job=>{longTimeouts=longTimeouts.filter(j=>j!==job);},
+    fetchMember:async job=>{const guild=await client.guilds.fetch(job.guildId);return guild.members.fetch({user:job.userId,force:true,cache:false});},
+    renew:(member,ms,job)=>member.timeout(ms,job.reason||'Scheduled long timeout refresh'),save:saveTimeouts,
+    onError:error=>logFailure('Could not refresh a long timeout.',error),refreshWindow:TIMEOUT_REFRESH,day:DAY});
+  }finally{renewingTimeouts=false;}
 }
 
 function hasPermission(interaction, permission) {
@@ -3513,6 +3445,7 @@ async function applyPermissionViolationPolicy(guild, entry, changedProtectedPerm
 }
 
 const client = new Client({
+  ...discordCacheOptions(Options, () => client.user?.id),
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessageReactions, GatewayIntentBits.GuildModeration],
   partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
 });
@@ -3535,6 +3468,7 @@ const scheduledPunishments = createScheduledPunishments({ client, settingsFor, s
   guildIds: commandGuildIds,
   scopeFor: guildId => punishmentGuildIds().includes(guildId) ? punishmentGuildIds() : [guildId],
   authorized: isPunishmentOperator, validate: validatePunishmentRequest, execute: executePunishmentRequest,
+  canRun:()=>storageReady,
   hasCase: caseId => guildData.punishmentCases.some(item => item.id === caseId),
   targetBusy: userId => activePunishmentLocks.has(userId) || pendingPunishmentTargetClaims.has(userId)
     || Object.values(pendingPunishmentRecords).some(item => item.userId === userId
@@ -3551,10 +3485,10 @@ const polls = createPolls({ client, settingsFor, guildIds: commandGuildIds, save
 if (process.env.RPG_STORAGE_BACKEND && !['discord','postgres'].includes(process.env.RPG_STORAGE_BACKEND)) throw Error('RPG_STORAGE_BACKEND须为discord或postgres。');
 if (process.env.RPG_STORAGE_BACKEND==='postgres'&&!process.env.RPG_DATABASE_URL) throw Error('PostgreSQL跑团存储须配置RPG_DATABASE_URL。');
 const rpgMetrics=require('./rpg/metrics').createMetrics({enabled:process.env.RPG_PERFORMANCE_METRICS==='1'});
-const rpgDatabase=process.env.RPG_STORAGE_BACKEND==='postgres'?require('./rpg/postgres').createPostgres({connectionString:process.env.RPG_DATABASE_URL,encrypt:encryptJson,decrypt:decryptJson,metrics:rpgMetrics,onLeaseLost:()=>{storageReady=false;rpg.store.guilds().forEach(g=>rpg.store.freeze(g));rpg.stop();client.destroy();console.error('数据库运行锁已丢失，Bot停止处理，等待单实例恢复。');process.exitCode=1;setTimeout(()=>process.exit(1),1000).unref();}}):null;
+const rpgDatabase=process.env.RPG_STORAGE_BACKEND==='postgres'?require('./rpg/postgres').createPostgres({connectionString:process.env.RPG_DATABASE_URL,encrypt:encryptJson,decrypt:decryptJson,metrics:rpgMetrics,onLeaseLost:()=>{storageReady=false;scheduledPunishments.stop();rpg.store.guilds().forEach(g=>rpg.store.freeze(g));rpg.stop();client.destroy();console.error('数据库运行锁已丢失，Bot停止处理，等待单实例恢复。');process.exitCode=1;setTimeout(()=>process.exit(1),1000).unref();}}):null;
 client.rest.on('rateLimited',rpgMetrics.rateLimited);
 client.rest.on('response',rpgMetrics.restResponse);
-const gatewayMetricsTimer=setInterval(()=>rpgMetrics.gauge('discord.gatewayPing',client.ws.ping),60000);gatewayMetricsTimer.unref();
+const gatewayMetricsTimer=setInterval(()=>{rpgMetrics.gauge('discord.gatewayPing',client.ws.ping);rpgMetrics.gauge('discord.cache.users',client.users.cache.size);rpgMetrics.gauge('discord.cache.members',[...client.guilds.cache.values()].reduce((n,g)=>n+g.members.cache.size,0));rpgMetrics.gauge('discord.cache.messages',[...client.channels.cache.values()].reduce((n,c)=>n+(c.messages?.cache?.size||0),0));for(const [key,value]of Object.entries(rpg.renderStats?.()||{}))rpgMetrics.gauge('render.'+key,value);},60000);gatewayMetricsTimer.unref();
 const rpg = createRpg({ client, guildIds: rpgGuildIds, channel: () => storageChannel, settingsFor,database:rpgDatabase,metrics:rpgMetrics,allowImport:process.env.RPG_IMPORT_DISCORD_ONCE==='1',
   saveIndex: saveGuildData, encrypt: encryptJson, decrypt: decryptJson, logFailure,
   protectedRoles: guildId => {
@@ -3734,6 +3668,7 @@ client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   try {
     await loadPlatformStorage();
+    if (archiveReminders(guildData)) await saveGuildData();
     await repairPairedPunishmentAccess().catch(error => logFailure('分服处罚权限配置修复失败。', error));
     storageReady = true;
   } catch (error) {
@@ -3768,9 +3703,9 @@ client.once('clientReady', async () => {
     }
     await syncManagementCompanionRoles(guild).catch((error) => logFailure('管理组配套身份组同步失败。', error));
   }
-  setInterval(() => reconcileLongTimeouts().catch((error) => logFailure('Timeout scheduler failed.', error)), 60 * 1000);
+  setInterval(() => reconcileLongTimeouts().catch((error) => logFailure('Timeout scheduler failed.', error)), 60 * 60 * 1000);
   await processSchedules().catch((error) => logFailure('Schedule startup processing failed.', error));
-  setInterval(() => processSchedules().catch((error) => logFailure('Schedule processing failed.', error)), 1000);
+  setInterval(() => processSchedules().catch((error) => logFailure('Schedule processing failed.', error)), 60 * 60 * 1000).unref();
 });
 client.on('guildMemberUpdate', (oldMember, newMember) => {
   if (storageReady) middleApplications.onMember(newMember, false, oldMember);
@@ -3802,7 +3737,12 @@ client.on('guildMemberAdd', (member) => {
   if (storageReady) nicknamePanel.onMember(member);
 });
 client.on('raw', (packet) => {
-  if (storageReady) middleApplications.onRaw(packet);
+  if (storageReady) { middleApplications.onRaw(packet); nicknamePanel.onRaw(packet); }
+  if(!storageReady||!['GUILD_MEMBER_UPDATE','GUILD_MEMBER_ADD','GUILD_MEMBER_REMOVE'].includes(packet.t))return;
+  const guild=client.guilds.cache.get(packet.d?.guild_id),id=packet.d?.user?.id;
+  const setting=guildData.settings[guild?.id];if(!guild||!id||!setting)return;
+  const roles=new Set(packet.d.roles||[]);
+  for(const [tier,roleId,track]of managementTracks(setting))if(track.roleId&&(roles.has(track.roleId)||track.terms.some(t=>t.userId===id&&!t.endedAt)||(track.companionRoleIds||[]).some(r=>roles.has(r))))scheduleManagementMemberSync({guild,id},roles.has(track.roleId),tier,roleId);
 });
 
 async function handleManagementSpeechVerification(interaction) {
@@ -4882,9 +4822,12 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.editReply('尚未设置可用的公示频道或管理组身份组，请先完成配置。');
             return;
           }
+          if(Date.now()-(rosterManualAt.get(guildId)||0)<60000){await interaction.editReply('本服刚刚刷新过，请至少等待60秒。');return;}
+          rosterManualAt.set(guildId,Date.now());
           await interaction.editReply('已开始后台刷新管理组名单及配套身份组；大型服务器可能需要较长时间。');
           queueManagementPanelSync(interaction.guild, async () => {
             await syncManagementRole(interaction.guild, tier, null, track.roleId);
+            await updateManagementRoster(interaction.guild,tier,track.roleId);
             return syncManagementCompanionRoles(interaction.guild);
           }, '管理组名单刷新');
           return;
@@ -5386,70 +5329,6 @@ client.on('interactionCreate', async (interaction) => {
       const record = { member: interaction.user, tenure: activeTerm ? formatTenure(endedAt - activeTerm.startedAt) : '任命时间未记录' };
       const announced = await announceManagementChange(interaction.guild, { action: '卸任', records: [record], moderator: interaction.user, endedAt, reason, tier, roleId: track.roleId });
       await interaction.editReply(announced ? '已为你办理卸任，并更新公示记录和当前名单。' : '已移除你的管理组身份，但公示频道发送失败，请联系管理员检查频道权限。');
-      return;
-    }
-
-    if (commandName === '定时提醒') {
-      if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
-        await interaction.editReply('需要“管理服务器”权限才能管理定时提醒。');
-        return;
-      }
-      const subcommand = options.getSubcommand();
-      if (subcommand === '添加') {
-        const channel = options.getChannel('频道', true);
-        const minutes = options.getInteger('分钟后');
-        const seconds = options.getInteger('秒后');
-        const repeat = options.getInteger('重复间隔分钟', true);
-        const user = options.getUser('提及成员');
-        const usersText = options.getString('提及多人')?.trim() || '';
-        const role = options.getRole('提及身份组');
-        if ((minutes === null) === (seconds === null)) { await interaction.editReply('“分钟后”和“秒后”必须填写一个，而且只能填写一个；5 秒是最短首次提醒时间。'); return; }
-        if ([Boolean(user), Boolean(usersText), Boolean(role)].filter(Boolean).length > 1) { await interaction.editReply('一次提醒只能选择单个成员、多人列表或一个身份组中的一种提及方式。'); return; }
-        if (repeat > 0 && repeat < 10) { await interaction.editReply('重复间隔至少需要 10 分钟，或填写 0 表示只提醒一次。'); return; }
-        const userIds = user ? [user.id] : [];
-        if (usersText) {
-          const ids = [...usersText.matchAll(/<@!?(\d+)>|(\d{17,20})/g)].map((match) => match[1] || match[2]);
-          const residue = usersText.replace(/<@!?\d+>|\d{17,20}/g, '').replace(/[,，\s]+/g, '');
-          if (!ids.length || residue || ids.some((id) => !/^\d{17,20}$/.test(id))) {
-            await interaction.editReply('“提及多人”请粘贴成员提及或 17 到 20 位用户 ID，并用空格或逗号分隔。'); return;
-          }
-          userIds.push(...ids);
-        }
-        const uniqueUserIds = [...new Set(userIds)];
-        if (uniqueUserIds.length > 25) { await interaction.editReply('一次最多提及 25 位成员。'); return; }
-        if (uniqueUserIds.length) {
-          const members = await Promise.all(uniqueUserIds.map((id) => interaction.guild.members.fetch(id).catch(() => null)));
-          if (members.some((member) => !member)) { await interaction.editReply('多人列表里有人不在本服务器，或用户 ID 无效。'); return; }
-        }
-        const botMember = await interaction.guild.members.fetchMe();
-        const botPerms = channel.permissionsFor(botMember);
-        if (!botPerms?.has(PermissionFlagsBits.ViewChannel) || !botPerms.has(PermissionFlagsBits.SendMessages)) {
-          await interaction.editReply('机器人在所选频道缺少查看频道或发送消息权限。'); return;
-        }
-        if (role && !role.mentionable && !botPerms.has(PermissionFlagsBits.MentionEveryone)) {
-          await interaction.editReply('要提醒这个身份组，请将其设为可被提及，或给机器人“提及 @everyone、@here 和所有身份组”权限。'); return;
-        }
-        const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-        const firstDelayMs = minutes !== null ? minutes * 60_000 : seconds * 1000;
-        guildData.reminders.push({ id, guildId: interaction.guildId, channelId: channel.id, userIds: uniqueUserIds,
-          roleId: role?.id || null, content: options.getString('内容', true), nextAt: Date.now() + firstDelayMs, intervalMs: repeat * 60_000 });
-        await saveGuildData();
-        const firstDelayText = minutes !== null ? `${minutes} 分钟` : `${seconds} 秒`;
-        await interaction.editReply(`已创建提醒，编号：\`${id}\`。首次提醒将在 ${firstDelayText} 后发送${repeat ? `，之后每 ${repeat} 分钟重复` : '，且只发送一次'}。`);
-      } else if (subcommand === '列表') {
-        const entries = guildData.reminders.filter((item) => item.guildId === interaction.guildId);
-        await interaction.editReply(entries.length ? entries.map((item) => {
-          const users = item.userIds || (item.userId ? [item.userId] : []);
-          const targets = [...users.map((userId) => `<@${userId}>`), ...(item.roleId ? [`<@&${item.roleId}>`] : [])];
-          return `编号：\`${item.id}\` · <#${item.channelId}> · <t:${Math.floor(item.nextAt / 1000)}:R> · ${item.intervalMs ? `每 ${item.intervalMs / 60000} 分钟` : '一次'} · ${targets.join('、') || '无提及'} · ${item.content}`;
-        }).join('\n') : '当前没有定时提醒。');
-      } else {
-        const id = options.getString('编号', true);
-        const before = guildData.reminders.length;
-        guildData.reminders = guildData.reminders.filter((item) => !(item.guildId === interaction.guildId && item.id === id));
-        await saveGuildData();
-        await interaction.editReply(before === guildData.reminders.length ? '没有找到这个编号。' : `已删除提醒 \`${id}\`。`);
-      }
       return;
     }
 
@@ -6075,6 +5954,6 @@ main().catch((error) => {
   process.exit(1);
 });
 let shuttingDown=false;
-async function shutdown(){if(shuttingDown)return;shuttingDown=true;storageReady=false;clearInterval(gatewayMetricsTimer);rpg.stop();
-  try{await Promise.race([rpg.drain(),new Promise((_,reject)=>setTimeout(()=>reject(Error('关闭等待超时，未完成公示将由存档恢复。')),25000))]);if(rpgDatabase)await rpgDatabase.close();}catch(e){logFailure('Bot关闭等待未完成。',e);}finally{client.destroy();process.exit(0);}}
+async function shutdown(){if(shuttingDown)return;shuttingDown=true;storageReady=false;clearInterval(gatewayMetricsTimer);scheduledPunishments.stop();rpg.stop();
+  try{await Promise.race([Promise.all([rpg.drain(),scheduledPunishments.drain()]),new Promise((_,reject)=>setTimeout(()=>reject(Error('关闭等待超时，未完成公示将由存档恢复。')),25000))]);if(rpgDatabase)await rpgDatabase.close();}catch(e){logFailure('Bot关闭等待未完成。',e);}finally{client.destroy();process.exit(0);}}
 process.once('SIGTERM',shutdown);process.once('SIGINT',shutdown);

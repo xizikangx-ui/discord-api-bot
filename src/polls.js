@@ -171,7 +171,14 @@ function createPolls(deps) {
       } else throw error;
     }
   }
-  async function refreshAfter(meta, data) {
+  const publicTimers = new Map(), publicAt = new Map();
+  async function refreshAfter(meta, data, coalesce=false) {
+    if(coalesce){
+      if(publicTimers.has(meta.id))return;
+      const timer=setTimeout(()=>{publicTimers.delete(meta.id);void enqueue(meta.id,async()=>refreshAfter(meta,await load(meta))).catch(error=>logFailure('投票统计刷新失败。',error));},Math.max(1,60000-(Date.now()-(publicAt.get(meta.id)||Date.now()))));
+      timer.unref();publicTimers.set(meta.id,timer);return;
+    }
+    clearTimeout(publicTimers.get(meta.id));publicTimers.delete(meta.id);publicAt.set(meta.id,Date.now());
     await refresh(meta, data).catch(error => logFailure('投票记录已保存，公开面板刷新失败。', error));
   }
   async function closeIfDue(meta, data) {
@@ -481,7 +488,7 @@ function createPolls(deps) {
         await memberFor(interaction);
         let data = await closeIfDue(meta, await load(meta));
         if (action === 'poll-approve') { await approve(interaction, meta, data); return; }
-        if (action === 'poll-refresh') { await refresh(meta, data); await interaction.editReply(`已刷新：${statusLabels[data.status]}。`); return; }
+        if (action === 'poll-refresh') { await refreshAfter(meta, data,true); await interaction.editReply(`当前记录：${statusLabels[data.status]}。公开统计每分钟合并更新。`); return; }
         if (action === 'poll-mine') {
           const vote = data.votes[interaction.user.id];
           const selected = choicesFor(vote, data);
@@ -515,7 +522,7 @@ function createPolls(deps) {
           next.events.push({ action: 'vote', actorId: interaction.user.id, choices, at: Date.now() });
         } else throw new Error('投票操作无效。');
         await store(meta, next);
-        await refreshAfter(meta, next);
+        await refreshAfter(meta, next, true);
         await interaction.editReply(action === 'poll-withdraw' ? '已撤回你的投票。' : `已记录你的选择：${choicesFor(next.votes[interaction.user.id], next).map(choice => next.options[choice]).join('、')}。其他人看不到投票名单。`);
       });
     } catch (error) {

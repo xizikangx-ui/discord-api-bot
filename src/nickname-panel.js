@@ -17,6 +17,7 @@ function createNicknamePanel({ client, settingsFor, save, logFailure }) {
   const enforcing = new Map();
   const dirty = new Set();
   const configActions = new Set();
+  const memberTimers = new Map();
 
   function policy(guildId) {
     const setting = settingsFor(guildId);
@@ -100,7 +101,10 @@ function createNicknamePanel({ client, settingsFor, save, logFailure }) {
       .finally(() => { enforcing.delete(key); if (dirty.delete(key)) queue(guild, userId); });
   }
   function onMember(member) {
-    if (policy(member.guild.id).locks[member.id]) queue(member.guild, member.id);
+    if (!policy(member.guild.id).locks[member.id]) return;
+    const key=member.guild.id+':'+member.id;
+    if(memberTimers.has(key))return;
+    const timer=setTimeout(()=>{memberTimers.delete(key);queue(member.guild,member.id);},30000);timer.unref();memberTimers.set(key,timer);
   }
   function start() {
     const reconcile = () => {
@@ -109,7 +113,7 @@ function createNicknamePanel({ client, settingsFor, save, logFailure }) {
       }
     };
     reconcile();
-    setInterval(reconcile, 5 * 60 * 1000).unref();
+    setInterval(reconcile, 30 * 60 * 1000).unref();
   }
 
   async function handle(interaction) {
@@ -245,7 +249,8 @@ function createNicknamePanel({ client, settingsFor, save, logFailure }) {
     }
     return true;
   }
-  return { handle, onMember, start };
+  function onRaw(packet){if(!['GUILD_MEMBER_UPDATE','GUILD_MEMBER_REMOVE','GUILD_MEMBER_ADD'].includes(packet.t))return;const guild=client.guilds.cache.get(packet.d?.guild_id),id=packet.d?.user?.id;if(guild&&id)onMember({guild,id});}
+  return { handle, onMember, onRaw, start };
 }
 
 module.exports = { createNicknamePanel, nicknameCommand };

@@ -158,13 +158,16 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
   }
   async function backupNow(guild) {
     if (!database || frozen.has(guild)) return;
-    const state = snapshot(guild), ch = channel(), buffer = pack(state), settings = settingsFor(guild);
-    C.requireThat(buffer.length < (ch.guild.maximumFileSize || 10 * 1024 * 1024), '数据库加密备份超过Discord附件限制。');
+    const revision = select(guild,s=>s.revision), settings = settingsFor(guild);
     const day = Math.floor((Date.now() + 8 * 3600000) / 86400000), monday = day - (day + 3) % 7;
-    const copies = [{ key: 'latest', period: String(state.revision), label: 'discord-api-bot-rpg-backup-v2:' + guild },
+    const copies = [{ key: 'latest', period: String(revision), label: 'discord-api-bot-rpg-backup-v2:' + guild },
       { key: 'daily-' + day % 6, period: String(day), label: 'discord-api-bot-rpg-backup-v2:' + guild + ':daily:' + day },
       { key: 'weekly-' + Math.floor((day + 3) / 7) % 4, period: String(monday), label: 'discord-api-bot-rpg-backup-v2:' + guild + ':weekly:' + monday }];
     settings.rpgPeriodicBackups ||= {};
+    const due = copies.some(copy => copy.key==='latest' ? backedUp.get(guild)!==revision : settings.rpgPeriodicBackups[copy.key]?.period!==copy.period || settings.rpgPeriodicBackups[copy.key]?.status!=='sent');
+    if (!due) return;
+    const state=snapshot(guild), ch=channel(), buffer=pack(state);
+    C.requireThat(buffer.length < (ch.guild.maximumFileSize || 10 * 1024 * 1024), '数据库加密备份超过Discord附件限制。');
     for (const copy of copies) {
       if (copy.key === 'latest' && backedUp.get(guild) === state.revision) continue;
       const pointer = copy.key === 'latest' ? { messageId: settings.rpgDatabaseBackupMessageId, status: settings.rpgDatabaseBackupStatus } : settings.rpgPeriodicBackups[copy.key] || {};

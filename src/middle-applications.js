@@ -42,6 +42,9 @@ function createMiddleApplications(deps) {
   const refreshAgain = new Set();
   const forceRefresh = new Set();
   const publicRefreshErrors = new Map();
+  const publicUpdatedAt = new Map();
+  const dirtyCounts = new Set();
+  const manualAt = new Map();
 
   function configurationManager(interaction) {
     return hasRole(interaction.member, managerRoleId(interaction.guildId));
@@ -304,9 +307,10 @@ function createMiddleApplications(deps) {
       await current.loading;
       if([...roleIds].every(id=>current.values.has(id)||current.roleErrors.has(id)))return;
     }
-    if (!force && current && !current.error && Date.now() - current.updatedAt < 60 * 1000
-      && [...roleIds].every((id) => current.values.has(id))) return;
+    const cooldown=force?60000:15*60000;
+    if (current && Date.now()-(current.attemptedAt||current.updatedAt)<cooldown) return;
     current ||= { values: new Map(), roleErrors: new Map(), updatedAt: 0 };
+    current.attemptedAt=Date.now();
     counts.set(guild.id, current);
     current.loading = (async () => {
       try {
@@ -321,7 +325,7 @@ function createMiddleApplications(deps) {
         current.values = values;
         current.roleErrors = errors;
         current.updatedAt = Date.now();
-        current.error = null;
+        current.error = null; dirtyCounts.delete(guild.id);
       } catch (error) {
         current.error = `Discord 人数请求失败${error.code ? `（${error.code}）` : ''}，请稍后重试。`;
         throw error;
@@ -330,13 +334,15 @@ function createMiddleApplications(deps) {
     try { await current.loading; } finally { current.loading = null; }
   }
   async function refreshPublic(guild, force = false) {
+    if(!force&&Date.now()-(publicUpdatedAt.get(guild.id)||0)<15*60000){scheduleRefresh(guild);return;}
     if (refreshing.has(guild.id)) {
       refreshAgain.add(guild.id);
       if (force) forceRefresh.add(guild.id);
       return refreshing.get(guild.id);
     }
     const work = (async () => {
-      await refreshCounts(guild, force).catch((error) => logFailure('中层申请人数读取失败。', error));
+      await refreshCounts(guild).catch((error) => logFailure('中层申请人数读取失败。', error));
+      publicUpdatedAt.set(guild.id,Date.now());
       let pruned = false;
       for (const config of Object.values(state(guild.id).panels)) {
         const payload=publicPayload(guild.id,config),signature=JSON.stringify(payload);
@@ -392,13 +398,14 @@ function createMiddleApplications(deps) {
     refreshTimers.set(guild.id, setTimeout(() => {
       refreshTimers.delete(guild.id);
       refreshPublic(guild, forceRefresh.delete(guild.id)).catch((error) => logFailure('中层申请人数更新失败。', error));
-    }, 1000));
+    }, Math.max(1000,15*60000-(Date.now()-(publicUpdatedAt.get(guild.id)||0)))));
+    refreshTimers.get(guild.id)?.unref?.();
   }
   function onMember(member, removed = false, previousMember = null) {
     const ids = Object.values(state(member.guild.id).panels).flatMap(awardRoleIds);
     if (removed || ids.some((id) => previousMember
       ? hasRole(previousMember, id) !== hasRole(member, id) : hasRole(member, id))) {
-      scheduleRefresh(member.guild, true);
+      dirtyCounts.add(member.guild.id); scheduleRefresh(member.guild);
     }
   }
   function onRaw(packet) {
@@ -407,7 +414,7 @@ function createMiddleApplications(deps) {
     if (!guild) return;
     // Removed or uncached members may not produce a discord.js member event.
     if (packet.t === 'GUILD_MEMBER_REMOVE' || (Array.isArray(packet.d.roles)
-      && !guild.members.cache.has(packet.d.user?.id))) scheduleRefresh(guild, true);
+      && !guild.members.cache.has(packet.d.user?.id))) {dirtyCounts.add(guild.id); scheduleRefresh(guild);}
   }
   async function updateApproval(guild, app) {
     if (!app.approvalMessageId) return;
@@ -791,8 +798,10 @@ function createMiddleApplications(deps) {
       if (action === 'midapp-submit' && interaction.isModalSubmit()) await submit(interaction, config);
       else if (action === 'midapp-refresh' && interaction.isButton()) {
         if (!configurationManager(interaction)) throw new Error('只有主管理组成员可以手动刷新人数。');
+        if(Date.now()-(manualAt.get(interaction.guildId)||0)<60000)throw Error('本服刚刚刷新过，请至少等待60秒再刷新。');
+        manualAt.set(interaction.guildId,Date.now());
         await refreshCounts(interaction.guild, true).catch((error) => logFailure('手动读取中层申请人数失败。', error));
-        await refreshPublic(interaction.guild);
+        await refreshPublic(interaction.guild,true);
         const current = counts.get(interaction.guildId);
         const ids = awardRoleIds(config);
         const error = current?.error || ids.map((id) => current?.roleErrors.get(id)).find(Boolean);
@@ -880,13 +889,13 @@ function createMiddleApplications(deps) {
             app.status === 'executing'
             || (app.status === 'rejected' && ['pending', 'sending'].includes(app.rejectionNotification?.status))
             || (app.status === 'completed' && successReplies(app).some((reply) => ['pending', 'sending'].includes(reply.status))))) continue;
-          try { await recover(guild, refreshCards); await refreshPublic(guild, true); }
+          try { await recover(guild, refreshCards); await refreshPublic(guild); }
           catch (error) { logFailure('中层申请启动/定期同步失败。', error); }
         }
       } finally { running = false; }
     };
     void reconcile(true);
-    setInterval(() => void reconcile(), 60 * 1000).unref();
+    setInterval(() => void reconcile(), 15 * 60 * 1000).unref();
   }
   return { handle, onMember, onRaw, start };
 }

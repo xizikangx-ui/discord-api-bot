@@ -451,7 +451,7 @@ function createActivities(context) {
     for (const r of Object.values(snapshot(guild).sessions)) if (r.messageId&&require('./outbox').needsRecovery(store,guild,'session',r.id)) await publish(guild, 'session', r.id).catch(e => logFailure('开团卡恢复失败。', e));
   }
   async function tick(guild, now = Date.now()) {
-    for (const r of Object.values(snapshot(guild).sessions)) if (r.reminder.status === 'pending' && r.startsAt <= now && r.status !== 'cancelled') {if(store.backgroundPublications)await store.enqueue(guild,'reminder',r.id,{priority:1});else await remind(guild, r.id, false, now);}
+    for (const id of store.select(guild,s=>Object.values(s.sessions).filter(r=>r.reminder.status==='pending'&&r.startsAt<=now&&r.status!=='cancelled').map(r=>r.id))) {if(store.backgroundPublications)await store.enqueue(guild,'reminder',id,{priority:1});else await remind(guild,id,false,now);}
   }
   return { openModal, slash, component, publish, publishNow, tick, recover, remember, remind, lootMenu, sessionDraft };
 }

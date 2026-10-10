@@ -22,8 +22,9 @@ async function readBounded(response,limit) {
   }
   const bytes=Buffer.from(await response.arrayBuffer());ok(bytes.length<=limit,'图片超过大小限制。');return bytes;
 }
-function createPortraits({client,channel,encrypt,decrypt,fetcher=fetch,snapshot,tx,needGM,pickView,logFailure}) {
+function createPortraits({client,channel,encrypt,decrypt,fetcher=fetch,snapshot,tx,needGM,pickView,logFailure,cacheBytes=64*1024*1024}) {
   const cache=new Map();
+  const expiry=setInterval(()=>{for(const [key,entry]of cache)if(entry.expires<=Date.now())cache.delete(key);},60000);expiry.unref();
   async function upload(guild,uid,attachment) {
     ok(attachment.size<=LIMIT,'每张图片最多4 MiB。');
     const bytes=attachment.bytes||await readBounded(await fetcher(attachment.url,{signal:AbortSignal.timeout(20000)}),LIMIT),ext=format(bytes),id=attachment.id||C.id('image');
@@ -42,8 +43,7 @@ function createPortraits({client,channel,encrypt,decrypt,fetcher=fetch,snapshot,
     const result=decrypt(JSON.parse(encrypted.toString('utf8'))),value=result.value;
     ok(result.encrypted&&value.kind==='rpg-portrait'&&value.guildId===guild&&value.id===ref.id,'图片存档验证失败。');
     const bytes=Buffer.from(value.body,'base64');ok(hash(bytes)===ref.hash&&value.hash===ref.hash&&format(bytes)===ref.ext,'图片内容验证失败。');
-    if(cache.size>=16)cache.delete(cache.keys().next().value);
-    cache.set(key,{bytes,expires:Date.now()+60000});return bytes;
+    if(cacheBytes>0){cache.set(key,{bytes,expires:Date.now()+60000});let used=[...cache.values()].reduce((n,e)=>n+e.bytes.length,0);while(cache.size&&(cache.size>16||used>cacheBytes)){const first=cache.keys().next().value;used-=cache.get(first).bytes.length;cache.delete(first);}}return bytes;
   }
   async function decorate(guild,result) {
     const out={...result};const refs=out.rpgPortraits;delete out.rpgPortraits;
@@ -68,7 +68,7 @@ function createPortraits({client,channel,encrypt,decrypt,fetcher=fetch,snapshot,
     for(const slot of f.clear==='both'?['avatar','illustration']:[f.clear])if(slot)delete refs[slot];
     const out=U.payload('图片设置预览 · '+t.name,'右上头像：'+(refs.avatar?'已设置':'无')+'\n底部立绘：'+(refs.illustration?'已设置':'无')+'\n确认后保存。',[
       U.row(U.button('portrait:confirm:'+f.id,'确认保存图片',U.D.ButtonStyle.Success),U.button('portrait:cancel:'+f.id,'取消'))]);
-    out.rpgPortraits=refs;return out;
+    out.rpgPortraits=refs;out.rpgImageRequested=true;return out;
   }
   function list(s,f,page=0) {
     const options=Object.values(s.npcTemplates).filter(t=>t.published).map(t=>({value:t.id,label:t.name,description:'版本 '+t.version}));
@@ -101,6 +101,6 @@ function createPortraits({client,channel,encrypt,decrypt,fetcher=fetch,snapshot,
     if(action==='pick')return preview(snapshot(i.guildId),snapshot(i.guildId).forms[f.id]);
     return U.payload(action==='cancel'?'已取消':'图片已保存',result?result.name+'，重新打开角色卡即可查看。':'原图片保持不变。');
   }
-  return {slash,component,decorate,upload,load};
+  return {slash,component,decorate,upload,load,close(){clearInterval(expiry);cache.clear();}};
 }
 module.exports={LIMIT,format,readBounded,createPortraits};

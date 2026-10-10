@@ -79,6 +79,6 @@ test('periodic application refresh skips unchanged message reads and edits but p
  const message={edit:async()=>{edits++;}},channel={messages:{fetch:async()=>{fetches++;return message;}}};
  const guild={id:'guild',roles:{fetchMemberCounts:async()=>{reads++;return new D.Collection([['award',count]]);}},channels:{fetch:async()=>channel}};
  const ctl=require('../src/middle-applications').createMiddleApplications({client:{guilds:{cache:new D.Collection([['guild',guild]])}},settingsFor:()=>settings,save:async()=>{},managerRoleId:()=>null,logFailure:(label,error)=>{throw error;}});
- ctl.start();await until(()=>edits===1);await pause(20);t.mock.timers.tick(60000);await until(()=>reads===2);await pause(20);
- assert.equal(fetches,1);assert.equal(edits,1);count=5;t.mock.timers.tick(60000);await until(()=>edits===2);assert.equal(reads,3);assert.equal(fetches,2);
+ ctl.start();await until(()=>edits===1);await pause(20);t.mock.timers.tick(15*60000);await until(()=>reads===2);await pause(20);
+ assert.equal(fetches,1);assert.equal(edits,1);count=5;t.mock.timers.tick(15*60000);await until(()=>edits===2);assert.equal(reads,3);assert.equal(fetches,2);
 });

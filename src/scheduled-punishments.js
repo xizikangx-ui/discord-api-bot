@@ -2,15 +2,17 @@ const { randomBytes } = require('node:crypto');
 const { SlashCommandBuilder, MessageFlags, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { addPunishmentDurationOptions, readPunishmentDurations, validatePunishmentDurations, formatPunishmentDuration } = require('./punishment-duration');
 
-const DAY = 24 * 60 * 60 * 1000;
+const { deadlineTimer, MINUTE } = require('./economy');
 const modes = { warning: '仅警告', timeout: '仅禁言', both: '警告并禁言', ban: '永封' };
 const statuses = { pending: '等待执行，可解除', preparing: '正在检查执行条件', executing: '正在执行',
   cancelled: '已解除，不执行', completed: '已执行', failed: '检查或保存失败，未执行', uncertain: '执行结果需要人工核对，未自动重试' };
 const commands = [
-  addPunishmentDurationOptions(new SlashCommandBuilder().setName('预约处罚').setDescription('预约24小时后执行处罚，期间可解除').setDefaultMemberPermissions(null)
+  addPunishmentDurationOptions(new SlashCommandBuilder().setName('预约处罚').setDescription('预约20／40／60分钟后执行处罚，期间可解除').setDefaultMemberPermissions(null)
     .addStringOption(o => o.setName('方式').setDescription('到期执行的处罚方式').setRequired(true)
       .addChoices(...Object.entries(modes).map(([value, name]) => ({ value, name }))))
     .addStringOption(o => o.setName('原因').setDescription('处罚原因').setRequired(true).setMaxLength(400))
+    .addIntegerOption(o => o.setName('等待分钟').setDescription('开始执行前等待多久（不改变处罚持续时间）').setRequired(true)
+      .addChoices(...[20,40,60].map(value => ({name: value+'分钟',value}))))
     .addUserOption(o => o.setName('成员').setDescription('目标成员，与用户ID二选一'))
     .addStringOption(o => o.setName('user_id').setDescription('目标用户ID或提及，与成员二选一').setMaxLength(32))),
   new SlashCommandBuilder().setName('解除预约处罚').setDescription('按预约编号解除尚未到期的预约处罚').setDefaultMemberPermissions(null)
@@ -22,7 +24,15 @@ function createScheduledPunishments(deps) {
   const { client, settingsFor, guildIds, scopeFor, authorized, validate, execute, save, hasCase, targetBusy, logFailure } = deps;
   const confirmations = new Map();
   const locks = new Set();
-  let timer;
+  const retryAt = new Map();
+  const timer = deadlineTimer(() => tick());
+  function schedule() {
+    if (!started) return;
+    const deadlines = allRecords().filter(j => j.status === 'pending' && !locks.has(j.id))
+      .map(j => Math.max(j.dueAt, retryAt.get(j.id) || 0));
+    deadlines.push(...[...confirmations.values()].map(s => s.expiresAt + 1));
+    timer.at(Math.min(...deadlines));
+  }
   let started = false;
   const records = guildId => (settingsFor(guildId).scheduledPunishments ||= []);
   const allRecords = () => guildIds().flatMap(records);
@@ -73,11 +83,13 @@ function createScheduledPunishments(deps) {
     const match = raw?.match(/^(?:<@!?(\d{17,20})>|(\d{17,20}))$/);
     if (raw && !match) throw new Error('请填写17到20位数字用户ID或用户提及。');
     const mode = options.getString('方式', true);
+    const waitMinutes = options.getInteger('等待分钟', true);
+    if (![20,40,60].includes(waitMinutes)) throw new Error('等待时间必须为20、40或60分钟。');
     const { timeoutDays, warningDays } = readPunishmentDurations(options);
     if (!modes[mode]) throw new Error('处罚方式无效。');
     validatePunishmentDurations({ mode, timeoutDays, warningDays });
     return { guildId: interaction.guildId, userId: selected?.id || match[1] || match[2], mode,
-      reason: options.getString('原因', true).trim(), timeoutDays, warningDays };
+      reason: options.getString('原因', true).trim(), timeoutDays, warningDays, waitMinutes };
   }
   function noDuplicate(request, scope) {
     const existing = allRecords().find(job => job.userId === request.userId && active(job)
@@ -101,7 +113,7 @@ function createScheduledPunishments(deps) {
       await interaction.editReply(closingUncertain
         ? `预约 ${job.id} 已关闭，不会再自动执行。请核对处罚编号 ${job.caseId}；此操作没有撤销任何已实际执行的处罚，撤销请使用 /撤销处罚。`
         : `预约 ${job.id} 已解除，不会自动执行处罚。`);
-    } finally { locks.delete(job.id); }
+    } finally { locks.delete(job.id); schedule(); }
   }
   async function book(interaction, token) {
     const session = confirmations.get(token);
@@ -115,7 +127,7 @@ function createScheduledPunishments(deps) {
     noDuplicate(session.request, scope);
     const now = Date.now();
     const job = { ...session.request, id: randomBytes(8).toString('hex'), caseId: randomBytes(6).toString('hex'),
-      moderatorId: interaction.user.id, scopeGuildIds: scope, createdAt: now, dueAt: now + DAY,
+      moderatorId: interaction.user.id, scopeGuildIds: scope, createdAt: now, dueAt: now + session.request.waitMinutes * MINUTE,
       status: 'pending', sourceChannelId: interaction.channelId };
     // Insert synchronously before persistence; concurrent confirmations see this reservation.
     const list = records(job.guildId);
@@ -130,11 +142,12 @@ function createScheduledPunishments(deps) {
         job.noticeChannelId = message.channelId; job.noticeMessageId = message.id;
         await save();
       } catch (error) { noticeError = '公示卡发送或保存失败，请用 /预约处罚列表 查看并用 /解除预约处罚 解除。'; logFailure('预约已保存，公示卡发送或保存失败。', error); }
-      await interaction.editReply({ content: `已预约，编号：${job.id}。24小时内可点击公示卡解除，或使用 /解除预约处罚。\n${noticeError}`, embeds: [payload(job).embeds[0]], components: [] });
-    } finally { locks.delete(job.id); }
+      await interaction.editReply({ content: `已预约，编号：${job.id}。到期前可点击公示卡解除，或使用 /解除预约处罚。\n${noticeError}`, embeds: [payload(job).embeds[0]], components: [] });
+    } finally { locks.delete(job.id); schedule(); }
   }
   async function run(job) {
-    if (locks.has(job.id) || job.status !== 'pending' || Date.now() < job.dueAt || targetBusy(job.userId)) return;
+    if (locks.has(job.id) || job.status !== 'pending' || Date.now() < job.dueAt) return;
+    if (targetBusy(job.userId)) { retryAt.set(job.id, Date.now() + MINUTE); return; }
     locks.add(job.id);
     job.status = 'preparing';
     let externalStarted = false;
@@ -155,8 +168,10 @@ function createScheduledPunishments(deps) {
       context.channel = channel; context.channelId = channel?.id;
       await validate(context, job);
       if (targetBusy(job.userId)) { job.status = 'pending'; return; }
+      if(!started||deps.canRun?.()===false)throw Error('Bot已停止修改，预约未开始执行。');
       job.status = 'executing'; job.startedAt = Date.now();
       await save(); // No punishment is sent until the execution marker is durable.
+      if(!started||deps.canRun?.()===false)throw Error('Bot已停止修改，预约未开始执行。');
       externalStarted = true;
       job.result = await execute(context, job);
       executionReturned = true;
@@ -170,14 +185,17 @@ function createScheduledPunishments(deps) {
       await save().catch(saveError => logFailure('预约处罚结果保存失败。', saveError));
     } finally {
       locks.delete(job.id);
-      if (job.status !== 'pending') await updateNotice(job).catch(error => logFailure('预约处罚状态通知失败。', error));
+      if (job.status !== 'pending') { retryAt.delete(job.id); await updateNotice(job).catch(error => logFailure('预约处罚状态通知失败。', error)); }
+      else retryAt.set(job.id, Date.now() + MINUTE);
+      schedule();
     }
   }
   function tick() {
     for (const [token, session] of confirmations) if (Date.now() > session.expiresAt) confirmations.delete(token);
     for (const job of allRecords()) {
-      if (job.status === 'pending' && Date.now() >= job.dueAt) void run(job).catch(error => logFailure('预约处罚后台任务失败。', error));
+      if (job.status === 'pending' && Date.now() >= Math.max(job.dueAt, retryAt.get(job.id) || 0)) void run(job).catch(error => logFailure('预约处罚后台任务失败。', error));
     }
+    schedule();
   }
   async function start() {
     if (started) return;
@@ -194,9 +212,8 @@ function createScheduledPunishments(deps) {
     if (changed) await save();
     started = true;
     for (const job of recovered) await updateNotice(job).catch(error => logFailure('预约处罚恢复通知失败。', error));
-    timer = setInterval(tick, 5000); timer.unref();
     tick();
-    console.log('预约处罚调度已启动（24小时等待，每5秒检查；执行中断不自动重试）。');
+    console.log('预约处罚调度已启动（按到期时间唤醒；执行中断不自动重试）。');
   }
   async function handle(interaction) {
     const command = interaction.isChatInputCommand() && commands.some(item => item.name === interaction.commandName);
@@ -233,19 +250,20 @@ function createScheduledPunishments(deps) {
         const token = randomBytes(8).toString('hex');
         confirmations.set(token, { request, moderatorId: interaction.user.id, guildId: interaction.guildId,
           scopeGuildIds: scope, expiresAt: Date.now() + 60000 });
-        const preview = { ...request, id: '确认后生成', moderatorId: interaction.user.id, dueAt: Date.now() + DAY, status: 'pending' };
-        await interaction.editReply({ content: '请确认：点击后开始24小时等待，不会立即处罚。此确认卡1分钟内有效；到期按当时成员所在服务器执行，永封仍按ID双服执行。',
+        const preview = { ...request, id: '确认后生成', moderatorId: interaction.user.id, dueAt: Date.now() + request.waitMinutes * MINUTE, status: 'pending' };
+        await interaction.editReply({ content: `请确认：点击后等待${request.waitMinutes}分钟，不会立即处罚。此确认卡1分钟内有效；到期按当时成员所在服务器执行，永封仍按ID双服执行。`,
           embeds: [payload(preview).embeds[0]], allowedMentions: { parse: [] }, components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`scheduled-book:${token}`).setLabel('确认预约24小时后处罚').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`scheduled-book:${token}`).setLabel(`确认预约${request.waitMinutes}分钟后处罚`).setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId(`scheduled-abort:${token}`).setLabel('取消').setStyle(ButtonStyle.Secondary))] });
       }
     } catch (error) {
       logFailure('预约处罚操作未完成。', error);
       await interaction.editReply({ content: clipped(error.message || error), embeds: [], components: [], allowedMentions: { parse: [] } }).catch(() => {});
     }
+    schedule();
     return true;
   }
-  return { handle, start };
+  return { handle, start, async drain(){while(locks.size)await new Promise(r=>setTimeout(r,20));}, stop: () => { started = false; timer.stop(); } };
 }
 
 module.exports = { createScheduledPunishments, scheduledPunishmentCommands: commands };
