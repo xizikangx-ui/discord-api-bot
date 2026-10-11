@@ -3,23 +3,24 @@ const crypto = require("node:crypto"),
   S = require("./security"),
   C = require("../rpg/constants");
 function createChat(repo, accounts, { broadcast = () => {} } = {}) {
-  async function access(userId, roomId, r) {
-    const room = await repo.get("room", roomId, r);
+  async function access(userId, roomId, r, authorization, knownRoom) {
+    const room = knownRoom || await repo.get("room", roomId, r);
     S.ok(room && !room.archived, "频道不存在。", "NOT_FOUND");
     if (room.kind === "dm")
       S.ok(room.participants.includes(userId), "无权读取此私聊。", "FORBIDDEN");
-    const a = await accounts.member(room.groupId, userId, r);
+    const a = authorization?.group.id===room.groupId&&authorization.user.id===userId ? authorization : await accounts.member(room.groupId, userId, r);
     if (room.kind === "gm") accounts.gm(a);
     if (room.members?.length && !["gm", "admin"].includes(a.role))
       S.ok(room.members.includes(userId), "无权读取此频道。", "FORBIDDEN");
     return { room, a };
   }
-  async function rooms(group, userId) {
+  async function rooms(group, userId, r, authorization) {
+    const a=authorization || await accounts.member(group,userId,r);
     const all = await repo.list("room", group),
       out = [];
     for (const c of all) {
       try {
-        await access(userId, c.id);
+        await access(userId, c.id,r,a,c);
         if (c.kind === "dm") {
           const other = await accounts.user(
             c.participants.find((id) => id !== userId),

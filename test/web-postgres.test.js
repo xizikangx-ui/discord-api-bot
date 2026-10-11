@@ -1216,6 +1216,36 @@ test(
         await app.games.store.transact(g.id,'all-conditions-once',u.id,st=>{for(const t of Z.templates())for(const severity of Object.keys(t.levels)){const p=st.players[users[index++]];B.applyCondition(st,p,{id:t.id,severity},lo=>lo);}return true;});
         const before=require('../src/rpg/postgres').digest(await db.load(g.id));await app.games.store.recover(g.id);assert.equal(require('../src/rpg/postgres').digest(await db.load(g.id)),before);assert.equal(index,19);assert.equal(app.games.store.snapshot(g.id).conditionPackVersion,1);
       });
+      await t.test('website manual battle ends atomically after saved defense, publishes summary once and restores the result',async()=>{
+        const u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'自动结束隔离验收'},crypto.randomUUID());await app.games.ensure(g.id);
+        const B=require('../src/rpg/combat'),H=require('../src/rpg/health');let bid;
+        await app.games.store.transact(g.id,'auto-end-fixture',u.id,s=>{
+          s.traits.neutral={id:'neutral',name:'无附加效果',effects:[],published:true,version:1};
+          const p=M.newCharacter('终局验收角色',{strength:5,constitution:5,mind:5,appearance:5,intelligence:5,agility:50,knowledge:5});p.userId=u.id;s.players[u.id]=p;
+          const t=require('./helpers/rpg-harness').weapon(s,{hit:1000,damage:{physical:'1000'},weightKg:0});const item=M.issue(s,u.id,t.id)[0];M.equip(s,u.id,item.id);
+          const b=B.createBattle(s,s.config.announcementChannelId,u.id,'手动战终局');bid=b.id;B.join(s,b,u.id);
+          const enemy=M.newCharacter('最后敌人',{strength:1,constitution:1,mind:1,appearance:1,intelligence:1,agility:1,knowledge:1});enemy.hp=1;
+          b.actors.push({id:'last-foe',name:enemy.name,team:'enemy',character:enemy,x:45,y:25,retreated:false,baseXP:10,ai:{mode:'manual'}});B.start(s,b,null,min=>min);return true;
+        });
+        const view=await app.games.view(g.id,u.id),b=view.battles[0],op=crypto.randomUUID(),params={battleId:bid,turnId:b.current.id,action:'attack',params:{abilityKey:b.abilities[0].key,targetId:'last-foe'}};
+        const result=await app.games.execute(g.id,u.id,'battle.action',params,op,view.versions);assert.equal(result.status,'committed');const pending=app.games.store.snapshot(g.id).battles[bid];assert.ok(pending.pending);const count=structuredClone(pending.actionRound.counts);
+        await app.games.store.transact(g.id,'last-defense',u.id,s=>B.defend(s,s.battles[bid],require('../src/rpg/aoe').hits(s.battles[bid])[0].id,'defend'));
+        const final=app.games.store.snapshot(g.id),ended=final.battles[bid];assert.equal(ended.status,'ended');assert.equal(ended.outcome,'victory');assert.deepEqual(ended.actionRound.counts,count);assert.equal(Object.keys(final.deaths).length,1);assert.equal(ended.current,null);
+        assert.deepEqual(await app.games.execute(g.id,u.id,'battle.action',params,op,view.versions),result);
+        const rooms=await repo.list('room',g.id);let messages=[];
+        for(let attempt=0;attempt<100;attempt++){await app.games.tick();messages=(await Promise.all(rooms.map(r=>repo.history(r.id,{after:0,before:Number.MAX_SAFE_INTEGER,limit:100})))).flat();if(messages.some(m=>m.system?.ended&&m.system.battleId===bid))break;await new Promise(r=>setTimeout(r,50));}
+        assert.equal(messages.filter(m=>m.system?.ended&&m.system.battleId===bid).length,1);
+        await app.games.store.recover(g.id);const restored=app.games.store.snapshot(g.id);assert.equal(restored.battles[bid].outcome,'victory');assert.equal(Object.keys(restored.deaths).length,1);assert.deepEqual(await app.games.operationReceipt(g.id,u.id,op),result);
+      });
+      await t.test('section API and chat commits keep gameplay versions independent with compressed public assets',async()=>{
+        const u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'增量聊天隔离验收'},crypto.randomUUID());await app.games.ensure(g.id);
+        const r=(await repo.list('room',g.id)).find(r=>r.kind==='chat');
+        const before=app.games.versions(g.id),core=await call(admin,'/groups/'+g.id+'/game?sections=core');assert.equal(core.status,200);assert.equal(core.data.maps,undefined);assert.equal(core.data.actionHistory,undefined);assert.ok(core.data.sectionVersions.core!==undefined);
+        assert.equal((await call(admin,'/groups/'+g.id+'/game?sections=private')).status,422);
+        for(let i=0;i<20;i++)await app.chat.send(u.id,r.id,{clientId:crypto.randomUUID(),text:'增量聊天 '+i});
+        assert.deepEqual(app.games.versions(g.id),before);
+        const index=await fetch(origin),html=await index.text(),asset=html.match(/src="([^" ]+\.js)"/)[1],compressed=await fetch(origin+asset,{headers:{'accept-encoding':'gzip'}});assert.equal(compressed.headers.get('content-encoding'),'gzip');assert.match(compressed.headers.get('cache-control'),/immutable/);const tag=compressed.headers.get('etag');assert.equal((await fetch(origin+asset,{headers:{'accept-encoding':'gzip','if-none-match':tag}})).status,304);
+      });
       async function accountsUser(){return app.accounts.user(admin.user.id);}
       await t.test('ended battle loot chat card survives restart, concurrent quick pickup and overweight rollback',async()=>{
         const B=require('../src/rpg/combat'),u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'战利品隔离验收'},crypto.randomUUID());await app.games.ensure(g.id);

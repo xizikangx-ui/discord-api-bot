@@ -23,6 +23,7 @@ function createWeb({
   allowHttp = false,
   renderer: providedRenderer,
 }) {
+  const metrics=require('./metrics').createMetrics();
   const repo =
       repository || require("./repository").createRepository(pool, crypt),
     content =
@@ -46,14 +47,16 @@ function createWeb({
     },
   });
   async function emit(scope, event, room = false) {
+    const knownRoom=room?await repo.get("room",scope):null,auths=new Map(),memberships=new Map();
+    const once=(cache,key,fn)=>{if(!cache.has(key))cache.set(key,fn());return cache.get(key);};
     await Promise.allSettled(
       [...sockets]
         .filter((ws) => (room ? ws.roomId === scope : ws.groupId === scope))
         .map(async (ws) => {
           try {
-            await accounts.session(ws.credential);
-            if (room) await chat.access(ws.userId, scope);
-            else await accounts.member(scope, ws.userId);
+            const auth=await once(auths,ws.credential,()=>accounts.session(ws.credential));
+            const a=await once(memberships,ws.userId,()=>accounts.member(room?knownRoom?.groupId:scope,ws.userId,undefined,auth.user));
+            if(room)await chat.access(ws.userId,scope,undefined,a,knownRoom);
             if (ws.bufferedAmount > 262144) {
               ws.close(1013, "请重新同步");
               return;
@@ -81,6 +84,7 @@ function createWeb({
       chat,
       ...gameCrypt,
       broadcast: (group, event) => void emit(group, event),
+      metrics,
     });
   async function notifyUnread(roomId, sequence) {
     const room = await repo.get("room", roomId);
@@ -233,7 +237,14 @@ function createWeb({
         } catch {
           S.fail("页面不存在。", "NOT_FOUND");
         }
+        let encoding;
+        for(const [name,suffix] of [['br','.br'],['gzip','.gz']])if(String(req.headers['accept-encoding']||'').split(',').some(v=>{const [n,q]=v.trim().split(';');return n===name&&!/q=0(?:\.0*)?$/.test(q||'');})){
+          try{bytes=await fs.promises.readFile(selected+suffix);encoding=name;break;}catch{}
+        }
+        const etag='"'+crypto.createHash('sha256').update(bytes).digest('hex').slice(0,24)+'"';
+        if(req.headers['if-none-match']===etag){res.writeHead(304,{etag,vary:'Accept-Encoding'});return res.end();}
         res.writeHead(200, {
+          etag,vary:'Accept-Encoding',...(encoding?{'content-encoding':encoding}:{}),
           "content-type":
             {
               ".html": "text/html; charset=utf-8",
@@ -243,11 +254,12 @@ function createWeb({
               ".png": "image/png",
               ".gif": "image/gif",
               ".ttf": "font/ttf",
+              ".woff2": "font/woff2",
             }[path.extname(selected)] || "application/octet-stream",
           "cache-control":
             path.extname(selected) === ".html"
               ? "no-cache"
-              : /\/(effects|fonts)\//.test(u.pathname)?"public,max-age=31536000,immutable":"public,max-age=3600",
+              : /\/(assets|effects|fonts)\//.test(u.pathname)?"public,max-age=31536000,immutable":"public,max-age=3600",
           "content-security-policy":
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
           "x-content-type-options": "nosniff",
@@ -489,7 +501,7 @@ function createWeb({
         );
       }
       if (rest === "/rooms" && !p) {
-        const channels = await chat.rooms(group, uid),
+        const channels = await chat.rooms(group, uid,undefined,a),
           reads = await repo.list("read", uid);
         return answer(
           channels.map((c) => ({
@@ -552,10 +564,8 @@ function createWeb({
         return res.end(image.bytes);
       }
       if (rest === "/version" && !p)
-        return answer({
-          revision: games.store.select(group, (s) => s.revision),
-        });
-      if (rest === "/game" && !p) return answer(await games.view(group, uid));
+        return answer(games.versions(group));
+      if (rest === "/game" && !p) return answer(await games.view(group, uid,require('./game-sections').parse(u.searchParams.get('sections'))));
       if(['/game/execute','/gm/execute'].includes(rest)&&p){
         const key=group+':'+uid+':'+p.operationId;
         if(p.command==='npc.portrait'&&p.params)p.params.mediaId ||= p.params.uploadId;
@@ -940,6 +950,7 @@ function createWeb({
     await database.acquireLease("standalone-web");
     for (const g of await repo.list("group")) if(!g.deleting) await games.ensure(g.id);
     server = http.createServer((req, res) => {
+      const done=metrics.start(req.url.startsWith('/api/')?'request.api':'request.static');res.once('finish',()=>{done();metrics.gauge('http.lastStatus',res.statusCode);});
       void route(req, res);
     });
     server.requestTimeout = 30000;
@@ -1037,6 +1048,7 @@ function createWeb({
     });
     if (!origin) origin = "http://" + host + ":" + server.address().port;
     ready = true;
+    metrics.startReporting(pool);
     await library.installConditions();
     games.start();
     void deletion.resume();
@@ -1076,6 +1088,7 @@ function createWeb({
   }
   async function stop() {
     ready = false;
+    metrics.stop();
     clearInterval(deletionTimer);
     await deletion.drain();
     await backups?.stop();

@@ -130,9 +130,10 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       if (backgroundPublications && options.delivery !== false) (deriveDelivery || require('./outbox').derive)(before, next);
       computeDone?.();
       try {
-        if (database) await database.save(guild, before, next); else await persist(guild, next);
+        const commitDone=metrics?.start('transaction.commit');
+        try{if (database) await database.save(guild, before, next); else await persist(guild, next);}finally{commitDone?.();}
         states.set(guild, next);
-        for (const listener of listeners) { try { listener(guild); } catch { /* Notification cannot invalidate a durable commit. */ } }
+        for (const listener of listeners) { try { listener(guild, {before,next,label,operation}); } catch { /* Notification cannot invalidate a durable commit. */ } }
         return C.clone(savedResult);
       } catch (error) {
         frozen.set(guild, error.message);

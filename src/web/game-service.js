@@ -383,7 +383,7 @@ function actionRestrictions(b,p,uid){
   result.attack=reasons.length&&reasons.every(Boolean)?reasons[0]:Z.reason(p,'attack',null,'quick');
   return result;
 }
-function playerView(s, uid, { roomIds } = {}) {
+function playerView(s, uid, { roomIds, fields } = {}) {
   const visible = (o) => !roomIds || !o.channelId || roomIds.has(o.channelId);
   const p = s.players[uid],
     maps = Object.values(s.explorations).filter(
@@ -393,14 +393,14 @@ function playerView(s, uid, { roomIds } = {}) {
       (b) => visible(b) && b.status !== "ended",
     ),
     result = {
-      actionDrafts: Object.values(s.forms).filter(
+      get actionDrafts() { return Object.values(s.forms).filter(
         (f) =>
           f.kind === "webAction" &&
           f.owner === uid &&
           f.expiresAt > Date.now() &&
           f.status === "ready",
-      ),
-      actionHistory: Object.values(s.forms)
+      ); },
+      get actionHistory() { return Object.values(s.forms)
         .filter(
           (f) =>
             f.kind === "webAction" && f.owner === uid && f.status === "done",
@@ -413,13 +413,13 @@ function playerView(s, uid, { roomIds } = {}) {
           label: playerCommands[f.command] || 'GM操作',
           at: f.at,
           result: f.result,
-        })),
-      historicalDeathIds: Object.values(s.deaths).filter(d=>s.battles[d.battleId]&&visible(s.battles[d.battleId])).map(d=>d.id),
-      skills: p?B.abilities(p,true).filter(a=>a.attack.kind==="技能"):[],
-      revision: s.revision,
-      player: p ? { ...p, stats: M.stats(p), health: H.snapshot(p) } : null,
-      draft: s.characterDrafts[uid],
-      roster: Object.values(s.players).map((p) => ({
+        })); },
+      get historicalDeathIds() { return Object.values(s.deaths).filter(d=>s.battles[d.battleId]&&visible(s.battles[d.battleId])).map(d=>d.id); },
+      get skills() { return p?B.abilities(p,true).filter(a=>a.attack.kind==="技能"):[]; },
+      get revision() { return s.revision; },
+      get player() { return p ? { ...p, stats: M.stats(p), health: H.snapshot(p) } : null; },
+      get draft() { return s.characterDrafts[uid] || null; },
+      get roster() { return Object.values(s.players).map((p) => ({
         userId: p.userId,
         id: p.id,
         name: p.name,
@@ -428,8 +428,8 @@ function playerView(s, uid, { roomIds } = {}) {
         profile: p.profile,
         portraits: p.portraits,
         showcase: require("../rpg/showcase").entries(s, p.userId),
-      })),
-      maps: maps.map((m) => ({
+      })); },
+      get maps() { return maps.map((m) => ({
         id: m.id,
         name: m.name,
         status: m.status,
@@ -476,8 +476,8 @@ function playerView(s, uid, { roomIds } = {}) {
               : { id, hidden: true },
           ]),
         ),
-      })),
-      battles: battles.map((b) => ({
+      })); },
+      get battles() { return battles.map((b) => ({
         id: b.id,
         name: b.name,
         status: b.status,
@@ -510,30 +510,30 @@ function playerView(s, uid, { roomIds } = {}) {
           b.actors.some((a) => a.userId === uid && !a.deathId) && p
             ? B.abilities(p)
             : [],
-      })),
-      offers: Object.values(s.offers).filter((o) =>
+      })); },
+      get offers() { return Object.values(s.offers).filter((o) =>
         [o.creatorId, o.targetId].includes(uid),
-      ),
-      coupons: Object.values(s.couponPools)
+      ); },
+      get coupons() { return Object.values(s.couponPools)
         .filter((t) => (p?.couponBalances?.[t.id] || 0) > 0)
-        .map((t) => ({ ...t, balance: p.couponBalances[t.id] })),
-      checks: Object.values(s.checks).filter(
+        .map((t) => ({ ...t, balance: p.couponBalances[t.id] })); },
+      get checks() { return Object.values(s.checks).filter(
         (c) => visible(c) && c.status === "open",
-      ),
-      sessions: Object.values(s.sessions).filter(
+      ); },
+      get sessions() { return Object.values(s.sessions).filter(
         (x) => visible(x) && !["cancelled"].includes(x.status),
-      ),
-      glossary: Object.values(s.glossaryTerms).filter((t) => t.published),
-      texts: require("../rpg/texts")
+      ); },
+      get glossary() { return Object.values(s.glossaryTerms).filter((t) => t.published); },
+      get texts() { return require("../rpg/texts")
         .definitions()
-        .map((d) => ({ ...d, text: require("../rpg/texts").get(s, d.key) })),
-      corpses: Object.values(s.corpses)
+        .map((d) => ({ ...d, text: require("../rpg/texts").get(s, d.key) })); },
+      get corpses() { return Object.values(s.corpses)
         .filter((c) =>
           s.battles[c.battleId]?.actors.some((a) => a.userId === uid) && visible(s.battles[c.battleId]),
         )
-        .map((c) => require("./battle-loot").view(s, c, uid)),
+        .map((c) => require("./battle-loot").view(s, c, uid)); }
     };
-  return result;
+  return Object.fromEntries(Object.keys(result).filter(k=>!fields||fields.includes(k)).map(k=>[k,result[k]]));
 }
 module.exports = {
   playerCommands,

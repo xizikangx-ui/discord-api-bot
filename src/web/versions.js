@@ -1,9 +1,10 @@
 'use strict';
 const G = require('../rpg/gm-service');
 // Opaque baselines describe objects already available to this user. They carry no contents.
-function versions(s, { uid, roomIds, gm = false }) {
+function versions(s, { uid, roomIds, gm = false, sources }) {
   const result = { 'config:': G.fingerprint(s.config) };
   for (const source of [...new Set([...Object.values(G.KINDS), 'players', 'characterDrafts', 'battles', 'explorations', 'offers', 'checks', 'sessions', 'deaths', 'corpses'])]) {
+    if(sources&&!sources.includes(source))continue;
     for (const [id, value] of Object.entries(s[source] || {})) {
       if(!gm&&Object.values(G.KINDS).includes(source)&&!value.published)continue;
       if(!gm&&source==='offers'&&![value.creatorId,value.targetId].includes(uid))continue;

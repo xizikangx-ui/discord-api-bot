@@ -8,11 +8,14 @@ const crypto = require("node:crypto"),
   P = require("./game-service"),
   Loot = require("./battle-loot"),
   L = require("./library");
+const Sections=require('./game-sections');
+function needsLifecycle(s){return Object.values(s.battles).some(b=>B.terminalOutcome(s,b))||Object.values(s.explorations).some(m=>m.status==='active'&&Object.values(m.cells).some(c=>c.room?.encounter==='battle'&&s.battles[c.room.battleId]?.status==='ended'&&s.battles[c.room.battleId]?.outcome==='victory'));}
 function derive(before, next) {
   next.deliveryJobs ||= {};
   for (const [id, b] of Object.entries(next.battles)) {
     const old = before.battles[id],
       known = new Set((old?.publicEvents || []).map((e) => e.id));
+    if(b.status==='ended'&&old?.status!=='ended')next.deliveryJobs['web:end:'+id]={key:'web:end:'+id,kind:'webBattleEnd',battleId:id,roomId:b.channelId,status:'pending',desiredRevision:next.revision,priority:1};
     const corpses = Object.values(next.corpses || {}).filter(c => c.battleId === id),
       previousCorpses = Object.values(before.corpses || {}).filter(c => c.battleId === id),
       lootKey = "web:corpses:" + id;
@@ -181,6 +184,7 @@ function createGames({
   encrypt,
   decrypt,
   broadcast = () => {},
+  metrics,
 }) {
   const store = require("../rpg/store").createStore({
       database,
@@ -189,12 +193,15 @@ function createGames({
       decrypt,
       backgroundPublications: true,
       deriveDelivery: derive,
+      metrics,
     }),
-    loading = new Map();
+    loading = new Map(), stamps=new Map();
   let timer,
     pumping = false,
     stopped = false,
-    pumpPromise;
+    pumpPromise, wakeAt=Infinity, scheduled=false;
+  function versions(group){return store.select(group,s=>({revision:s.revision,sectionVersions:stamps.get(group)||Object.fromEntries(Object.keys(Sections.definitions).map(k=>[k,s.revision]))}));}
+  function wake(delay=0){if(stopped||!scheduled)return;const at=Date.now()+delay;if(at>=wakeAt)return;clearTimeout(timer);wakeAt=at;timer=setTimeout(()=>{wakeAt=Infinity;pumpPromise=tick();},Math.max(0,delay));timer.unref();}
   async function ensure(id) {
     if (store.guilds().includes(id)) return;
     if (loading.has(id)) return loading.get(id);
@@ -223,6 +230,8 @@ function createGames({
     loading.set(id, job);
     try {
       await job;
+      if(!stamps.has(id))stamps.set(id,versions(id).sectionVersions);
+      if(store.select(id,needsLifecycle))await store.transact(id,'web-lifecycle-recover:'+store.select(id,s=>s.revision),'system:web',()=>({recovered:true}),'恢复战斗结束检查');
       if (store.select(id, Loot.needsBackfill))
         await store.transact(id, "web-loot-backfill-v1", "system:web", () => ({ queued: true }), "恢复战后战利品入口");
     } finally {
@@ -567,7 +576,7 @@ function createGames({
           .sort((a, b) => a.priority - b.priority)
           .slice(0, 10),
       ),
-      rooms = await repo.list("room", group),
+      rooms = tasks.length ? await repo.list("room", group) : [],
       publicRoom = rooms.find((c) => c.kind === "system" && !c.archived),
       gmRoom = rooms.find((c) => c.kind === "gm" && !c.archived);
     for (const j of tasks) {
@@ -577,7 +586,14 @@ function createGames({
           ? gmRoom
           : publicRoom;
       if (!room) continue;
-      const s = store.snapshot(group);
+      const s = store.select(group,st=>{
+        const b=st.battles[j.battleId],mapId=j.mapId||b?.exploration?.mapId;
+        return {players:Object.fromEntries(Object.entries(st.players).map(([id,p])=>[id,{id:p.id,name:p.name}])),
+          battles:b?{[b.id]:b}:{},deaths:Object.fromEntries(Object.entries(st.deaths).filter(([,d])=>d.battleId===j.battleId)),
+          corpses:Object.fromEntries(Object.entries(st.corpses).filter(([,c])=>c.battleId===j.battleId)),
+          explorations:mapId?{[mapId]:st.explorations[mapId]}:{},
+          ...(j.source?{[j.source]:{[j.objectId]:st[j.source]?.[j.objectId]}}:{})};
+      });
       let text, system;
       if (j.kind === "webActivity") {
         const value = s[j.source]?.[j.objectId];
@@ -625,6 +641,11 @@ function createGames({
           npcId: j.npcId,
           cardKey: j.npcId ? b.id + ":" + j.npcId : undefined,
         };
+      } else if (j.kind === "webBattleEnd") {
+        const b=s.battles[j.battleId];if(b?.status!=='ended')continue;
+        const deaths=Object.values(s.deaths).filter(d=>d.battleId===b.id);
+        text='战斗结束 · '+b.name+'\n'+({victory:'战斗胜利',defeat:'战斗失败'}[b.outcome]||'GM已结束战斗')+'\n'+deaths.filter(d=>d.rewarded).map(d=>d.name+'：经验已结算 '+(d.rewarded.result?.credited||0)).join('\n');
+        system={battleId:b.id,outcome:b.outcome||'manual',ended:true};
       } else if (j.kind === "webCorpses") {
         const b = s.battles[j.battleId];
         if (b?.status !== "ended") continue;
@@ -659,7 +680,7 @@ function createGames({
         };
       }
       const clientId = S.hash(j.key + ":" + j.desiredRevision);
-      if (["webEvent", "webActivity", "webLoot", "webCorpses"].includes(j.kind))
+      if (["webEvent", "webActivity", "webLoot", "webCorpses", "webBattleEnd"].includes(j.kind))
         await chat.upsertSystem(room.id, j.key, j.desiredRevision, {
           text,
           system,
@@ -702,15 +723,20 @@ function createGames({
       database.assertLease();
       for (const group of store.guilds()) {
         if (store.frozen(group)) continue;
-        const s = store.snapshot(group),
+        const s = store.select(group,st=>({
+          librarySync:st.librarySync,
+          battles:Object.fromEntries(Object.entries(st.battles).map(([id,b])=>[id,{id,status:b.status,pending:{hits:require('../rpg/aoe').hits(b).map(h=>({expiresAt:h.expiresAt}))},due:require('../rpg/npc-auto').due(st,b),terminal:!!B.terminalOutcome(st,b)}])),
+          offers:Object.values(st.offers).map(o=>({status:o.status,expiresAt:o.expiresAt})),sessions:Object.values(st.sessions).map(x=>({startsAt:x.startsAt,reminder:x.reminder})),
+          explorations:Object.values(st.explorations).map(m=>({status:m.status,moves:Object.values(m.moves||{}).map(r=>({status:r.status,expiresAt:r.expiresAt})),pending:Object.values(m.cells).some(c=>c.room?.encounter==='pending'&&(c.room.autoStart??c.room.snapshot.autoStart))})),
+          players:Object.values(st.players).map(p=>({temporaryEffects:(p.temporaryEffects||[]).map(e=>({expiresAt:e.expiresAt}))})),lifecycle:needsLifecycle(st),
+        })),
           now = Date.now(),
           due = Object.values(s.battles).some(
             (b) =>
               b.status === "active" &&
-              (require("../rpg/aoe")
-                .hits(b)
+              (b.pending.hits
                 .some((h) => h.expiresAt <= now) ||
-                require("../rpg/npc-auto").due(s, b)),
+                b.due || b.terminal),
           ),
           expires = Object.values(s.offers).some(
             (o) =>
@@ -725,14 +751,11 @@ function createGames({
               (Object.values(m.moves || {}).some(
                 (r) => r.status === "pending" && r.expiresAt <= now,
               ) ||
-                Object.values(m.cells).some(
-                  (c) =>
-                    c.room?.encounter === "pending" &&
-                    (c.room.autoStart ?? c.room.snapshot.autoStart),
-                )),
+                m.pending),
           );
         if (
           due ||
+          s.lifecycle ||
           expires ||
           sessions ||
           maps ||
@@ -796,17 +819,30 @@ function createGames({
       );
     } finally {
       pumping = false;
+      if(!stopped&&scheduled){let delay=30000;for(const group of store.guilds())if(!store.frozen(group))delay=Math.min(delay,store.select(group,s=>{
+        const now=Date.now(),times=[];
+        for(const b of Object.values(s.battles))if(b.status==='active'){if(require('../rpg/npc-auto').due(s,b)||B.terminalOutcome(s,b))return 100;for(const h of require('../rpg/aoe').hits(b))times.push(h.expiresAt);if(b.current&&!b.pending&&b.actors.some(a=>a.id===b.current.actorId&&!a.userId&&require('../rpg/npc-auto').config(a.ai).mode==='auto'))times.push(now+1000);}
+        for(const j of Object.values(s.deliveryJobs||{}))if(j.kind.startsWith('web')&&j.status==='pending')times.push(now+1000);
+        for(const o of Object.values(s.offers))if(['editing','ready'].includes(o.status))times.push(o.expiresAt);
+        for(const x of Object.values(s.sessions))if(x.reminder.status==='pending')times.push(x.startsAt);
+        for(const p of Object.values(s.players))for(const e of p.temporaryEffects||[])if(e.expiresAt)times.push(e.expiresAt);
+        for(const m of Object.values(s.explorations))for(const r of Object.values(m.moves||{}))if(r.status==='pending')times.push(r.expiresAt);
+        return Math.max(100,Math.min(30000,...times.map(t=>t-now)));
+      }));wake(delay);}
     }
   }
-  const unsubscribe = store.onCommit((group) =>
-    broadcast(group, {
+  const unsubscribe = store.onCommit((group,change) => {
+    const sections=change?Sections.changed(change.before,change.next):Object.keys(Sections.definitions),v=versions(group);
+    const next={...v.sectionVersions};for(const key of sections)next[key]=v.revision;stamps.set(group,next);
+    if(sections.length)broadcast(group, {
       type: "state",
       data: {
         groupId: group,
         revision: store.select(group, (s) => s.revision),
+        sections,sectionVersions:next,
       },
-    }),
-  );
+    });wake();
+  });
   return {
     store,
     ensure,
@@ -818,24 +854,25 @@ function createGames({
     receipt,
     sync,
     tick,
+    versions,
     start: () => {
-      stopped = false;
-      timer = setInterval(() => {
-        if (!pumping) pumpPromise = tick();
-      }, 1000);
-      timer.unref();
+      stopped = false;scheduled=true;
+      wake();
     },
     stop: async () => {
-      stopped = true;
-      clearInterval(timer);
+      stopped = true;scheduled=false;
+      clearTimeout(timer);
       unsubscribe();
       await pumpPromise;
       await store.drain();
     },
-    view: async (group, uid) => {
+    view: async (group, uid, sections=null) => {
+      const done=metrics?.start('game.read');
+      try{
       const a=await authorize(group, uid);
-      const roomIds = new Set((await chat.rooms(group, uid)).map((r) => r.id));
-      return store.select(group, (s) => ({...P.playerView(s, uid, { roomIds }),versions:require("./versions").versions(s,{uid,roomIds,gm:["admin","gm"].includes(a.role)})}));
+      const roomIds = new Set((await chat.rooms(group, uid,undefined,a)).map((r) => r.id));
+      return store.select(group, (s) => ({...P.playerView(s, uid, { roomIds,fields:sections&&Sections.fields(sections) }),...versions(group),sections,versions:require("./versions").versions(s,{uid,roomIds,gm:["admin","gm"].includes(a.role),sources:sections&&Sections.sources(sections)})}));
+      }finally{done?.();}
     },
   };
 }

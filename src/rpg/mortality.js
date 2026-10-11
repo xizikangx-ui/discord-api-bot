@@ -67,6 +67,10 @@ function interrupt(state, b, a) {
   for (const o of Object.values(state.offers || {})) if (['editing','ready'].includes(o.status) && [o.creatorId,o.targetId].includes(a.userId)) o.status='cancelled';
 }
 function reconcile(state, before) {
+  if(state.platform==='web')for(const b of Object.values(state.battles))if(['active','paused'].includes(b.status)&&b.autoEndEligible==null){
+    const actors=before.battles[b.id]?.actors||b.actors;
+    b.autoEndEligible=actors.some(a=>a.team==='ally')&&actors.some(a=>a.team==='enemy');
+  }
   for (const [uid,p] of Object.entries(state.players)) {
     p.userId ||= uid;
     if (p.hp <= 0 && p.life?.state !== 'dead' && !H.downed(p)) H.enter(p);
@@ -88,6 +92,14 @@ function reconcile(state, before) {
     settle(state, { id: null, actors: [actor], queue: [], recent: [], history: [] }, actor);
   }
   for (const b of Object.values(state.battles)) { for(const hit of [...require('./aoe').hits(b)])if(require('./aoe').hit(b,hit.id)&&H.downed(character(state,b.actors.find(a=>a.id===hit.targetId))))require('./combat').defend(state,b,hit.id,'defend'); require('./rescue').check(state,b); if (b.status === 'active' && !b.current && !b.pending) require('./combat').nextOpportunity(state, b); }
+  if(state.platform==='web') {
+    for(const b of Object.values(state.battles))require('./combat').autoEnd(state,b);
+    for(const m of Object.values(state.explorations).filter(m=>m.status==='active'))for(const [cell,c] of Object.entries(m.cells)){
+      const r=c.room;
+      if(r?.encounter==='battle'&&!r.boss&&!(r.autoStart??r.snapshot.autoStart)&&state.battles[r.battleId]?.status==='ended'&&state.battles[r.battleId].outcome==='victory')require('./exploration').resolve(state,m,cell);
+    }
+    require('./team-movement').autoEncounters(state);
+  }
   require('./boss').reconcile(state);
 }
 function claim(state, corpseId, uid, itemId) {

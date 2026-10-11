@@ -1,7 +1,7 @@
 import {gridCells} from '../../gm-web/src/ui-state';
 import React, { useState, useEffect, useRef } from "react";
 import { api, id, mediaUrl } from "./api";
-import { Result } from "../../gm-web/src/main";
+import { Result } from "../../gm-web/src/result";
 import { BattleLoot } from "./battle-loot";
 const statuses={active:'进行中',paused:'已暂停',ended:'已结束',recruiting:'招募中',draft:'草稿',editing:'协商中',ready:'待双方同意',completed:'已完成',cancelled:'已取消',expired:'已过期',locked:'未开启',opened:'已开启',claimed:'已领取'};
 const attrs = {

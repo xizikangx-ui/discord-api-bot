@@ -119,6 +119,11 @@ async function main() {
       crypto.randomUUID(),
     );
   await app.games.ensure(g.id);
+  const partner=crypto.randomUUID();
+  if(process.env.WEB_DEMO_WORKSPACE==='1'){
+    await repo.put('user',{id:partner,name:'qa-partner',displayName:'验收队友',version:1});
+    await repo.put('member',{id:g.id+':'+partner,groupId:g.id,userId:partner,role:'player',active:true,version:1},{scope:g.id});
+  }
   await app.games.store.transact(g.id, "demo-seed", u.id, (s) => {
     require("../../src/rpg/content-pack").install(s);
     const p = M.newCharacter("林鸦", {
@@ -163,7 +168,15 @@ async function main() {
       const t=Skill.publish(s,{...require('../../src/rpg/forms').defaults('skill'),name,primary,damage,rangeMeters:100,hit:100,description:'在荒原的残响中凝聚力量，让失落的誓约重新燃烧。'});Skill.grant(p,t);
     }
     const battle=B.createBattle(s,s.config.announcementChannelId,u.id,'灰烬营地 · 技能演练');B.join(s,battle,u.id);const enemy=M.newCharacter('荒原靶标',{strength:1,constitution:1,mind:1,appearance:1,intelligence:1,agility:1,knowledge:1});enemy.hp=1;
-    battle.actors.push({id:C.id('a'),name:enemy.name,team:'enemy',character:enemy,x:45,y:25,retreated:false,ai:{mode:'manual'}});battle.width=3;battle.height=3;B.start(s,battle,null,(lo)=>lo);
+    if(process.env.WEB_DEMO_WORKSPACE==='1'){
+      const t=require('./rpg-harness').weapon(s,{name:'验收短剑',weightKg:0}),i=M.issue(s,u.id,t.id)[0];M.equip(s,u.id,i.id);
+      const medicine=M.publishTemplate(s,{...require('../../src/rpg/forms').defaults('item'),kind:'药品',name:'验收急救药',weightKg:0,heal:'1d4',traitIds:['neutral']});M.issue(s,u.id,medicine.id,3);p.hp=12;
+      const q=M.newCharacter('验收队友',{strength:6,constitution:6,mind:5,appearance:4,intelligence:5,agility:6,knowledge:5});q.userId=partner;s.players[partner]=q;x.join(s,m,partner);
+      const coupon=require('../../src/rpg/coupons'),pool=coupon.publish(s,{name:'验收补给券',description:'隔离验收',mode:'bundle',entries:[{ref:medicine.id,quantity:1}]});coupon.grant(s,pool.id,[{uid:u.id,characterId:p.id,quantity:1}]);
+      const lootId=C.id('i');enemy.inventory[lootId]={...C.clone(i),id:lootId};
+      m.cells['1,0']={x:1,y:0,type:'corridor'};
+    }
+    battle.actors.push({id:C.id('a'),name:enemy.name,team:'enemy',character:enemy,x:45,y:25,retreated:false,humanoid:process.env.WEB_DEMO_WORKSPACE==='1',baseXP:3,ai:{mode:process.env.WEB_DEMO_WORKSPACE==='1'?'auto':'manual'}});battle.width=3;battle.height=3;B.start(s,battle,null,(lo)=>lo);
     if (process.env.WEB_DEMO_LOOT === '1') {
       B.endBattle(s,battle);
       const t=require('./rpg-harness').weapon(s,{name:'战利品验收短剑',weightKg:0}),source=M.issue(s,u.id,t.id)[0];delete p.inventory[source.id];

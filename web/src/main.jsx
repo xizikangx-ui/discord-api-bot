@@ -1,28 +1,20 @@
-import {SkillBook} from "./skills";
+const SkillBook=React.lazy(()=>import("./skills").then(m=>({default:m.SkillBook})));
 import {freshKills} from "./kill-effects";
 import { BattleLoot } from "./battle-loot";
 import { notificationTarget } from "./notification-target";
 import { GroupHome, MemberDirectory, ChannelManager } from "./community";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { api, id, setCsrf, mediaUrl } from "./api";
 import { setTransport, labels } from "../../gm-web/src/data";
-import {
-  Templates,
-  Grant,
-  World,
-  Commands,
-  Audit,
-  Result,
-  Field,
-  SearchSelect,
-} from "../../gm-web/src/main";
-import {
-  PlayerPanel,
-  ExplorePanel,
-  BattlePanel,
-  ActivitiesPanel,
-} from "./players";
+import {Result} from "../../gm-web/src/result";
+import {Field,SearchSelect} from "../../gm-web/src/controls";
+const gmComponent=name=>React.lazy(()=>import("../../gm-web/src/main").then(m=>({default:m[name]})));
+const Templates=gmComponent('Templates'),Grant=gmComponent('Grant'),World=gmComponent('World'),Commands=gmComponent('Commands'),Audit=gmComponent('Audit');
+const playerComponent=name=>React.lazy(()=>import("./players").then(m=>({default:m[name]})));
+const PlayerPanel=playerComponent('PlayerPanel'),ExplorePanel=playerComponent('ExplorePanel'),BattlePanel=playerComponent('BattlePanel'),ActivitiesPanel=playerComponent('ActivitiesPanel');
+import {allSections,mergeGame,refreshQueue,unreadEvent,markRead} from './refresh-state';
+import {chatTasks} from './chat-tasks';
 import {roomMessages,mergeMessages} from "./chat-state";
 import "./style.css";
 const date = (v) =>
@@ -40,6 +32,7 @@ function Auth({ done }) {
     [busy, B] = useState(false),
     [error, E] = useState(""),
     [recovery, R] = useState("");
+  const busyRef=useRef(false);
   useEffect(() => {
     api("/auth/status")
       .then((s) => {
@@ -221,8 +214,9 @@ function Keep({ show, children }) {
   useEffect(() => {
     if (show) Seen(true);
   }, [show]);
-  return seen || show ? <div hidden={!show}>{children}</div> : null;
+  return seen || show ? <div hidden={!show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></div> : null;
 }
+function PendingTasks({game,userId,onNavigate,onOpen}){const tasks=chatTasks(game,userId);return tasks.length?<div className="chat-tasks" aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}>{t.text}</button>)}</div>:null;}
 function App() {
   const [me, Me] = useState(null),
     [booting, Boot] = useState(true),
@@ -261,12 +255,14 @@ function App() {
     refreshTimer = useRef(null),
     busyRef = useRef(false),
     pendingRef = useRef(null),
+    gameRef=useRef(null), readQueues=useRef(new Map()),directoryGroup=useRef(null),epoch=useRef(0),
+    [foreground,Foreground]=useState(document.visibilityState==='visible'),
     [mobileSide, MobileSide] = useState(false);
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
   active.current = { groupId, roomId, scope };
-  pendingRef.current=pendingOperation;
+  pendingRef.current=pendingOperation;gameRef.current=game;
   prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"tactical";
   useEffect(()=>{if(!killEffect)return;const t=setTimeout(()=>KillEffect(null),2100);return()=>clearTimeout(t);},[killEffect]);
   async function boot() {
@@ -284,21 +280,18 @@ function App() {
   useEffect(() => {
     boot();
   }, []);
-  async function refresh() {
-    const g = active.current.groupId;
-    if (!g) return;
-    const [data, channels, people] = await Promise.all([
-      api("/groups/" + g + "/game"),
-      api("/groups/" + g + "/rooms"),
-      api("/groups/" + g + "/members"),
-    ]);
-    if (active.current.groupId === g) {
-      if(!liveReady.current){for(const id of data.historicalDeathIds||[])seenDeaths.current.add(id);liveReady.current=true;}
-      Game(data);
-      Rooms(channels);
-      Members(people);
-    }
+  async function refresh(options={}) {
+    const g=active.current.groupId;if(!g)return;
+    const generation=epoch.current;
+    if(!readQueues.current.has(g))readQueues.current.set(g,refreshQueue(
+      async keys=>api('/groups/'+g+'/game'+(gameRef.current?'?sections='+keys.join(','):'')),
+      data=>{if(active.current.groupId!==g||epoch.current!==generation)return;if(!liveReady.current){for(const id of data.historicalDeathIds||[])seenDeaths.current.add(id);liveReady.current=true;}gameRef.current=mergeGame(gameRef.current,data);Game(gameRef.current);}
+    ));
+    const jobs=[readQueues.current.get(g)(options.sections||allSections)];
+    if(directoryGroup.current!==g||options.directory){directoryGroup.current=g;jobs.push(Promise.all([api('/groups/'+g+'/rooms'),api('/groups/'+g+'/members')]).then(([r,m])=>{if(active.current.groupId===g&&epoch.current===generation){Rooms(r);Members(m);}}).catch(e=>{if(epoch.current===generation)directoryGroup.current=null;throw e;}));}
+    await Promise.all(jobs);
   }
+  useEffect(()=>{const changed=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',changed);return()=>document.removeEventListener('visibilitychange',changed);},[]);
   useEffect(() => {
     if (!me) return;
     const gid = groups.some((g) => g.id === groupId)
@@ -308,7 +301,7 @@ function App() {
   }, [groups, me]);
   useEffect(() => {
     liveReady.current=false;KillEffect(null);
-    Game(null);
+    epoch.current++;Game(null);gameRef.current=null;directoryGroup.current=null;readQueues.current.clear();Tab("chat");Navigation(null);
     Rooms([]);
     Room("");
     Schema(null);
@@ -334,19 +327,12 @@ function App() {
         })
         .catch((e) => E(e.message));
   }, [groupId, me?.user.id, gm]);
-  useEffect(() => {
-    if (!groupId || !me) return;
-    const timer = setInterval(
-      () =>
-        api("/groups/" + groupId + "/version")
-          .then((v) => {
-            if (v.revision !== game?.revision) refresh().catch(() => {});
-          })
-          .catch(() => {}),
-      5000,
-    );
-    return () => clearInterval(timer);
-  }, [groupId, me?.user.id, game?.revision]);
+  useEffect(()=>{
+    if(!groupId||!me||!foreground)return;
+    let alive=true,pending=false;
+    async function check(){if(pending)return;pending=true;try{const v=await api('/groups/'+groupId+'/version');if(!alive||active.current.groupId!==groupId)return;const keys=allSections.filter(k=>v.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]);if(keys.length)await refresh({sections:keys});}catch{}finally{pending=false;}}
+    void check();const timer=setInterval(check,5000);return()=>{alive=false;clearInterval(timer);};
+  },[groupId,me?.user.id,foreground]);
   useEffect(() => {
     if (!rooms.some((r) => r.id === roomId))
       Room(rooms.find((r) => r.kind === "chat")?.id || rooms[0]?.id || "");
@@ -377,14 +363,11 @@ function App() {
       socket.onmessage = (e) => {
         const event = JSON.parse(e.data);
         const kills=freshKills(event,seenDeaths.current,liveReady.current);if(kills.length&&prefsRef.current?.killEffects!==false)KillEffect({id:kills.join(":"),count:kills.length});
-        if (["state", "room-unread"].includes(event.type)) {
-          clearTimeout(refreshTimer.current);
-          refreshTimer.current = setTimeout(
-            () => refresh().catch((e) => E(e.message)),
-            180,
-          );
-        } else if (event.type === "permissions") {
-          refresh().catch(() => {});
+        if(event.type==='room-unread'){Rooms(old=>unreadEvent(old,event.data));}
+        else if(event.type==='state'){
+          if(document.visibilityState==='visible')refresh({sections:event.data.sections||allSections}).catch(e=>E(e.message));
+        } else if(event.type==='permissions') {
+          epoch.current++;directoryGroup.current=null;readQueues.current.clear();refresh({directory:true}).catch(()=>{});
         } else ChatEvent(event);
       };
       socket.onclose = (e) => {
@@ -510,7 +493,7 @@ function App() {
     if (userId === me.user.id) return;
     await run(async () => {
       const r = await api("/groups/" + groupId + "/dm", { userId });
-      await refresh();
+      await refresh({directory:true});
       Room(r.id);
       Tab("chat");
     }).catch(() => {});
@@ -566,7 +549,7 @@ function App() {
   if (booting) return <div className="loading">◈ 正在连接指挥站…</div>;
   if (!me) return <Auth done={boot} />;
   return (
-    <div className="site">
+    <div className="site integrated-site">
       <aside className={"site-sidebar " + (mobileSide ? "shown" : "")}>
         <div className="brand">
           <span className="sigil">◈</span>
@@ -591,17 +574,17 @@ function App() {
         </label>
         <nav>
           {[
-            ["home", "⌂", "营地总览"],
+
             ["chat", "◌", "营地通讯"],
-            ["character", "◇", "我的角色"],
-            ["bag", "▣", "背包与交易"],
-            ["explore", "▦", "探索地图"],
-            ["battle", "⚑", "战术战斗"],
-            ["skills", "✧", "技能卡册"],
-            ["activities", "☷", "团务与资料"],
+
+
+
+
+
+
             ...(gm ? [["gm", "⌘", "GM 工作台"]] : []),
-            ["library", "▤", "公共模板库"],
-            ["settings", "⚙", "成员与账号"],
+
+            ...(me.user.admin ? [["settings", "⚙", "网站管理"]] : []),
           ].map(([k, icon, name]) => (
             <button
               key={k}
@@ -675,7 +658,7 @@ function App() {
                 : "TACTICAL FIELD TERMINAL"}
             </span>
             <h2>
-              {tab === "chat"
+              {tab !== "gm"
                 ? rooms.find((r) => r.id === roomId)?.name || "营地通讯"
                 : group?.name || "跑团大厅"}
             </h2>
@@ -734,7 +717,11 @@ function App() {
           </section>
         ) : (
           <>
-            <div hidden={tab !== "chat"} className="chat-page">
+            <div className={"chat-workspace "+(tab!=="chat"?"with-panel":"")+(tab==="gm"?" gm-workspace":"")}><div hidden={tab==="gm"} className="chat-page">
+              <div className="player-toolbar" aria-label="玩家工具栏">{[["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]].map(([k,name])=><button key={k} className={tab===k?"active":""} onClick={()=>Tab(tab===k?"chat":k)}>{name}</button>)}</div>
+              {game?.player&&<div className="chat-character" aria-label="当前角色状态"><strong>{game.player.name}</strong><span>HP {game.player.hp}/{game.player.stats.maxHP}</span>{game.player.health.downed&&<span className="urgent">倒地生命 {game.player.health.reserveHP}/{game.player.stats.maxHP}</span>}<span>AP {game.player.ap}</span>{game.player.conditions.length>0&&<span>异常 {game.player.conditions.length} 项</span>}</div>}
+              <PendingTasks game={game} userId={me.user.id} onNavigate={navigateNotice} onOpen={Tab}/>
+              {result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看个人结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}
               <Chat
                 {...{
                   groupId,
@@ -752,11 +739,13 @@ function App() {
                 }}
                 error={E}
                 notice={N}
-                visible={tab === "chat"}
-                onRead={refresh}
+                visible={tab !== "gm"}
+                onRead={(id,sequence)=>Rooms(old=>markRead(old,id,sequence))}
               />
             </div>
-            <div className="page-content" key={groupId} hidden={tab === "chat"}>
+            <div className={"page-content "+(tab!=="gm"?"player-drawer":"")} key={groupId} hidden={tab === "chat"}>
+              <header className="drawer-header"><b>{({character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b><button onClick={()=>Tab("chat")} aria-label="关闭操作面板">×</button></header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
+              <Keep show={tab==="more"}><section className="panel service-menu"><h3>营地服务</h3>{[["home","公告与未读"],["library","公共模板库"],["settings","成员、私聊与账号"],["bag","收藏柜与兑换券"],["activities","规则与名词"]].map(([k,name])=><button key={k} onClick={()=>Tab(k)}>{name}</button>)}</section></Keep>
               <Keep show={tab === "home"}>
                 <GroupHome {...{ game, group, members, rooms, Preview }} onRoom={openRoom} onNavigate={navigateNotice} />
               </Keep>
@@ -865,11 +854,11 @@ function App() {
                   }}
                 />
               </Keep>
-            </div>
+            </Suspense></div></div>
           </>
         )}
       </main>
-      <aside className="character-sidebar">
+      <aside className="character-sidebar" hidden>
         <span className="eyebrow">YOUR OPERATIVE</span>
         {game?.player ? (
           <>
@@ -934,7 +923,7 @@ function App() {
                     const r = await api("/groups/" + groupId + "/dm", {
                       userId: m.userId,
                     });
-                    await refresh();
+                    await refresh({directory:true});
                     Room(r.id);
                     Tab("chat");
                   }).catch(() => {});
@@ -985,17 +974,6 @@ function App() {
                 返回修改
               </button>
             </div>
-          </section>
-        </div>
-      )}
-      {result && (
-        <div className="inline-result">
-          <section className="panel">
-            <h3>结果已保存</h3>
-            <Result value={result} />
-            <button className="primary" onClick={() => R(null)}>
-              收起结果
-            </button>
           </section>
         </div>
       )}
@@ -1120,7 +1098,7 @@ function Chat({
   useEffect(()=>{const handler=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',handler);return()=>document.removeEventListener('visibilitychange',handler);},[]);
   useEffect(()=>{const observer=new IntersectionObserver(([entry])=>InView(entry.isIntersecting));if(bottom.current)observer.observe(bottom.current);return()=>observer.disconnect();},[roomId]);
   useEffect(()=>{if(messages.length)cursor.current=Math.max(cursor.current,messages.at(-1).sequence);},[messages.at(-1)?.sequence]);
-  useEffect(()=>{if(visible&&foreground&&inView&&roomId&&messages.length)api('/rooms/'+encodeURIComponent(roomId)+'/read',{sequence:messages.at(-1).sequence}).then(()=>onRead()).catch(()=>{});},[visible,foreground,inView,roomId,messages.at(-1)?.sequence]);
+  useEffect(()=>{if(visible&&foreground&&inView&&roomId&&messages.length)api('/rooms/'+encodeURIComponent(roomId)+'/read',{sequence:messages.at(-1).sequence}).then(()=>onRead(roomId,messages.at(-1).sequence)).catch(()=>{});},[visible,foreground,inView,roomId,messages.at(-1)?.sequence]);
   async function send(e) {
     e.preventDefault();
     if (sendingRooms.current.has(roomId) || !roomId) return;
@@ -1153,7 +1131,7 @@ function Chat({
       Attachments([]);
       Reply(null);
       delete client.current[roomId];
-      onRead().catch(() => {});
+      onRead(roomId,m.sequence);
     } catch (e) {
       if(active.current===roomId)error(e.message + "；保留同一消息编号，再次发送不会重复创建。");
     } finally {

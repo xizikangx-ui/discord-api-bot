@@ -16,8 +16,8 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     S.ok(u && !u.disabled, "账号已停用或不存在。", "UNAUTHORIZED");
     return u;
   }
-  async function member(group, account, r) {
-    const u = await user(account, r),
+  async function member(group, account, r, knownUser) {
+    const u = knownUser?.id===account ? knownUser : await user(account, r),
       g = await repo.get("group", group, r, !!r);
     S.ok(g && !g.archived && !g.deleting, "跑团不存在。", "NOT_FOUND");
     const m = await repo.get("member", group + ":" + account, r, !!r);

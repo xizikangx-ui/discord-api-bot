@@ -300,6 +300,7 @@ function advance(state, b, rng) {
 }
 function nextOpportunity(state, b, rng = randomInt) {
   require('./rescue').check(state,b);
+  if (state.platform === 'web' && autoEnd(state,b)) return;
   if (b.status !== 'active' || b.pending) return;
   ensureActionRound(b);
   if (b.current) {
@@ -309,7 +310,9 @@ function nextOpportunity(state, b, rng = randomInt) {
     b.current = null;
   }
   for (let attempts = 0; attempts < 200; attempts++) {
+    if (state.platform === 'web' && autoEnd(state,b)) return;
     resetActionRound(state, b, rng);
+    if (state.platform === 'web' && autoEnd(state,b)) return;
     if (b.status !== 'active') return;
     if (!b.queue.length) {
       const eligible = activeActors(state, b).filter(a => eligibleOpportunity(b, a, actorCharacter(state, a)));
@@ -343,6 +346,7 @@ function start(state, b, surpriseTeam, rng = randomInt) {
   ok(b.status === 'recruiting' && b.actors.length, '请先招募至少一名参战者。');
   for (const a of b.actors) {if(!a.userId&&!a.initialAmmoLoaded){a.initialAmmoLoaded=true;const loaded=require('./ammunition').primeNPC(actorCharacter(state,a));if(loaded.length)record(b,a.name+'开战前补弹：'+loaded.map(e=>e.name+' '+e.current+'/'+e.capacity+'发').join('、'));}actorCharacter(state, a).ap = 0; a.retreated = false; }
   b.status = 'active'; b.startedAt = Date.now();
+  if(state.platform==='web')b.autoEndEligible=b.actors.some(a=>a.team==='ally')&&b.actors.some(a=>a.team==='enemy');
   b.actionRound = { number: 1, counts: {}, completed: [] };
   if (surpriseTeam) {
     ok(['ally', 'enemy'].includes(surpriseTeam), '偷袭阵营无效。');
@@ -576,7 +580,22 @@ function pause(b, resume = false) {
   if (resume) { ok(b.status === 'paused', '战斗未暂停。'); b.status = 'active'; delete b.pauseReason; }
   else { ok(b.status === 'active', '战斗未进行。'); b.status = 'paused'; }
 }
-function endBattle(state, b) {
+function terminalOutcome(state,b) {
+  const eligible=b.autoEndEligible??(b.actors.some(a=>a.team==='ally')&&b.actors.some(a=>a.team==='enemy'));
+  if(b.status!=='active'||b.pending||!eligible)return null;
+  const live=liveActors(state,b);
+  if(!live.some(a=>a.team==='ally'))return 'defeat';
+  if(!live.some(a=>a.team==='enemy'))return 'victory';
+  return null;
+}
+function autoEnd(state,b) {
+  require('./rescue').check(state,b);
+  const outcome=terminalOutcome(state,b);if(!outcome)return false;
+  b.outcome=outcome;
+  endBattle(state,b,outcome==='victory'?'敌方已全部死亡或离场，战斗胜利。':'友方已全部死亡或离场，战斗失败。');
+  return true;
+}
+function endBattle(state, b, reason = 'GM结束了战斗。') {
   ok(b.status !== 'ended', '战斗已结束。');
   b.status = 'ended'; b.endedAt = Date.now(); b.pending = null; b.current = null; b.queue = [];
   for (const a of b.actors) {
@@ -585,9 +604,9 @@ function endBattle(state, b) {
     p.ap = 0; delete a.casting; M.syncHP(p);
     a.finalCharacter = clone(p);
   }
-  record(b, 'GM结束了战斗。');
+  record(b, reason, {eventType:'battleEnd',outcome:b.outcome||'manual'});
 }
 module.exports = { actorCharacter, actorById, record, validateCondition, applyCondition, beginConditions, endConditions,
   createBattle, join, withdraw, validateNPC, addNPC, position, setTerrain, liveActors, activeActors, order, advance,
   roundState, ensureActionRound, opportunityCost, resetActionRound, nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, attackPlan, readonlyCurrent, validateOperation, defend,
-  confirmCasting, reload, switchWeapon, useItem, flee, pause, endBattle };
+  confirmCasting, reload, switchWeapon, useItem, flee, pause, endBattle, terminalOutcome, autoEnd };
