@@ -15,7 +15,7 @@ function derive(before, next) {
   for (const [id, b] of Object.entries(next.battles)) {
     const old = before.battles[id],
       known = new Set((old?.publicEvents || []).map((e) => e.id));
-    if(b.status==='ended'&&old?.status!=='ended')next.deliveryJobs['web:end:'+id]={key:'web:end:'+id,kind:'webBattleEnd',battleId:id,roomId:b.channelId,status:'pending',desiredRevision:next.revision,priority:1};
+    if(b.status==='ended'&&(old?.status!=='ended'||Loot.rewardSummary(next,id)!==Loot.rewardSummary(before,id)))next.deliveryJobs['web:end:'+id]={key:'web:end:'+id,kind:'webBattleEnd',battleId:id,roomId:b.channelId,status:'pending',desiredRevision:next.revision,priority:1};
     const corpses = Object.values(next.corpses || {}).filter(c => c.battleId === id),
       previousCorpses = Object.values(before.corpses || {}).filter(c => c.battleId === id),
       lootKey = "web:corpses:" + id;
@@ -643,8 +643,7 @@ function createGames({
         };
       } else if (j.kind === "webBattleEnd") {
         const b=s.battles[j.battleId];if(b?.status!=='ended')continue;
-        const deaths=Object.values(s.deaths).filter(d=>d.battleId===b.id);
-        text='战斗结束 · '+b.name+'\n'+({victory:'战斗胜利',defeat:'战斗失败'}[b.outcome]||'GM已结束战斗')+'\n'+deaths.filter(d=>d.rewarded).map(d=>d.name+'：经验已结算 '+(d.rewarded.result?.credited||0)).join('\n');
+        text='战斗结束 · '+b.name+'\n'+({victory:'战斗胜利',defeat:'战斗失败'}[b.outcome]||'GM已结束战斗')+'\n'+Loot.rewardSummary(s,b.id);
         system={battleId:b.id,outcome:b.outcome||'manual',ended:true};
       } else if (j.kind === "webCorpses") {
         const b = s.battles[j.battleId];

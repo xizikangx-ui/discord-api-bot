@@ -194,3 +194,36 @@ test('unread and pending notifications navigate without executing a game operati
   assert.equal(target({mapId:'m',kind:'webNotice'},false).tab,'explore');
   assert.deepEqual(target({source:'sessions'}),{tab:'activities'});
 });
+
+test('battle reward summaries explain zero rewards, automatic XP, pending attribution and real loot without granting anything', () => {
+  const {s,b}=require('./helpers/rpg-harness').fight(),Loot=require('../src/web/battle-loot'),B=require('../src/rpg/combat');
+  B.endBattle(s,b);
+  s.deaths.foe={id:'foe',battleId:b.id,name:'拾荒者',kind:'npc',team:'enemy',baseXP:0,rewarded:{result:{xp:0}}};
+  const original=structuredClone(s);
+  assert.match(Loot.rewardSummary(s,b.id),/基础经验为 0/);
+  assert.match(Loot.rewardSummary(s,b.id),/本场无可拾取物品/);
+  assert.match(Loot.rewardSummary(s,b.id),/仅人形 NPC/);
+  assert.deepEqual(s,original);
+  s.deaths.foe.baseXP=10;s.deaths.foe.rewarded.result={credited:8};
+  s.deaths.pending={id:'pending',battleId:b.id,kind:'npc',team:'enemy',baseXP:20};
+  s.deaths.other={id:'other',battleId:'another-battle',kind:'npc',team:'enemy',baseXP:100,rewarded:{result:{credited:100}}};
+  s.deaths.ally={id:'ally',battleId:b.id,kind:'npc',team:'ally',baseXP:100,rewarded:{result:{credited:100}}};
+  assert.match(Loot.rewardSummary(s,b.id),/自动入账：8，/);
+  assert.match(Loot.rewardSummary(s,b.id),/1 条击杀经验尚未归属/);
+  s.corpses.loot={id:'loot',battleId:b.id,name:'敌方',items:[{id:'drop',snapshot:{name:'实物'}}],claims:{}};
+  assert.match(Loot.rewardSummary(s,b.id),/剩余 1 项战利品/);
+  b.exploration={mapId:'missing',cell:'0,0'};
+  assert.match(Loot.rewardSummary(s,b.id),/探索遭遇全部结束后/);
+  s.corpses.loot.claims.drop={};assert.match(Loot.rewardSummary(s,b.id),/已全部领取/);
+});
+
+test('post-battle GM reward attribution refreshes the original summary without repeating XP or creating empty loot cards', () => {
+  const {s,b}=require('./helpers/rpg-harness').fight(),{derive}=require('../src/web/games');
+  const original=structuredClone(s);require('../src/rpg/combat').endBattle(s,b);
+  s.deaths.foe={id:'foe',battleId:b.id,kind:'npc',team:'enemy',baseXP:10};
+  derive(original,s);const key='web:end:'+b.id;s.deliveryJobs[key].status='done';
+  const before=structuredClone(s);s.deaths.foe.rewarded={result:{credited:10}};s.revision++;derive(before,s);
+  assert.equal(s.deliveryJobs[key].status,'pending');
+  assert.equal(s.deliveryJobs['web:corpses:'+b.id],undefined);
+  s.deliveryJobs[key].status='done';const jobs=structuredClone(s.deliveryJobs);derive(structuredClone(s),s);assert.deepEqual(s.deliveryJobs,jobs);
+});

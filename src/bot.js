@@ -37,6 +37,7 @@ const { createPurgePanel, purgeCommand } = require('./purge-panel');
 const { createScheduledPunishments, scheduledPunishmentCommands } = require('./scheduled-punishments');
 const { createPolls, pollCommand, pollPanelCommand } = require('./polls');
 const { createRpg, commands: rpgCommands } = require('./rpg');
+const noticeExemptions = require('./management-notice-exemptions');
 const { DEFAULT_GUILD_ID: rpgDefaultGuild } = require('./rpg/constants');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
@@ -2037,6 +2038,7 @@ function managementPanelComponents(guildId, tier = 'senior') {
         new ButtonBuilder().setCustomId(`${prefix}-create:${guildId}`).setLabel('创建实时名单子区').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(`${prefix}-announcement:${guildId}`).setLabel('创建任免公示子区').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId(`${prefix}-companion-config:${guildId}`).setLabel('配置配套身份组').setStyle(ButtonStyle.Secondary),
+        noticeExemptions.button(guildId),
       ),
       new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`${prefix}-appoint:${guildId}`)
         .setPlaceholder('为当前选择的身份组选人任命').setMinValues(1).setMaxValues(25)),
@@ -2057,6 +2059,7 @@ function managementPanelComponents(guildId, tier = 'senior') {
       new ButtonBuilder().setCustomId(`${prefix}-refresh:${guildId}`).setLabel('刷新实时名单').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`${prefix}-announcement:${guildId}`).setLabel('创建任免公示子区').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${prefix}-companion-config:${guildId}`).setLabel('配置配套身份组').setStyle(ButtonStyle.Secondary),
+      noticeExemptions.button(guildId),
     ),
   ];
 }
@@ -2334,11 +2337,11 @@ async function syncManagementRole(guild, tier = 'senior', memberList = null, rol
   if (changed) await saveGuildData();
   if (newlyDetected.length) {
     await announceManagementChange(guild, { action: '登记', records: newlyDetected, moderator: client.user, tier, roleId: track.roleId,
-      startedAt: now, showReason: false });
+      startedAt: now, showReason: false, unknownOperator: true });
   }
   if (removed.length) {
     await announceManagementChange(guild, { action: '卸任', records: removed, moderator: client.user, tier, roleId: track.roleId,
-      endedAt: now, showReason: false });
+      endedAt: now, showReason: false, unknownOperator: true });
   }
   if (!newlyDetected.length && !removed.length) scheduleManagementRoster(guild, tier, track.roleId);
   return true;
@@ -2375,7 +2378,7 @@ async function reconcileManagementMember(member, hasRole, tier = 'senior', roleI
       appointmentReason: `检测到${track.label}身份组已添加；从此时开始计时` });
     await saveGuildData();
     await announceManagementChange(guild, { action: '任命', records: [record], moderator: client.user, startedAt: now, tier, roleId: track.roleId,
-      showReason: false });
+      showReason: false, unknownOperator: true });
   } else if (!hasRole && activeTerm) {
     activeTerm.endedAt = now;
     activeTerm.resignedBy = null;
@@ -2383,7 +2386,7 @@ async function reconcileManagementMember(member, hasRole, tier = 'senior', roleI
     await saveGuildData();
     const record = { member, tenure: activeTerm.startedAt ? formatTenure(now - activeTerm.startedAt) : '任命时间未记录' };
     await announceManagementChange(guild, { action: '卸任', records: [record], moderator: client.user, endedAt: now, tier, roleId: track.roleId,
-      showReason: false });
+      showReason: false, unknownOperator: true });
   }
 }
 
@@ -2402,9 +2405,13 @@ function scheduleManagementMemberSync(member, hasRole, tier = 'senior', roleId =
   managementSyncTimers.set(key, timer);
 }
 
-async function announceManagementChange(guild, { action, records, moderator, startedAt, endedAt, reason, showReason = true, tier = 'senior', roleId = null }) {
+async function announceManagementChange(guild, { action, records, moderator, startedAt, endedAt, reason, showReason = true, tier = 'senior', roleId = null, unknownOperator = false }) {
   const setting = settingsFor(guild.id);
   const track = managementTrack(setting, tier, roleId);
+  if (noticeExemptions.isExempt(setting, moderator?.id) || unknownOperator && noticeExemptions.usesAudit(setting)) {
+    scheduleManagementRoster(guild, tier, track.roleId);
+    return true;
+  }
   let channel = null;
   try {
     channel = await ensureManagementAnnouncementThread(guild, tier, roleId);
@@ -3462,6 +3469,8 @@ const middleApplications = createMiddleApplications({
   },
 });
 const nicknamePanel = createNicknamePanel({ client, settingsFor, save: saveGuildData, logFailure });
+const managementNoticeExemptions = noticeExemptions.createExemptions({ client, settingsFor, save: saveGuildData, logFailure });
+const managementNoticeAudit = noticeExemptions.createAuditPublisher({ client, settingsFor, tracks: managementTracks, announce: announceManagementChange, formatTenure, logFailure });
 const purgePanel = createPurgePanel({ client, settingsFor, save: saveGuildData, logFailure,
   protectedChannelIds: [storageChannelId, speechArchiveChannelId, legacyStorageChannelId].filter(Boolean) });
 const scheduledPunishments = createScheduledPunishments({ client, settingsFor, save: saveGuildData, logFailure,
@@ -3512,8 +3521,9 @@ const handledPermissionAuditEntries = new Set();
 client.on('guildAuditLogEntryCreate', async (entry, guild) => {
   if (handledPermissionAuditEntries.has(entry.id)) return;
   handledPermissionAuditEntries.add(entry.id);
-  if (handledPermissionAuditEntries.size > 2000) handledPermissionAuditEntries.clear();
+  if (handledPermissionAuditEntries.size > 2000) handledPermissionAuditEntries.delete(handledPermissionAuditEntries.values().next().value);
   try {
+    if (await managementNoticeAudit.handle(entry, guild)) return;
     if (entry.executorId === client.user?.id || entry.executor?.bot) return;
     const setting = settingsFor(guild.id);
     if (entry.executorId && setting.permissionRollbackWhitelistUserIds.includes(entry.executorId)) return;
@@ -3599,8 +3609,10 @@ client.on('guildAuditLogEntryCreate', async (entry, guild) => {
         + '\n审计编号：' + entry.id
         + (entry.reason ? '\n原操作理由：' + entry.reason : ''))
       .setTimestamp(entry.createdAt);
-    await sendPermissionAlert(guild, embed);
-    console.warn('服务器 ' + guild.id + ' 检测到非本 Bot 发起的权限变更；审计编号 ' + entry.id + '；' + restoreText);
+    if (!noticeExemptions.isExempt(setting, entry.executorId)) {
+      await sendPermissionAlert(guild, embed);
+      console.warn('服务器 ' + guild.id + ' 检测到非本 Bot 发起的权限变更；审计编号 ' + entry.id + '；' + restoreText);
+    }
   } catch (error) {
     logFailure('权限变更监控、恢复或公告失败。', error);
   }
@@ -4123,6 +4135,7 @@ client.on('interactionCreate', async (interaction) => {
   if (await rpg.handle(interaction)) return;
   if (await middleApplications.handle(interaction)) return;
   if (await nicknamePanel.handle(interaction)) return;
+  if (await managementNoticeExemptions.handle(interaction)) return;
   if (await purgePanel.handle(interaction)) return;
   if (await scheduledPunishments.handle(interaction)) return;
   if (await polls.handle(interaction)) return;

@@ -1247,6 +1247,24 @@ test(
         const index=await fetch(origin),html=await index.text(),asset=html.match(/src="([^" ]+\.js)"/)[1],compressed=await fetch(origin+asset,{headers:{'accept-encoding':'gzip'}});assert.equal(compressed.headers.get('content-encoding'),'gzip');assert.match(compressed.headers.get('cache-control'),/immutable/);const tag=compressed.headers.get('etag');assert.equal((await fetch(origin+asset,{headers:{'accept-encoding':'gzip','if-none-match':tag}})).status,304);
       });
       async function accountsUser(){return app.accounts.user(admin.user.id);}
+      await t.test('empty battle rewards are explained in chat and later GM XP updates the same summary across recovery',async()=>{
+        const B=require('../src/rpg/combat'),DT=require('../src/rpg/mortality'),u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'零奖励说明隔离验收'},crypto.randomUUID());await app.games.ensure(g.id);
+        const f=await app.games.store.transact(g.id,'empty-reward-fixture',u.id,s=>{
+          s.players[u.id]=M.newCharacter('玩家',{strength:5,constitution:5,mind:5,appearance:5,intelligence:5,agility:5,knowledge:5});s.players[u.id].userId=u.id;
+          const b=B.createBattle(s,s.config.announcementChannelId,u.id,'无掉落战斗',2,2);B.join(s,b,u.id);
+          const enemy={id:'enemy',name:'拾荒者',team:'enemy',humanoid:false,baseXP:0,character:structuredClone(s.players[u.id])};delete enemy.character.userId;delete enemy.character.life;b.actors.push(enemy);
+          require('../src/rpg/health').damage(enemy.character,999);const d=DT.settle(s,b,enemy,b.actors[0].id);B.endBattle(s,b);
+          return {battleId:b.id,deathId:d.id,roomId:b.channelId};
+        });
+        await app.games.tick();await app.games.tick();
+        let messages=await app.chat.history(u.id,f.roomId,{after:0,before:Number.MAX_SAFE_INTEGER}),summary=messages.find(m=>m.system?.ended&&m.system.battleId===f.battleId);
+        assert.ok(summary);assert.match(summary.text,/基础经验为 0/);assert.match(summary.text,/本场无可拾取物品/);assert.equal(messages.some(m=>m.system?.corpses),false);
+        const id=summary.id,saved=app.games.store.snapshot(g.id);assert.equal(Object.keys(saved.corpses).length,0);assert.equal(saved.deliveryJobs['web:corpses:'+f.battleId],undefined);
+        await app.games.store.transact(g.id,'later-gm-reward',u.id,s=>{const d=s.deaths[f.deathId];d.baseXP=12;delete d.rewarded;return DT.reward(s,s.battles[f.battleId],d,u.id);});
+        const player=structuredClone(app.games.store.snapshot(g.id).players[u.id]);await app.games.tick();await app.games.store.recover(g.id);await app.games.tick();
+        messages=await app.chat.history(u.id,f.roomId,{after:0,before:Number.MAX_SAFE_INTEGER});const summaries=messages.filter(m=>m.system?.ended&&m.system.battleId===f.battleId);
+        assert.equal(summaries.length,1);assert.equal(summaries[0].id,id);assert.match(summaries[0].text,/经验已自动入账/);assert.deepEqual(app.games.store.snapshot(g.id).players[u.id],player);
+      });
       await t.test('ended battle loot chat card survives restart, concurrent quick pickup and overweight rollback',async()=>{
         const B=require('../src/rpg/combat'),u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'战利品隔离验收'},crypto.randomUUID());await app.games.ensure(g.id);
         const partner=crypto.randomUUID();await repo.put('user',{id:partner,name:partner,displayName:'队友',version:1});await repo.put('member',{id:g.id+':'+partner,groupId:g.id,userId:partner,role:'player',active:true,version:1},{scope:g.id});
