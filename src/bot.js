@@ -3470,7 +3470,7 @@ const middleApplications = createMiddleApplications({
 });
 const nicknamePanel = createNicknamePanel({ client, settingsFor, save: saveGuildData, logFailure });
 const managementNoticeExemptions = noticeExemptions.createExemptions({ client, settingsFor, save: saveGuildData, logFailure });
-const managementNoticeAudit = noticeExemptions.createAuditPublisher({ client, settingsFor, tracks: managementTracks, announce: announceManagementChange, formatTenure, logFailure });
+const managementNoticeAudit = noticeExemptions.createAuditPublisher({ client, settingsFor, tracks: managementTracks, announce: announceManagementChange, reconcile: reconcileManagementMember, formatTenure, logFailure });
 const purgePanel = createPurgePanel({ client, settingsFor, save: saveGuildData, logFailure,
   protectedChannelIds: [storageChannelId, speechArchiveChannelId, legacyStorageChannelId].filter(Boolean) });
 const scheduledPunishments = createScheduledPunishments({ client, settingsFor, save: saveGuildData, logFailure,

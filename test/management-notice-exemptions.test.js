@@ -61,3 +61,8 @@ test('actual permission audit route preserves restoration while muting exempt op
   await route(entry,guild);await route(entry,guild);assert.equal(restores,1);assert.equal(alerts,0);assert.equal(warnings,0);
   await route({...entry,id:'2',executorId:'other-operator'},guild);assert.equal(restores,2);assert.equal(alerts,1);assert.equal(warnings,1);
 });
+test('audit arriving before member update reconciles the roster before publishing; exempt events require no extra fetch',async()=>{
+  let fetches=0;const order=[],setting={managementAnnouncementExemptUserIds:['exempt']},guild={members:{fetch:async()=>{fetches++;return {id:'target',roles:{cache:new Set(['r'])}};}}},track={roleId:'r',terms:[]};
+  const audit=N.createAuditPublisher({client:{user:{id:'BOT'}},settingsFor:()=>setting,tracks:()=>[['senior',null,track]],reconcile:async(member,hasRole)=>{assert.equal(hasRole,true);order.push('roster-saved');},announce:async()=>order.push('notice'),formatTenure:()=>'',logFailure:()=>{}}),entry={action:D.AuditLogEvent.MemberRoleUpdate,executorId:'allowed',targetId:'target',changes:[{key:'$add',new:[{id:'r'}]}]};
+  await audit.handle(entry,guild);assert.deepEqual(order,['roster-saved','notice']);await audit.handle({...entry,executorId:'exempt'},guild);assert.equal(fetches,1);assert.equal(order.length,2);
+});

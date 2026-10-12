@@ -69,7 +69,7 @@ function createExemptions({ client, settingsFor, save, logFailure }) {
 }
 // Audit entries carry the real executor and exact changed roles. No timing-based
 // attribution, member-cache assumptions or audit polling is used.
-function createAuditPublisher({ client, settingsFor, tracks, announce, formatTenure, logFailure }) {
+function createAuditPublisher({ client, settingsFor, tracks, announce, reconcile, formatTenure, logFailure }) {
   async function handle(entry, guild) {
     if (entry.action !== AuditLogEvent.MemberRoleUpdate) return false;
     const setting = settingsFor(guild.id);
@@ -90,12 +90,15 @@ function createAuditPublisher({ client, settingsFor, tracks, announce, formatTen
       logFailure('任免审计缺少操作者或目标，未推测归属或发布通告。', { code: 'AUDIT_IDENTITY_MISSING' });return true;
     }
     const member = await guild.members.fetch({ user: entry.targetId, force: true, cache: false }).catch(e => {
-      if (Number(e.code) === 10007) return { id: entry.targetId, user: entry.target?.user || entry.target || {} };
+      if (Number(e.code) === 10007) return { id: entry.targetId, guild, user: entry.target?.user || entry.target || {} };
       throw e;
     });
     if (member.user?.bot) return true;
     const at = entry.createdTimestamp || Date.now();
     for (const { tier, roleId, track, action } of affected) {
+      // Persist the current roster before scheduling publication. Gateway audit
+      // and member events may arrive in either order, including for uncached users.
+      if (reconcile) await reconcile(member, !!member.roles?.cache?.has(track.roleId), tier, roleId);
       const term = [...track.terms].reverse().find(t => t.userId === member.id && (!t.startedAt || t.startedAt <= at));
       await announce(guild, { action, tier, roleId, records: [{ member, tenure: term?.startedAt ? formatTenure(Math.max(0, at - term.startedAt)) : '任命时间未记录' }], moderator: { id: entry.executorId }, startedAt: at, endedAt: at, showReason: false });
     }
