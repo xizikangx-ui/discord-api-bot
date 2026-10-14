@@ -3518,13 +3518,14 @@ client.on('shardDisconnect', (event, shardId) => {
 });
 client.on('error', (error) => logFailure('Discord 客户端错误。', error));
 const handledPermissionAuditEntries = new Set();
+const permissionAuditActors = require('./permission-audit-actors').createPermissionAuditActors({ client, logFailure });
 client.on('guildAuditLogEntryCreate', async (entry, guild) => {
   if (handledPermissionAuditEntries.has(entry.id)) return;
   handledPermissionAuditEntries.add(entry.id);
   if (handledPermissionAuditEntries.size > 2000) handledPermissionAuditEntries.delete(handledPermissionAuditEntries.values().next().value);
   try {
     if (await managementNoticeAudit.handle(entry, guild)) return;
-    if (entry.executorId === client.user?.id || entry.executor?.bot) return;
+    if (!permissionAuditActors.relevant(entry) || !await permissionAuditActors.isHuman(entry)) return;
     const setting = settingsFor(guild.id);
     if (entry.executorId && setting.permissionRollbackWhitelistUserIds.includes(entry.executorId)) return;
     let changedBits = 0n;
