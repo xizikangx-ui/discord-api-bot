@@ -10,7 +10,7 @@ GM 在“GM 工作台 → 营地市场”分别管理武器和防具市场，默
 
 24件医疗补给已发布至公共库。已有团可在“公共库 → 检查同步差异 → 同步可更新项”立即取得，也可等待原有每日自动同步；本地修改冲突不会自动覆盖。医疗包箱标注为一次性药品，容器图鉴中的医疗容器用于开箱，两者用途不同。
 
-在线入口：**https://wasteland-web-production.up.railway.app**。这是网页地址；`/api/web/v1` 是接口，不能拿接口地址当首页。无需下载 Windows 启动包，也不需要 Discord 账号。
+在线入口：**https://yichang.up.railway.app**。旧免费网址已停用，新网址首次请重新登录，账号和存档保留。这是网页地址；`/api/web/v1` 是接口，不能拿接口地址当首页。无需下载 Windows 启动包，也不需要 Discord 账号。
 
 ## 第一次使用
 
@@ -110,3 +110,5 @@ GM 工作台 → 地图管理 →「＋ 新建地图」。填写名称、室内�
 后台按提交和最近到期任务唤醒，30 秒轻量兜底；定时扫描及公示读取只复制所需字段。JS/CSS 在构建时生成 Brotli/Gzip，哈希素材按内容版本缓存；玩家与 GM 面板按需载入。艺术字体改为 28 个 WOFF2 分片，保留 OFL 与缺字回退。可选重建：安装 fonttools/brotli 后运行 `python scripts/build-web-fonts.py`；网站运行不需要 Python 或字体工具。
 
 网站每分钟输出请求、读取、计算、提交、队列与事件循环的汇总性能指标，无正文或凭证。测试与发布证据见 [WEB_CHAT_WORKSPACE_RELEASE.md](WEB_CHAT_WORKSPACE_RELEASE.md)。此次只发布网站，Bot／PG 配置及降耗策略沿用。
+
+运行配置：WEB_DOMAIN_NOTICE 可临时向登录页和登录后页头展示迁移提示，结束后置空；WEB_PUBLIC_URL 必须与实际HTTPS域名完全一致，不能放宽Origin校验来规避配置错误。此版本的发布、备份与核对证据见 [异常之书发布记录](WEB_BOOK_RELEASE.md)。

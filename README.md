@@ -6,7 +6,7 @@
 
 ## 独立在线跑团与聊天
 
-[打开异常之书网站](https://wasteland-web-production.up.railway.app)。邀请注册、独立账号、多团、聊天/图片/RP/掷骰/私聊、玩家界面和 GM 工作台；无需 Discord。网站与 Discord 共用规则和公开模板，角色、资产、地图、战斗及消息独立。首页使用网页登录，API 地址不作为首页。
+[打开异常之书网站](https://yichang.up.railway.app)。邀请注册、独立账号、多团、聊天/图片/RP/掷骰/私聊、玩家界面和 GM 工作台；无需 Discord。网站与 Discord 共用规则和公开模板，角色、资产、地图、战斗及消息独立。首页使用网页登录，API 地址不作为首页。
 
 首次管理员使用私密交付文件初始化；说明、部署变量、权限、备份及恢复见 [WEB_OPERATIONS.md](WEB_OPERATIONS.md)，入口覆盖见 [WEB_FEATURE_COVERAGE.md](WEB_FEATURE_COVERAGE.md)。开发使用 `npm run build:web`、`npm run test:web`，生产独立服务入口为 `Dockerfile.web`。
 
