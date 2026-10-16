@@ -9,7 +9,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     displayName: u.displayName,
     admin: !!u.admin,
     disabled: !!u.disabled,
-    preferences: u.preferences || {artStyle:"tactical",killEffects:true},
+    preferences: {artStyle:"magic",killEffects:true,...u.preferences},
   });
   async function user(id, r) {
     const u = await repo.get("user", id, r);
@@ -94,17 +94,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
           "CONFLICT",
         );
       } else {
-        invite = await repo.get("invite", S.hash(p.invite || ""), r, true);
-        S.ok(
-          invite &&
-            !invite.usedBy &&
-            !invite.revokedAt &&
-            invite.expiresAt > Date.now(),
-          "邀请码已失效或已使用。",
-        );
-        const issuer = await user(invite.issuer, r),
-          a = await member(invite.groupId, issuer.id, r);
-        gm(a);
+        invite = await validInvite(p.invite, r);
       }
       const u = {
         id: uid(),
@@ -118,8 +108,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
       };
       await repo.put("user", u, { lookup: S.hash(name) }, r);
       if (invite) {
-        invite.usedBy = u.id;
-        await repo.put("invite", invite, { scope: invite.groupId }, r);
+        await consumeInvite(invite, u.id, r);
         await repo.put(
           "member",
           {
@@ -222,29 +211,70 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     );
     return { token: secret, expiresAt: Date.now() + 15 * 60000 };
   }
-  async function invite(a) {
+  const inviteMode = i => i.mode || "single";
+  function inviteView(i) {
+    return {id:i.id,mode:inviteMode(i),createdAt:i.createdAt || i.expiresAt-7*86400000,expiresAt:i.expiresAt,
+      usedCount:i.usedCount ?? (i.usedBy?1:0),status:i.revokedAt?"revoked":i.expiresAt<=Date.now()?"expired":inviteMode(i)==="single"&&i.usedBy?"used":"active"};
+  }
+  async function validInvite(code,r,joiner) {
+    const id=S.hash(String(code||"").trim()),hint=await repo.get("invite",id,r);
+    S.ok(hint,"邀请码已失效或已使用。");
+    // Match membership/deletion lock order: group, issuer member, then invitation.
+    gm(await member(hint.groupId,hint.issuer,r));
+    const i=await repo.get("invite",id,r,true);
+    S.ok(i&&i.groupId===hint.groupId&&!i.revokedAt&&i.expiresAt>Date.now()&&
+      (inviteMode(i)==="multi24h"||!i.usedBy||i.usedBy===joiner),"邀请码已失效或已使用。");
+    return i;
+  }
+  async function consumeInvite(i,account,r) {
+    if(inviteMode(i)==="single")i.usedBy=account;
+    i.usedCount=(i.usedCount||0)+1;
+    await repo.put("invite",i,{scope:i.groupId},r);
+  }
+  async function invite(a,p={}) {
     gm(a);
+    const mode=p.mode===undefined?"single":p.mode;
+    S.ok(["single","multi24h"].includes(mode),"请选择七天单次码或24小时多人码。");
     const secret = S.token(),
       i = {
         id: S.hash(secret),
         groupId: a.group.id,
         issuer: a.user.id,
-        expiresAt: Date.now() + 7 * 86400000,
+        mode,createdAt:Date.now(),usedCount:0,
+        expiresAt: Date.now() + (mode==="multi24h"?1:7) * 86400000,
       };
     await repo.tx("invite:"+i.id,async r=>{gm(await member(a.group.id,a.user.id,r));await repo.put("invite", i, { scope: a.group.id },r);return {issued:true};});
-    return { code: secret, expiresAt: i.expiresAt };
+    return { code: secret, ...inviteView(i) };
+  }
+  async function invites(a,p={}) {
+    gm(a);const page=Number(p.page||0);S.ok(Number.isSafeInteger(page)&&page>=0,"页码无效。");
+    const rows=(await repo.list("invite",a.group.id)).sort((a,b)=>(b.createdAt||b.expiresAt)-(a.createdAt||a.expiresAt));
+    const issuers=new Map();
+    const items=await Promise.all(rows.slice(page*50,page*50+50).map(async i=>{
+      const view=inviteView(i);if(view.status!=="active")return view;
+      if(!issuers.has(i.issuer))issuers.set(i.issuer,member(a.group.id,i.issuer).then(gm).then(()=>true).catch(()=>false));
+      if(!await issuers.get(i.issuer))view.status="issuerInactive";return view;
+    }));
+    return {page,total:rows.length,items};
+  }
+  async function revokeInvite(a,id,operation) {
+    gm(a);S.ok(/^[a-f0-9]{64}$/.test(id),"邀请码不存在。","NOT_FOUND");
+    S.ok(/^[a-zA-Z0-9_-]{8,100}$/.test(operation||""),"操作编号无效。");
+    return repo.tx("invite-revoke:"+a.group.id+":"+a.user.id+":"+operation,async r=>{
+      gm(await member(a.group.id,a.user.id,r));const i=await repo.get("invite",id,r,true);
+      S.ok(i&&i.groupId===a.group.id,"邀请码不存在。","NOT_FOUND");
+      i.revokedAt||=Date.now();await repo.put("invite",i,{scope:a.group.id},r);return inviteView(i);
+    });
   }
   async function join(u, code) {
-    return repo.tx("join:" + u.id + ":" + S.hash(code), async (r) => {
-      const i = await repo.get("invite", S.hash(code), r, true);
-      S.ok(
-        i && !i.usedBy && !i.revokedAt && i.expiresAt > Date.now(),
-        "邀请码已失效。",
-      );
-      gm(await member(i.groupId, i.issuer, r));
-      i.usedBy = u.id;
-      await repo.put("invite", i, { scope: i.groupId }, r);
+    return repo.tx("join:" + u.id + ":" + uid(), async (r) => {
+      await user(u.id,r);
+      const i = await validInvite(code,r,u.id);
       const old = await repo.get("member", i.groupId + ":" + u.id, r, true);
+      if(old?.active)return {groupId:i.groupId};
+      S.ok(!(inviteMode(i)==="multi24h"&&old),"你已被移出此团，请联系GM重新发单次邀请。","FORBIDDEN");
+      S.ok(!i.usedBy,"邀请码已使用。");
+      await consumeInvite(i,u.id,r);
       await repo.put(
         "member",
         {
@@ -362,6 +392,8 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     changePassword,
     resetToken,
     invite,
+    invites,
+    revokeInvite,
     join,
     createGroup,
     setMember,

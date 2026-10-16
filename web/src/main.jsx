@@ -19,8 +19,11 @@ const playerComponent=name=>React.lazy(()=>import("./players").then(m=>({default
 const PlayerPanel=playerComponent('PlayerPanel'),ExplorePanel=playerComponent('ExplorePanel'),BattlePanel=playerComponent('BattlePanel'),ActivitiesPanel=playerComponent('ActivitiesPanel');
 import {allSections,visibleSections,mergeGame,refreshQueue,unreadEvent,markRead} from './refresh-state';
 import {chatTasks} from './chat-tasks';
+import {consoleKey,readConsole,saveConsole} from './console-state';
+import {Invitations} from './invites';
 import {roomMessages,mergeMessages} from "./chat-state";
 import "./style.css";
+import "./book-theme.css";
 const date = (v) =>
   new Date(v).toLocaleTimeString("zh-CN", {
     hour: "2-digit",
@@ -35,20 +38,22 @@ function Auth({ done }) {
     }),
     [busy, B] = useState(false),
     [error, E] = useState(""),
+    [siteNotice,SiteNotice]=useState(""),
     [recovery, R] = useState("");
   const busyRef=useRef(false);
   useEffect(() => {
     api("/auth/status")
       .then((s) => {
+        SiteNotice(s.siteNotice||"");
         if (!s.initialized && p.token) M("bootstrap");
       })
       .catch((e) => E(e.message));
     if (location.hash) history.replaceState(null, "", location.pathname);
   }, []);
   const title = {
-    login: "返回营地",
-    register: "加入荒原",
-    bootstrap: "建立你的指挥站",
+    login: "重返书页",
+    register: "加入同行",
+    bootstrap: "写下第一章",
     recover: "找回账号",
   }[mode];
   async function submit(e) {
@@ -73,13 +78,13 @@ function Auth({ done }) {
   return (
     <div className="auth-screen">
       <div className="auth-art">
-        <span className="eyebrow">WASTELAND ARCHIVES / ONLINE</span>
-        <div className="hero-mark">◈</div>
-        <h1>荒原档案</h1>
+        <span className="eyebrow">翻开书页，记录未知</span>
+        <img className="book-emblem" src="/brand/book-icon-v1.svg" alt=""/>
+        <h1 className="book-wordmark"><img src="/brand/book-wordmark-v1.svg" alt="异常之书"/></h1>
         <p>
-          在失序的世界里，
+          在未知的书页间，
           <br />
-          留下属于你们的故事。
+          写下属于你们的故事。
         </p>
         <div className="auth-lines">
           <span>01 / 角色与探索</span>
@@ -89,7 +94,8 @@ function Auth({ done }) {
         <small>独立账号 · 多团存档 · 实时聊天</small>
       </div>
       <section className="auth-form panel">
-        <span className="eyebrow">ESTABLISH CONTACT</span>
+        {siteNotice&&<p className="domain-notice" role="status">{siteNotice}</p>}
+        <span className="eyebrow">新的旅程，从这里开始</span>
         <h2>{title}</h2>
         {recovery ? (
           <>
@@ -227,7 +233,9 @@ function App() {
     [booting, Boot] = useState(true),
     [groups, Groups] = useState([]),
     [groupId, Group] = useState(""),
-    [tab, Tab] = useState("chat"),
+    [tab, SetTab] = useState("chat"),
+    [mobileConsole,MobileConsole]=useState(()=>matchMedia('(max-width:850px)').matches),
+    [consolePrefs,ConsolePrefs]=useState({}),
     [rooms, Rooms] = useState([]),
     [roomId, Room] = useState(""),
     [members, Members] = useState([]),
@@ -266,9 +274,14 @@ function App() {
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
-  active.current = { groupId, roomId, scope,tab };
+  const panelKey=consoleKey(me?.user.id,groupId,mobileConsole),panelPref=consolePrefs[panelKey]||readConsole(localStorage,panelKey,mobileConsole),panelOpen=panelPref.open;
+  function setConsole(change){const next={...panelPref,...change};ConsolePrefs(old=>({...old,[panelKey]:next}));saveConsole(localStorage,panelKey,next);}
+  function Tab(next){if(next==='gm'){SetTab(next);return;}if(next==='chat'){SetTab(panelPref.pane==='console'?'chat':panelPref.pane);return;}const pane=next==='console'?'console':next;setConsole({pane,open:true});SetTab(pane==='console'?'chat':pane);}
+  useEffect(()=>{const q=matchMedia('(max-width:850px)'),change=()=>MobileConsole(q.matches);q.addEventListener('change',change);return()=>q.removeEventListener('change',change);},[]);
+  useEffect(()=>{SetTab(panelPref.pane==='console'?'chat':panelPref.pane);},[panelKey]);
+  active.current = { groupId, roomId, scope,tab,panelOpen };
   pendingRef.current=pendingOperation;gameRef.current=game;
-  prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"tactical";
+  prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"magic";
   useEffect(()=>{if(!killEffect)return;const t=setTimeout(()=>KillEffect(null),2100);return()=>clearTimeout(t);},[killEffect]);
   async function boot() {
     try {
@@ -293,7 +306,7 @@ function App() {
       data=>{if(active.current.groupId!==g||epoch.current!==generation)return;if(!liveReady.current){for(const id of data.historicalDeathIds||[])seenDeaths.current.add(id);liveReady.current=true;}gameRef.current=mergeGame(gameRef.current,data);Game(gameRef.current);},
       (k,v)=>v<0||(gameRef.current?.sectionVersions?.[k]??-1)<v
     ));
-    const jobs=[readQueues.current.get(g)(options.sections||visibleSections(active.current.tab,gameRef.current),options.expected||{})];
+    const jobs=[readQueues.current.get(g)(options.sections||visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),options.expected||{})];
     if(directoryGroup.current!==g||options.directory){directoryGroup.current=g;jobs.push(Promise.all([api('/groups/'+g+'/rooms'),api('/groups/'+g+'/members')]).then(([r,m])=>{if(active.current.groupId===g&&epoch.current===generation){Rooms(r);Members(m);}}).catch(e=>{if(epoch.current===generation)directoryGroup.current=null;throw e;}));}
     await Promise.all(jobs);
   }
@@ -333,15 +346,15 @@ function App() {
         })
         .catch((e) => E(e.message));
   }, [groupId, me?.user.id, gm]);
-  useEffect(()=>{if(!groupId||!me)return;void refresh({sections:visibleSections(tab,gameRef.current)}).catch(e=>E(e.message));
+  useEffect(()=>{if(!groupId||!me)return;void refresh({sections:visibleSections(tab,gameRef.current,panelOpen)}).catch(e=>E(e.message));
     if(gm&&tab==='gm'&&!schema){const base='/groups/'+groupId+'/gm';const target=groupId;Promise.all([api(base+'/schemas'),api(base+'/directory')]).then(([s,d])=>{if(active.current.groupId!==target)return;Schema(s);window.gmSchema=s;window.gmDirectory=d;window.gmBoxes=s.boxes;Object.assign(labels,s.attributeLabels);}).catch(e=>E(e.message));}
-  },[tab,groupId,me?.user.id,gm]);
-  useEffect(()=>{if(tab==='chat'&&(game?.dashboard?.battle||game?.dashboard?.map))void refresh({sections:visibleSections(tab,game)}).catch(()=>{});},[game?.dashboard?.battle?.id,game?.dashboard?.map?.id]);
-  useEffect(()=>{if(game?.dashboard&&!game.dashboard.player&&game.sectionVersions.core===undefined)void refresh({sections:['core']}).catch(()=>{});},[!!game?.dashboard,game?.dashboard?.player?.id,groupId]);
+  },[tab,groupId,me?.user.id,gm,panelOpen]);
+  useEffect(()=>{if(panelOpen&&tab==='chat'&&(game?.dashboard?.battle||game?.dashboard?.map))void refresh({sections:visibleSections(tab,game,panelOpen)}).catch(()=>{});},[game?.dashboard?.battle?.id,game?.dashboard?.map?.id,panelOpen]);
+  useEffect(()=>{if(panelOpen&&game?.dashboard&&!game.dashboard.player&&game.sectionVersions.core===undefined)void refresh({sections:['core']}).catch(()=>{});},[!!game?.dashboard,game?.dashboard?.player?.id,groupId,panelOpen]);
   useEffect(()=>{
     if(!groupId||!me||!foreground)return;
     let alive=true,pending=false;
-    async function check(){if(pending)return;pending=true;try{const v=await api('/groups/'+groupId+'/version');if(!alive||active.current.groupId!==groupId)return;const keys=visibleSections(active.current.tab,gameRef.current).filter(k=>v.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]);if(keys.length)await refresh({sections:keys,expected:v.sectionVersions});}catch{}finally{pending=false;}}
+    async function check(){if(pending)return;pending=true;try{const v=await api('/groups/'+groupId+'/version');if(!alive||active.current.groupId!==groupId)return;const keys=visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).filter(k=>v.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]);if(keys.length)await refresh({sections:keys,expected:v.sectionVersions});}catch{}finally{pending=false;}}
     void check();const timer=setInterval(check,5000);return()=>{alive=false;clearInterval(timer);};
   },[groupId,me?.user.id,foreground]);
   useEffect(() => {
@@ -376,7 +389,7 @@ function App() {
         const kills=freshKills(event,seenDeaths.current,liveReady.current);if(kills.length&&prefsRef.current?.killEffects!==false)KillEffect({id:kills.join(":"),count:kills.length});
         if(event.type==='room-unread'){Rooms(old=>unreadEvent(old,event.data));}
         else if(event.type==='state'){
-          if(busyRef.current&&pendingRef.current){for(const key of event.data.sections||allSections)deferredSections.current.set(key,event.data.revision);}else if(document.visibilityState==='visible')refresh({sections:(event.data.sections||allSections).filter(k=>visibleSections(active.current.tab,gameRef.current).includes(k)&&event.data.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]),expected:event.data.sectionVersions}).catch(e=>E(e.message));
+          if(busyRef.current&&pendingRef.current){for(const key of event.data.sections||allSections)deferredSections.current.set(key,event.data.revision);}else if(document.visibilityState==='visible')refresh({sections:(event.data.sections||allSections).filter(k=>visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).includes(k)&&event.data.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]),expected:event.data.sectionVersions}).catch(e=>E(e.message));
         } else if(event.type==='permissions') {
           epoch.current++;directoryGroup.current=null;readQueues.current.clear();refresh({directory:true}).catch(()=>{});
         } else ChatEvent(event);
@@ -421,7 +434,7 @@ function App() {
     } finally {
       busyRef.current=false;
       B(false);
-      const keys=[...deferredSections.current].filter(([k,v])=>visibleSections(active.current.tab,gameRef.current).includes(k)&&(gameRef.current?.sectionVersions?.[k]??-1)<v).map(([k])=>k);deferredSections.current.clear();if(keys.length)void refresh({sections:keys}).catch(()=>{});
+      const keys=[...deferredSections.current].filter(([k,v])=>visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).includes(k)&&(gameRef.current?.sectionVersions?.[k]??-1)<v).map(([k])=>k);deferredSections.current.clear();if(keys.length)void refresh({sections:keys}).catch(()=>{});
     }
   }
   async function runChat(fn){try{return await fn();}catch(e){E(e.message);throw e;}}
@@ -438,7 +451,7 @@ function App() {
     return await run(async()=>{
       PendingOperation(request);saveLocal('pendingOperation',request);
       try{
-        const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:gameRef.current?.versions,includePatch:true,sections:[...new Set([...visibleSections(active.current.tab,gameRef.current),'dashboard','core','market'])].filter(k=>k!=='management').join(',')});
+        const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:gameRef.current?.versions,includePatch:true,sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'dashboard','core','market'])].filter(k=>k!=='management').join(',')});
         if(active.current.groupId!==targetGroup)return;
         if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,r.gamePatch);Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
       }catch(e){
@@ -455,7 +468,7 @@ function App() {
   }
   async function checkDirect(request=pendingOperation){
     if(!request)return;
-    const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId+'?includePatch=1&sections='+visibleSections(active.current.tab,gameRef.current).concat('core','market').join(','));
+    const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId+'?includePatch=1&sections='+visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).concat('core','market').join(','));
     if(active.current.groupId!==request.groupId || pendingRef.current?.operationId!==request.operationId)return;
     if(r.status==='committed'){if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,r.gamePatch);Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
     else if(r.status==='uncommitted'){PendingOperation(null);saveLocal('pendingOperation',null);N('权威记录确认此操作未保存。填写内容已保留，可重新提交。');}
@@ -559,15 +572,15 @@ function App() {
         </section>
       </div>
     );
-  if (booting) return <div className="loading">◈ 正在连接指挥站…</div>;
+  if (booting) return <div className="loading">◈ 正在翻开书页…</div>;
   if (!me) return <Auth done={boot} />;
   return (
-    <div className="site integrated-site">
+    <div className="site integrated-site book-theme">
       <aside className={"site-sidebar " + (mobileSide ? "shown" : "")}>
         <div className="brand">
-          <span className="sigil">◈</span>
+          <img className="book-emblem" src="/brand/book-icon-v1.svg" alt=""/>
           <h1>
-            荒原档案<small>TABLETOP / ONLINE</small>
+            <img className="book-wordmark" src="/brand/book-wordmark-v1.svg" alt="异常之书"/><small>与同行者共写故事</small>
           </h1>
         </div>
         <label className="group-picker">
@@ -667,8 +680,8 @@ function App() {
           <div>
             <span className="eyebrow">
               {tab === "chat"
-                ? "CAMP COMMUNICATIONS"
-                : "TACTICAL FIELD TERMINAL"}
+                ? "故事正在发生"
+                : "书页与档案"}
             </span>
             <h2>
               {tab !== "gm"
@@ -681,6 +694,7 @@ function App() {
             <small>存档 v{game?.revision || 0}</small>
           </div>
         </header>
+        {me.siteNotice&&<div className="banner domain-notice" role="status">{me.siteNotice}</div>}
         {error && (
           <div className="banner error" role="alert">
             {error}
@@ -694,7 +708,7 @@ function App() {
           </div>
         )}
         {pendingOperation && <div className="banner" role="status"><span>上一操作待核对；仍可查看消息和面板。</span><button disabled={busy} onClick={()=>run(()=>checkDirect()).catch(()=>{})}>查询保存结果</button></div>}
-        {game?.battles.some((b) => b.pending.length) && (
+        {(game?.dashboard?game.dashboard.battle?.pending?.length:game?.battles.some((b) => b.pending.length)) && (
           <div className="banner defense-card" role="status">
             你有待结算的受击，请及时防守。
             <button onClick={() => Tab("battle")}>打开防守面板</button>
@@ -730,9 +744,9 @@ function App() {
           </section>
         ) : (
           <>
-            <div className={"chat-workspace with-panel "+(tab==="chat"?" console-collapsed":"")+(tab==="gm"?" gm-workspace":"")}><div hidden={tab==="gm"} className="chat-page">
-              <div className="player-toolbar" aria-label="玩家工具栏"><button className={tab==="chat"?"active":""} onClick={()=>Tab(tab==="chat"?"console":"chat")}>行动台</button>{[["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]].map(([k,name])=><button key={k} className={tab===k?"active":""} onClick={()=>Tab(tab===k?"chat":k)}>{name}</button>)}</div>
-              {game?.player&&<div className="chat-character" aria-label="当前角色状态"><strong>{game.player.name}</strong><span>HP {game.player.hp}/{game.player.stats.maxHP}</span>{game.player.health.downed&&<span className="urgent">倒地生命 {game.player.health.reserveHP}/{game.player.stats.maxHP}</span>}<span>AP {game.player.ap}</span>{game.player.conditions.length>0&&<span>异常 {game.player.conditions.length} 项</span>}</div>}
+            <div className={"chat-workspace "+(panelOpen||tab==="gm"?"with-panel":"console-collapsed")+(tab==="gm"?" gm-workspace":"")}><div hidden={tab==="gm"} className="chat-page">
+              <div className="player-toolbar" aria-label="玩家工具栏"><button aria-expanded={panelOpen} aria-controls="player-operation-panel" onClick={()=>setConsole({open:!panelOpen})}>{panelOpen?"收起操作台":"展开操作台"}</button>{[["console","总览"],["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]].map(([k,name])=><button key={k} className={tab===k||k==="console"&&tab==="chat"?"active":""} onClick={()=>Tab(k)}>{name}</button>)}</div>
+              {game?.dashboard?.player&&<ConsoleStatus data={game.dashboard}/>}
               <PendingTasks game={game} userId={me.user.id} onNavigate={navigateNotice} onOpen={Tab}/>
               {result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看个人结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}
               <Chat
@@ -756,14 +770,14 @@ function App() {
                 onRead={(id,sequence)=>Rooms(old=>markRead(old,id,sequence))}
               />
             </div>
-            <div className={"page-content "+(tab!=="gm"?"player-drawer":"")} key={groupId}>
-              <header className="drawer-header"><div><ConsoleStatus data={tab!=="gm"?game?.dashboard:null}/><b>{({console:"玩家一体操作台",chat:"玩家一体操作台",character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b></div><button onClick={()=>Tab("chat")} aria-label="关闭操作面板">×</button></header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
-              <Keep show={tab==="chat"||tab==="console"}>{game&&<Workbench {...{game,groupId,prepare,run,refresh,busy}} userId={me.user.id} error={E} onOpen={(target,detail)=>{if(detail)Navigation({...detail,key:id()});Tab(target);}}/>}</Keep>
-              <Keep show={tab==="more"}><section className="panel service-menu"><h3>营地服务</h3>{[["home","公告与未读"],["library","公共模板库"],["settings","成员、私聊与账号"],["bag","收藏柜与兑换券"],["activities","规则与名词"]].map(([k,name])=><button key={k} onClick={()=>Tab(k)}>{name}</button>)}</section></Keep>
-              <Keep show={tab === "home"}>
+            <div id="player-operation-panel" hidden={!panelOpen&&tab!=="gm"} className={"page-content "+(tab!=="gm"?"player-drawer":"")} key={groupId}>
+              <header className="drawer-header"><div><b>{({console:"玩家一体操作台",chat:"玩家一体操作台",character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b></div>{tab!=="gm"&&<button onClick={()=>setConsole({open:false})} aria-label="收起操作台">⌄</button>}</header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
+              <Keep show={panelOpen&&(tab==="chat"||tab==="console")}>{game&&<Workbench {...{game,groupId,prepare,run,refresh,busy}} userId={me.user.id} active={panelOpen&&(tab==="chat"||tab==="console")} error={E} onOpen={(target,detail)=>{if(detail)Navigation({...detail,key:id()});Tab(target);}}/>}</Keep>
+              <Keep show={panelOpen&&tab==="more"}><section className="panel service-menu"><h3>营地服务</h3>{[["home","公告与未读"],["library","公共模板库"],["settings","成员、私聊与账号"],["bag","收藏柜与兑换券"],["activities","规则与名词"]].map(([k,name])=><button key={k} onClick={()=>Tab(k)}>{name}</button>)}</section></Keep>
+              <Keep show={panelOpen&&tab === "home"}>
                 <GroupHome {...{ game, group, members, rooms, Preview }} onRoom={openRoom} onNavigate={navigateNotice} />
               </Keep>
-              <Keep show={["character", "bag"].includes(tab)}>
+              <Keep show={panelOpen&&["character", "bag"].includes(tab)}>
                 {game && (
                   <PlayerPanel
                     tab={tab}
@@ -777,22 +791,23 @@ function App() {
                   />
                 )}
               </Keep>
-              <Keep show={tab === "explore"}>
+              <Keep show={panelOpen&&tab === "explore"}>
                 {game && (
-                  <ExplorePanel {...{ game, groupId, prepare, run, refresh }} navigation={navigation} />
+                  <ExplorePanel {...{ game, groupId, prepare, run, refresh }} navigation={navigation} active={panelOpen&&tab==="explore"} />
                 )}
               </Keep>
-              <Keep show={tab === "battle"}>
+              <Keep show={panelOpen&&tab === "battle"}>
                 {game && (
                   <BattlePanel
                     {...{ game, groupId, prepare, run, refresh }}
+                    active={panelOpen&&tab==="battle"}
                     navigation={navigation}
                     userId={me.user.id}
                   />
                 )}
               </Keep>
-              <Keep show={tab === "skills"}>{game&&<SkillBook {...{game,groupId,prepare}} userId={me.user.id} artStyle={me.user.preferences?.artStyle||"tactical"}/>}</Keep>
-              <Keep show={tab === "activities"}>
+              <Keep show={panelOpen&&tab === "skills"}>{game&&<SkillBook {...{game,groupId,prepare}} userId={me.user.id} active={panelOpen&&tab==="skills"} artStyle={me.user.preferences?.artStyle||"magic"}/>}</Keep>
+              <Keep show={panelOpen&&tab === "activities"}>
                 {game && <ActivitiesPanel {...{ game, prepare }} />}
               </Keep>
               <Keep show={tab === "gm"}>
@@ -829,7 +844,7 @@ function App() {
                     <Keep show={gmTab === "battles"}>
                       <World {...common} kind="battles" navigation={navigation} />
                     </Keep>
-                    <Keep show={gmTab === "markets"}><Market {...{groupId}} type="weapon" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/><Market {...{groupId}} type="armor" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/></Keep>
+                    <Keep show={gmTab === "markets"}><Market {...{groupId}} active={tab==="gm"&&gmTab==="markets"} type="weapon" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/><Market {...{groupId}} active={tab==="gm"&&gmTab==="markets"} type="armor" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/></Keep>
                     <Keep show={gmTab === "content"}>
                       <Commands
                         {...common}
@@ -842,7 +857,7 @@ function App() {
                   </>
                 )}
               </Keep>
-              <Keep show={tab === "library"}>
+              <Keep show={panelOpen&&tab === "library"}>
                 <Library
                   {...{ me, groupId, gm, run }}
                   error={E}
@@ -850,7 +865,7 @@ function App() {
                   refresh={refresh}
                 />
               </Keep>
-              <Keep show={tab === "settings"}>
+              <Keep show={panelOpen&&tab === "settings"}>
                 <Settings
                   {...{
                     me,
@@ -876,7 +891,7 @@ function App() {
         )}
       </main>
       <aside className="character-sidebar" hidden>
-        <span className="eyebrow">YOUR OPERATIVE</span>
+        <span className="eyebrow">你的角色</span>
         {game?.player ? (
           <>
             <h3>{game.player.name}</h3>
@@ -955,11 +970,11 @@ function App() {
             </button>
           ))}
       </aside>
-      {killEffect&&<div className={"kill-overlay art-"+(me.user.preferences?.artStyle||"tactical")} role="status" key={killEffect.id}><img src="/effects/kill-v1.gif" alt=""/><div><small>CONFIRMED ELIMINATION</small><h2 className="art-title">敌人已击杀</h2>{killEffect.count>1&&<p>本次击杀 {killEffect.count} 名敌人</p>}</div><button onClick={()=>KillEffect(null)}>关闭特效</button></div>}
+      {killEffect&&<div className={"kill-overlay art-"+(me.user.preferences?.artStyle||"magic")} role="status" key={killEffect.id}><img src="/effects/kill-v1.gif" alt=""/><div><small>胜负已定</small><h2 className="art-title">敌人已击杀</h2>{killEffect.count>1&&<p>本次击杀 {killEffect.count} 名敌人</p>}</div><button onClick={()=>KillEffect(null)}>关闭特效</button></div>}
       {preview && (
         <div className="legacy-draft">
           <section className="panel">
-            <span className="eyebrow">SAVED DRAFT</span>
+            <span className="eyebrow">尚未写完的篇章</span>
             <h3>上个版本留下的草稿</h3>
             <p>
               有效至 {new Date(preview.expiresAt).toLocaleTimeString()} ·{" "}
@@ -1238,7 +1253,7 @@ function Chat({
                   : (m.characterName || m.authorName).slice(0, 1)}
               </div>
               <div className="message-content">
-                <div className={"message-title art-"+(window.webArtStyle||"tactical")}>
+                <div className={"message-title art-"+(window.webArtStyle||"magic")}>
                   <b className={m.kind==="rp"?"art-title":""}>{m.characterName || m.authorName}</b>
                   {m.kind === "rp" && <span className="badge">角色 RP</span>}
                   {m.system?.npcId && (
@@ -1472,7 +1487,7 @@ function Library({ me, groupId, gm, run, error, notice, refresh }) {
   return (
     <>
       <section className="panel">
-        <span className="eyebrow">SHARED KNOWLEDGE / VERSIONED</span>
+        <span className="eyebrow">共同记录的知识</span>
         <h3>公共模板库</h3>
         <p>
           管理员审核后发布，各团保存自己的版本。已发物品和活动遭遇保持快照。
@@ -1663,7 +1678,7 @@ function Settings({
     [users, Users] = useState([]),
     [secret, Secret] = useState(""),
     [p, P] = useState({}),
-    [invite, Invite] = useState(""),[deletion,Deletion]=useState(null),[preferences,Preferences]=useState(me.user.preferences||{artStyle:"tactical",killEffects:true});
+    [invite, Invite] = useState(""),[deletion,Deletion]=useState(null),[preferences,Preferences]=useState(me.user.preferences||{artStyle:"magic",killEffects:true});
   useEffect(()=>{if(!deletion||deletion.status==="deleted")return;const t=setInterval(()=>api("/admin/groups/"+deletion.groupId+"/deletion").then(Deletion).catch(()=>{}),2500);return()=>clearInterval(t);},[deletion?.groupId,deletion?.status]);
   useEffect(() => {
     api("/auth/devices")
@@ -1752,16 +1767,7 @@ function Settings({
             >
               保存公告
             </button>
-            <button
-              onClick={() =>
-                run(async () => {
-                  const r = await api("/groups/" + groupId + "/invite", {});
-                  Secret("单次邀请码（7天有效）：" + r.code);
-                }).catch(() => {})
-              }
-            >
-              生成玩家注册／入团邀请
-            </button>
+            <Invitations {...{groupId,run,error}}/>
             <label className="field">
               <span>每24小时自动同步公共库</span>
               <input

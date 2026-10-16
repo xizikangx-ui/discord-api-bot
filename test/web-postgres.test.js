@@ -125,7 +125,7 @@ test(
           );
           const home = await fetch(origin);
           assert.equal(home.status, 200);
-          assert.match(await home.text(), /荒原档案/);
+          assert.match(await home.text(), /异常之书/);
           assert.equal((await call(admin, "/unknown")).status, 404);
         },
       );

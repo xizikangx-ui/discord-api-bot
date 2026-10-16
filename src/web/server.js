@@ -209,7 +209,7 @@ function createWeb({
           "x-content-type-options": "nosniff",
         });
         return res.end(
-          '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>荒原档案 · 隐私说明</title><style>body{background:#132023;color:#ddd;font:16px/1.8 system-ui;max-width:900px;margin:auto;padding:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><pre>' +
+          '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>异常之书 · 隐私说明</title><style>body{background:#15182e;color:#e3e5f6;font:16px/1.8 system-ui;max-width:900px;margin:auto;padding:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><h1>异常之书 · 隐私说明</h1><pre>' +
             policy
               .replaceAll("&", "&amp;")
               .replaceAll("<", "&lt;")
@@ -261,7 +261,7 @@ function createWeb({
           "cache-control":
             path.extname(selected) === ".html"
               ? "no-cache"
-              : /\/(assets|effects|fonts|art)\//.test(u.pathname)?"public,max-age=31536000,immutable":"public,max-age=3600",
+              : /\/(assets|effects|fonts|art|brand)\//.test(u.pathname)?"public,max-age=31536000,immutable":"public,max-age=3600",
           "content-security-policy":
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
           "x-content-type-options": "nosniff",
@@ -293,7 +293,7 @@ function createWeb({
       }
       if (pth === "/auth/status" && req.method === "GET")
         return json(res, 200, {
-          data: { initialized: (await repo.list("user")).some((x) => x.admin) },
+          data: { initialized: (await repo.list("user")).some((x) => x.admin),siteNotice:process.env.WEB_DOMAIN_NOTICE||"" },
         });
       if (
         [
@@ -336,6 +336,7 @@ function createWeb({
           user: accounts.publicUser(auth.user),
           csrf: auth.session.csrf,
           expiresAt: auth.session.expiresAt,
+          siteNotice:process.env.WEB_DOMAIN_NOTICE||"",
         });
       if (pth === "/auth/logout" && p) {
         await repo.put(
@@ -480,7 +481,10 @@ function createWeb({
       }
       if (rest === "/members" && p)
         return answer(await accounts.setMember(a, p));
-      if (rest === "/invite" && p) return answer(await accounts.invite(a));
+      if (rest === "/invite" && p) return answer(await accounts.invite(a,p));
+      if (rest === "/invites" && !p) return answer(await accounts.invites(a,{page:u.searchParams.get("page")}));
+      const inviteRevoke=rest.match(/^\/invites\/([a-f0-9]{64})\/revoke$/);
+      if(inviteRevoke&&p)return answer(await accounts.revokeInvite(a,inviteRevoke[1],p.operationId));
       if (rest === "/settings" && p) {
         return answer(
           await repo.tx("group-settings:" + crypto.randomUUID(), async (r) => {

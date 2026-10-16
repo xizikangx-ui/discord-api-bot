@@ -4,7 +4,7 @@ export function GroupHome({ game, group, members, rooms, Preview, onRoom, onNavi
   return (
     <>
       <section className="panel">
-        <span className="eyebrow">CAMP OVERVIEW</span>
+        <span className="eyebrow">同行者的营地</span>
         <h2>{group?.name}</h2>
         <p>{group?.description || "同伴聚集之处，故事继续之地。"}</p>
         <h3>营地公告</h3>

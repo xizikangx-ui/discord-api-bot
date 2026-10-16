@@ -1,19 +1,19 @@
 import React,{useState,useEffect,useRef} from 'react';
 import {api} from './api';
 import {ItemArt,rarityNames} from './item-art';
-export function Market({groupId,type,revision,prepare,gm=false,onError,blockedReason=""}){
+export function Market({groupId,type,revision,prepare,gm=false,onError,blockedReason="",active=true}){
  const [data,Data]=useState(null),[page,Page]=useState(0),[query,Q]=useState(''),[search,S]=useState(''),[kind,K]=useState(''),[quantity,N]=useState({}),[visible,V]=useState(gm),[catalog,Catalog]=useState([]),[rows,Rows]=useState([{templateId:'',quantity:1}]),[edits,Edits]=useState({}),[loading,L]=useState(false),[submitting,Submit]=useState(false),[catalogQuery,CQ]=useState("");
  const root=useRef(null),sequence=useRef(0),flight=useRef(new Map()),latest=useRef(null);
  latest.current={groupId,type,page,search,kind,gm};
  useEffect(()=>{if(gm){V(true);return;}const o=new IntersectionObserver(([e])=>{if(e.isIntersecting){V(true);o.disconnect();}},{rootMargin:'160px'});if(root.current)o.observe(root.current);return()=>o.disconnect();},[groupId,gm]);
  useEffect(()=>{const t=setTimeout(()=>{S(query);Page(0);},250);return()=>clearTimeout(t);},[query]);
  async function load(){const request=++sequence.current,scope=latest.current;L(true);try{const url='/groups/'+scope.groupId+'/markets/'+scope.type+'?page='+scope.page+'&q='+encodeURIComponent(scope.search)+'&kind='+encodeURIComponent(scope.kind)+(scope.gm?'&manage=1':'');if(!flight.current.has(url)){const promise=api(url);flight.current.set(url,promise);promise.finally(()=>{if(flight.current.get(url)===promise)flight.current.delete(url);}).catch(()=>{});}const r=await flight.current.get(url);if(request===sequence.current&&scope.groupId===latest.current.groupId&&scope.type===latest.current.type)Data(r);}catch(e){if(request===sequence.current)onError?.(e.message);}finally{if(request===sequence.current)L(false);}}
- useEffect(()=>{if(visible)void load();return()=>{sequence.current++;};},[groupId,type,page,search,kind,gm,visible,revision]);
- useEffect(()=>{if(!gm)return;let alive=true;api('/groups/'+groupId+'/gm/collections/catalog?size=100&category=all&q='+encodeURIComponent(catalogQuery)).then(r=>{if(alive)Catalog(r.items.filter(t=>t.published&&(type==='weapon'?['武器','弹药','弹夹','配件']:['防具','饰品']).includes(t.kind)));}).catch(e=>onError?.(e.message));return()=>{alive=false;};},[gm,groupId,type,catalogQuery]);
+ useEffect(()=>{if(active&&visible)void load();return()=>{sequence.current++;};},[groupId,type,page,search,kind,gm,visible,revision,active]);
+ useEffect(()=>{if(!gm||!active)return;let alive=true;api('/groups/'+groupId+'/gm/collections/catalog?size=100&category=all&q='+encodeURIComponent(catalogQuery)).then(r=>{if(alive)Catalog(r.items.filter(t=>t.published&&(type==='weapon'?['武器','弹药','弹夹','配件']:['防具','饰品']).includes(t.kind)));}).catch(e=>onError?.(e.message));return()=>{alive=false;};},[gm,groupId,type,catalogQuery,active]);
  async function execute(command,params){if(submitting)return;Submit(true);try{const saved=await prepare(command,params,gm);if(saved?.status==="committed"&&Array.isArray(params.rows))Rows([{templateId:"",quantity:1}]);void load();}finally{Submit(false);}}
  const name=type==='weapon'?'武器市场':'防具市场',setEdit=(id,key,value)=>Edits(old=>({...old,[id]:{...old[id],[key]:value}}));
  return <section ref={root} className={'market-panel '+type} aria-label={name}><fieldset className="market-controls" disabled={submitting}>
-  <header><div><span className="eyebrow">{type==='weapon'?'WASTELAND ARMORY':'DEFENSIVE EQUIPMENT'}</span><h2>{name}</h2></div><span className={'market-status '+(data?.open?'open':'')}>{data?.open?'营业中':'休市'}</span></header>
+  <header><div><span className="eyebrow">{type==='weapon'?'武器与补给':'防具与饰品'}</span><h2>{name}</h2></div><span className={'market-status '+(data?.open?'open':'')}>{data?.open?'营业中':'休市'}</span></header>
   <p>{gm?'上架冻结模板快照；改价、补货和开关选择保存后生效。':'GM供货 · 有限库存 · 购买后直接入包'}</p>
   {gm&&data&&<button className="primary" onClick={()=>execute('market.toggle',{marketId:type,baseVersion:data.version,open:!data.open})}>{data.open?'关闭市场':'开放市场'}</button>}
   <div className="market-filters"><input aria-label={'搜索'+name} placeholder="搜索商品" value={query} onChange={e=>Q(e.target.value)}/><select aria-label="商品分类" value={kind} onChange={e=>{K(e.target.value);Page(0);}}><option value="">全部分类</option>{data?.kinds.map(k=><option key={k}>{k}</option>)}</select></div>

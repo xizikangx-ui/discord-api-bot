@@ -1,0 +1,13 @@
+{
+  "environment": "Windows isolated Chrome, loopback in-memory game",
+  "checks": [
+    "book identity, path wordmark, title font budget and desktop layout",
+    "whole console keeps RP, target, chat, reply and mocked uploaded attachment; hidden skill/market reads stop",
+    "desktop remembers folded state and selected function independently",
+    "GM creates and revokes unlimited 24-hour invitation from human readable form",
+    "mobile defaults closed, opens selected pane, folds and restores with no horizontal overflow",
+    "desktop and mobile login page uses new book identity"
+  ],
+  "errors": [],
+  "firstScreenFontBytes": 52988
+}

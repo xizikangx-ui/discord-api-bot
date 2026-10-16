@@ -396,7 +396,10 @@ function playerView(s, uid, { roomIds, fields } = {}) {
     ),
     result = {
       get dashboard(){const b=p&&battles.find(b=>b.actors.some(a=>a.userId===uid&&!a.deathId&&(!a.characterId||a.characterId===p.id))),a=b?.actors.find(a=>a.userId===uid),m=maps.find(m=>m.participants?.[uid]);
-        return {player:p?{id:p.id,name:p.name,hp:p.hp,ap:p.ap,balance:p.balance,level:p.level,stats:M.stats(p),health:H.snapshot(p),tickets:p.tickets,conditions:p.conditions.map(c=>({name:c.template?.name,severity:c.severity})),inventoryCount:Object.keys(p.inventory).length}:null,
+        const tasks=[];
+        if(b){for(const h of require('../rpg/aoe').hits(b).filter(h=>h.targetId===a.id))tasks.push({key:h.id,text:'待防守 · '+b.name,system:{battleId:b.id,hitId:h.id,kind:'webDefense'}});if(b.status==='active'&&b.current?.actorId===a.id)tasks.push({key:b.id,text:'轮到你行动 · '+b.name,system:{battleId:b.id}});}
+        for(const map of maps){for(const r of Object.values(map.moves||{}))if(r.status==='pending'&&r.members.includes(uid))tasks.push({key:r.id,text:'全队移动待确认 · '+map.name,system:{mapId:map.id}});if(map.participants?.[uid]&&require('../rpg/rp').waiting(map))tasks.push({key:map.id,text:'等待环境描述 · '+map.name,system:{mapId:map.id}});}
+        return {tasks,player:p?{id:p.id,name:p.name,hp:p.hp,ap:p.ap,balance:p.balance,level:p.level,stats:M.stats(p),health:H.snapshot(p),tickets:p.tickets,conditions:p.conditions.map(c=>({name:c.template?.name,severity:c.severity})),inventoryCount:Object.keys(p.inventory).length}:null,
           battle:b?{id:b.id,name:b.name,status:b.status,actorId:a.id,turnId:b.current?.id,isTurn:b.current?.actorId===a.id,quick:b.current?.actorId===a.id?b.current.quick:0,formal:b.current?.actorId===a.id?b.current.formal:0,actionRound:b.actionRound,nextCost:B.opportunityCost(b,a.id),pending:require('../rpg/aoe').hits(b).filter(h=>h.targetId===a.id).map(h=>({id:h.id,expiresAt:h.expiresAt})),restrictions:actionRestrictions(b,p,uid)}:null,
           map:m?{id:m.id,name:m.name,status:m.status,cell:m.participants[uid].cell}:null,
           offers:Object.values(s.offers).filter(o=>[o.creatorId,o.targetId].includes(uid)&&['editing','ready'].includes(o.status)).map(o=>({id:o.id,status:o.status})),

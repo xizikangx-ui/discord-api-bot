@@ -19,7 +19,7 @@ const origin='http://127.0.0.1:47840',results={environment:'Windows isolated hea
   await panel('角色');await field('背景').fill('保留在角色表单的背景');
   for(const name of ['背包','技能','探索','战斗','团务','更多']){await panel(name);assert.equal(await page.locator('.composer textarea').inputValue(),'未发送的角色叙述');assert.equal(await page.locator('.chat-page').isVisible(),true);}
   await panel('角色');assert.equal(await field('背景').inputValue(),'保留在角色表单的背景');
-  await page.getByRole('button',{name:'关闭操作面板'}).click();results.checks.push('all seven player toolbar entries render inside chat; chat and form drafts survive panel switches');
+  await drawer.getByRole('button',{name:'收起操作台',exact:true}).click();results.checks.push('all seven player toolbar entries render inside chat; chat and form drafts survive panel switches');
   const start=requests.length,times=[];
   for(let n=0;n<20;n++){
    await page.locator('.composer textarea').fill('增量验收 '+n);
@@ -43,7 +43,7 @@ const origin='http://127.0.0.1:47840',results={environment:'Windows isolated hea
   await drawer.getByRole('button',{name:'背包',exact:true}).click();await drawer.getByRole('button',{name:/验收急救药/}).first().click();await field('数量（批量每件消耗一次快速行动）').fill('2');await drawer.getByRole('button',{name:'使用／治疗',exact:true}).click();results.checks.push('bulk healing item executes from chat bag');
   await panel('探索');await drawer.getByRole('button',{name:/B1/}).click();await drawer.getByRole('button',{name:'发起全队移动',exact:true}).click();await drawer.locator('p:visible').filter({hasText:'全队移动 0,0 → 1,0 · 1/2 已同意'}).first().waitFor();results.checks.push('exploration proposes shared movement from chat');
   await page.screenshot({path:output+'/workspace-desktop-final.png'});
-  await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'关闭操作面板'}).click();await panel('战斗');const box=await drawer.boundingBox();assert.ok(box.width<=390&&box.y>100);assert.equal(await page.locator('.chat-page').isVisible(),true);await page.screenshot({path:output+'/workspace-mobile.png'});results.checks.push('390px mobile uses bottom drawer and keeps chat mounted');
+  await page.setViewportSize({width:390,height:844});if(await drawer.isVisible())await drawer.getByRole('button',{name:'收起操作台',exact:true}).click();await panel('战斗');const box=await drawer.boundingBox();assert.ok(box.width<=390&&box.y>100);assert.equal(await page.locator('.chat-page').isVisible(),true);await page.screenshot({path:output+'/workspace-mobile.png'});results.checks.push('390px mobile uses bottom drawer and keeps chat mounted');
   assert.deepEqual(results.errors,[]);fs.writeFileSync(output+'/workspace-browser.json',JSON.stringify(results,null,2));console.log(JSON.stringify(results));
  }catch(e){results.failure=e.message;fs.writeFileSync(output+'/workspace-browser.json',JSON.stringify(results,null,2));throw e;}finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -102,7 +102,7 @@ export function PlayerPanel({
   if (!p)
     return (
       <section className="panel character-creation">
-        <span className="eyebrow">NEW OPERATIVE</span>
+        <span className="eyebrow">你的故事，从角色开始</span>
         <h2>建立本团角色档案</h2>
         <p>属性在正式提交时生成一次。角色只属于当前跑团。</p>
         <label className="field">
@@ -170,7 +170,7 @@ export function PlayerPanel({
     return (
       <>
         <section className="panel">
-          <span className="eyebrow">OPERATIVE DOSSIER</span>
+          <span className="eyebrow">角色档案</span>
           <h2>
             {p.name} <span className="badge">等级 {p.level}</span>
           </h2>
@@ -892,7 +892,7 @@ function AdvancedInventory({ item, selected, p, form, set, prepare }) {
     </details>
   );
 }
-export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation, compact=false }) {
+export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation, compact=false, active=true }) {
   const [mid, Map] = useState(""),
     [cell, Cell] = useState(""),
     [key, Key] = useState(""),
@@ -906,11 +906,11 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation,
   mapRef.current=m?.id;
   useEffect(()=>{if(navigation?.type==='map')Map(navigation.id);},[navigation?.key]);
   useEffect(()=>{Cell("");Image("");Merchant(null);},[m?.id]);
-  useEffect(()=>{if(image&&m)Image("/api/web/v1/groups/"+groupId+"/map-image/"+m.id+"?v="+game.revision);},[game.revision,m?.id]);
+  useEffect(()=>{if(active&&image&&m)Image("/api/web/v1/groups/"+groupId+"/map-image/"+m.id+"?v="+game.revision);},[active,game.revision,m?.id]);
   return (
     <>
       <section className="panel">
-        <span className="eyebrow">EXPLORE / SHARED FOG</span>
+        <span className="eyebrow">探索未知，共享视野</span>
         <h3>探索地图</h3>
         <Select
           label="地图"
@@ -1132,7 +1132,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation,
     </>
   );
 }
-export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navigation, compact=false }) {
+export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navigation, compact=false, active=true }) {
   const [bid, Battle] = useState(""),
     [action, Action] = useState("attack"),
     [x, X] = useState({
@@ -1152,8 +1152,8 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navi
     p = game.player;
   const set = (k, v) => X((old) => ({ ...old, [k]: v }));
   useEffect(()=>{if(navigation?.type==='battle'){Battle(navigation.id);Image(false);}},[navigation?.key]);
-  const moveRef=useRef(null);moveRef.current=b?.movementFingerprint;
-  useEffect(()=>{let alive=true;Cells([]);Cell(null);if(action==='move'&&myTurn&&b){api('/groups/'+groupId+'/game/movement?battleId='+b.id).then(r=>{if(alive&&r.fingerprint===moveRef.current)Cells(r.cells);}).catch(()=>{});}return()=>{alive=false;};},[b?.id,b?.movementFingerprint,action,myTurn,groupId]);
+  const moveRef=useRef(null),moveSelectionVersion=useRef(null);moveRef.current=b?.movementFingerprint;
+  useEffect(()=>{if(!active)return;let alive=true;if(moveSelectionVersion.current!==b?.movementFingerprint){Cells([]);Cell(null);moveSelectionVersion.current=b?.movementFingerprint;}if(active&&action==='move'&&myTurn&&b){api('/groups/'+groupId+'/game/movement?battleId='+b.id).then(r=>{if(alive&&r.fingerprint===moveRef.current)Cells(r.cells);}).catch(()=>{});}return()=>{alive=false;};},[active,b?.id,b?.movementFingerprint,action,myTurn,groupId]);
   function execute(params = x) {
     prepare("battle.action", {
       battleId: b.id,
@@ -1175,7 +1175,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navi
   return (
     <>
       <section className={"panel "+(compact&&action!=="move"?"battle-map-collapsed":"")}>
-        <span className="eyebrow">TACTICAL BATTLEFIELD</span>
+        <span className="eyebrow">战场纪要</span>
         <h3>战斗面板</h3>
         <Select
           label="战斗"

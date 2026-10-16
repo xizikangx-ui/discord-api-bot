@@ -26,7 +26,7 @@ export function MapWorkspace(props){
   async function loadImage(){const selected=id,version=item?.version,proof=active.current,scope=window.gmSession.guildId;await run(async()=>{const response=await fetch((window.gmMediaBase||'/api/gm/v1')+'/media/map/'+selected+'?gm='+(full?'1':'0')+'&wide=1&v='+version);if(!response.ok)throw Error('静态图暂时无法读取，地图仍可操作。');const blob=await response.blob();if(active.current!==proof||window.gmSession.guildId!==scope)return;const url=URL.createObjectURL(blob);if(imageRef.current)URL.revokeObjectURL(imageRef.current);imageRef.current=url;Image(url);}).catch(()=>{});}
   return <>
     <section className="panel">
-      <div className="section-title"><div><span className="eyebrow">MAP WORKSPACE</span><h3>探索地图</h3></div><button className="primary" onClick={()=>Creating(true)}>＋ 新建地图</button></div>
+      <div className="section-title"><div><span className="eyebrow">地图编绘</span><h3>探索地图</h3></div><button className="primary" onClick={()=>Creating(true)}>＋ 新建地图</button></div>
       <div className="toolbar"><select aria-label="选择管理地图" value={id} onChange={e=>Id(e.target.value)}><option value="">选择已有地图</option>{id&&!items.some(m=>m.id===id)&&<option value={id}>{item?.name||'新建地图'}</option>}{items.map(m=><option key={m.id} value={m.id}>{m.name} · {labels[m.status]||m.status}</option>)}</select><button disabled={!page} onClick={()=>Page(page-1)}>上一页</button><span>{total} 张地图</span><button disabled={(page+1)*25>=total} onClick={()=>Page(page+1)}>下一页</button></div>
       {!id&&!creating&&<p className="empty-note">点击“新建地图”，填写名称和主题即可生成草稿。发布后玩家才能加入。</p>}
       {item&&!creating&&<>
