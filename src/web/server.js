@@ -24,6 +24,7 @@ function createWeb({
   renderer: providedRenderer,
 }) {
   const metrics=require('./metrics').createMetrics();
+  const background=require('./background-tasks').createBackgroundTasks(()=>metrics.gauge('notification.failure',1));
   const repo =
       repository || require("./repository").createRepository(pool, crypt),
     content =
@@ -38,7 +39,7 @@ function createWeb({
   let backups;
   let ready = false,
     server,
-    websocket;
+    websocket, heartbeat, stopPromise;
   const accounts = require("./accounts").createAccounts(repo, {
     bootstrapHash,
     changed: (uid) => {
@@ -70,9 +71,9 @@ function createWeb({
   }
   const chat = require("./chat").createChat(repo, accounts, {
       broadcast: (room, event) => {
-        void emit(room, event, true);
+        background.run(() => emit(room, event, true));
         if (["message", "deleted"].includes(event.type))
-          void notifyUnread(room, event.data.sequence).catch(() => {});
+          background.run(() => notifyUnread(room, event.data.sequence));
       },
     }),
     library = require("./library").createLibrary(content),
@@ -83,7 +84,7 @@ function createWeb({
       library,
       chat,
       ...gameCrypt,
-      broadcast: (group, event) => void emit(group, event),
+      broadcast: (group, event) => background.run(() => emit(group, event)),
       metrics,
     });
   async function notifyUnread(roomId, sequence) {
@@ -1056,7 +1057,7 @@ function createWeb({
     games.start();
     void deletion.resume();
     deletionTimer=setInterval(()=>void deletion.resume().catch(()=>{}),30000);deletionTimer.unref();
-    const heartbeat = setInterval(async () => {
+    heartbeat = setInterval(() => background.run(async () => {
       for (const ws of sockets) {
         if (!ws.alive) {
           ws.terminate();
@@ -1072,7 +1073,7 @@ function createWeb({
           ws.close(4003, "权限失效");
         }
       }
-    }, 30000);
+    }), 30000);
     heartbeat.unref();
     server.once("close", () => clearInterval(heartbeat));
     backups = require("./backup").createBackups({
@@ -1089,8 +1090,11 @@ function createWeb({
     if (process.env.WEB_TEST_DIAGNOSTICS !== "1") backups.start();
     return server.address();
   }
-  async function stop() {
+  function stop() { return stopPromise ||= stopNow(); }
+  async function stopNow() {
     ready = false;
+    background.seal();
+    clearInterval(heartbeat);
     metrics.stop();
     clearInterval(deletionTimer);
     await deletion.drain();
@@ -1098,6 +1102,7 @@ function createWeb({
     for (const ws of sockets) ws.close(1001, "网站维护");
     await games.stop();
     await Promise.allSettled([...pending.values()]);
+    await background.drain();
     renderer.close();
     websocket?.close();
     if (server)
@@ -1125,11 +1130,11 @@ function createWeb({
 }
 module.exports = { createWeb };
 if (require.main === module) {
-  let app, db;
-  const shutdown = async () => {
+  let app, db, shutdownPromise;
+  const shutdown = () => shutdownPromise ||= (async () => {
     await app?.stop();
     await db?.close();
-  };
+  })();
   process.on("SIGTERM", () => void shutdown());
   process.on("SIGINT", () => void shutdown());
   (async () => {
