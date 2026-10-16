@@ -7,6 +7,7 @@ const C = require("../rpg/constants"),
   S = require("./security"),
   D = require("../rpg/action-drafts");
 const playerCommands = {
+  "market.purchase": "购买市场货品",
   "character.roll": "生成／重掷角色",
   "character.confirm": "确认角色",
   "character.profile": "角色资料",
@@ -107,6 +108,7 @@ function normalizeAction(s, uid, p) {
   return x;
 }
 function applyPlayer(s, uid, command, p) {
+  if(command==='market.purchase')return require('../rpg/markets').purchase(s,uid,p);
   if(command==="merchant.trade"){const V=require("../rpg/merchant"),f=V.quote(s,uid,p.mapId,p.cell,p.mode,p.itemId,p.quantity);return V.execute(s,uid,f.id);}
   if (command === "character.roll")
     return M.rollCharacter(s, uid, p.name, !!p.reroll);
@@ -393,6 +395,15 @@ function playerView(s, uid, { roomIds, fields } = {}) {
       (b) => visible(b) && b.status !== "ended",
     ),
     result = {
+      get dashboard(){const b=p&&battles.find(b=>b.actors.some(a=>a.userId===uid&&!a.deathId&&(!a.characterId||a.characterId===p.id))),a=b?.actors.find(a=>a.userId===uid),m=maps.find(m=>m.participants?.[uid]);
+        return {player:p?{id:p.id,name:p.name,hp:p.hp,ap:p.ap,balance:p.balance,level:p.level,stats:M.stats(p),health:H.snapshot(p),tickets:p.tickets,conditions:p.conditions.map(c=>({name:c.template?.name,severity:c.severity})),inventoryCount:Object.keys(p.inventory).length}:null,
+          battle:b?{id:b.id,name:b.name,status:b.status,actorId:a.id,turnId:b.current?.id,isTurn:b.current?.actorId===a.id,quick:b.current?.actorId===a.id?b.current.quick:0,formal:b.current?.actorId===a.id?b.current.formal:0,actionRound:b.actionRound,nextCost:B.opportunityCost(b,a.id),pending:require('../rpg/aoe').hits(b).filter(h=>h.targetId===a.id).map(h=>({id:h.id,expiresAt:h.expiresAt})),restrictions:actionRestrictions(b,p,uid)}:null,
+          map:m?{id:m.id,name:m.name,status:m.status,cell:m.participants[uid].cell}:null,
+          offers:Object.values(s.offers).filter(o=>[o.creatorId,o.targetId].includes(uid)&&['editing','ready'].includes(o.status)).map(o=>({id:o.id,status:o.status})),
+          lootCount:p?Object.values(s.corpses||{}).filter(c=>visible(s.battles[c.battleId]||{})&&c.eligible?.[uid]===p.id&&require('./battle-loot').ready(s,s.battles[c.battleId])&&c.items.some(i=>!c.claims?.[i.id])).length:0,
+          cards:p?C.RARITIES.map(r=>({rarity:r.id,quantity:Object.values(p.inventory).filter(i=>i.snapshot.kind==='卡牌'&&i.snapshot.rarity===r.id).reduce((n,i)=>n+i.quantity,0)})):[]};},
+      get containers(){return Object.values(s.containerDefinitions||require('../rpg/containers').definitions()).map(d=>({name:d.name,grade:d.grade,enabled:d.enabled,count:p?.tickets.boxes[d.name]||0}));},
+      get markets(){return Object.values(s.markets||{}).map(m=>({id:m.id,name:m.name,open:m.open,version:m.version,available:Object.values(m.listings).filter(e=>e.enabled&&e.remaining>0&&s.catalog[e.template.id]?.published).length}));},
       get actionDrafts() { return Object.values(s.forms).filter(
         (f) =>
           f.kind === "webAction" &&
@@ -513,7 +524,7 @@ function playerView(s, uid, { roomIds, fields } = {}) {
       })); },
       get offers() { return Object.values(s.offers).filter((o) =>
         [o.creatorId, o.targetId].includes(uid),
-      ); },
+      ).map(o=>({...o,sides:Object.fromEntries(Object.entries(o.sides).map(([owner,side])=>[owner,{...side,items:side.items.map(i=>{const t=s.players[owner]?.inventory[i.id]?.snapshot;return {...i,...(t?{snapshot:{name:t.name,kind:t.kind,rarity:t.rarity}}:{})};})}]))})); },
       get coupons() { return Object.values(s.couponPools)
         .filter((t) => (p?.couponBalances?.[t.id] || 0) > 0)
         .map((t) => ({ ...t, balance: p.couponBalances[t.id] })); },

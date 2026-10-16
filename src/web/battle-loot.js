@@ -47,4 +47,4 @@ function rewardSummary(state, battleId) {
   }
   return lines.join('\n');
 }
-module.exports = { view, forBattle, needsBackfill, rewardSummary };
+module.exports = { ready, view, forBattle, needsBackfill, rewardSummary };

@@ -43,6 +43,7 @@ function grantBatch(s,rows){
 }
 function editable(b){ok(b&&['recruiting','paused'].includes(b.status)&&!b.pending,'请先暂停并完成待防守结算。');}
 function apply(s,user,command,p){
+  if(command.startsWith('market.'))return require('./markets').manage(s,command,p);
   if(command==='templates.publish')return publishBatch(s,p.rows,user);
   if(command==='grant')return grantBatch(s,p.rows);
   if(command==='character.key'){const i=M.player(s,p.uid).inventory[p.itemId];ok(i?.snapshot.kind==='钥匙'&&M.available(s,p.uid,p.itemId)>0,'钥匙不存在或被预留。');i.keyCharges=C.number(p.quantity,'次数',0,100000);return {name:i.snapshot.name,keyCharges:i.keyCharges};}
@@ -127,7 +128,7 @@ function rowsFor(command,p){
 function guards(s,command,p){const rows=rowsFor(command,p),refs=[];const add=(source,id)=>{ok(s[source]?.[id],'引用已删除，请重新选择。');refs.push({source,id,hash:fingerprint(s[source][id])});};
   if(p.mapId)add('explorations',p.mapId);if(p.battleId){add('battles',p.battleId);for(const a of s.battles[p.battleId].actors)if(a.userId&&s.players[a.userId])add('players',a.userId);}
   if(p.uid)add('players',p.uid);for(const r of rows){if(r.uid)add('players',r.uid);if(r.ref){const src={item:'catalog',skill:'skillTemplates',checkskill:'checkSkillTemplates',coupon:'couponPools'}[r.type];if(src)add(src,r.ref);}if(r.id&&KINDS[r.kind])add(KINDS[r.kind],r.id);}
-  if(p.templateId){const src=command.includes('merchant')?'merchantTemplates':command.startsWith('map.cell')?'roomTemplates':command==='map.restock'?'catalog':command==='battle.condition'?'conditionTemplates':'npcTemplates';add(src,p.templateId);}
+  if(p.templateId){const src=command.startsWith('market.')?'catalog':command.includes('merchant')?'merchantTemplates':command.startsWith('map.cell')?'roomTemplates':command==='map.restock'?'catalog':command==='battle.condition'?'conditionTemplates':'npcTemplates';add(src,p.templateId);}
   if(command==='map.cleanup')for(const id of p.ids||[])add('explorations',id);if(command==='npc.portrait')add('npcTemplates',p.id);if(command==='death.reward')add('deaths',p.id);if(p.buildingMapId)add('explorations',p.buildingMapId);
   if(p.poolId)add('bossPools',p.poolId);if(p.id&&command.startsWith('session.'))add('sessions',p.id);if(p.id&&command.startsWith('check.'))add('checks',p.id);
   const scan=v=>{if(typeof v==='string'){for(const source of Object.values(KINDS)){if(s[source]?.[v])add(source,v);}}else if(Array.isArray(v)){v.forEach(scan);}else if(v&&typeof v==='object'){Object.values(v).forEach(scan);}};scan(p);refs.push({source:'config',hash:fingerprint(s.config)});return [...new Map(refs.map(r=>[r.source+':'+r.id,r])).values()];

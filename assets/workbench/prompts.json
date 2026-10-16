@@ -1,0 +1,470 @@
+[
+  {
+    "kind": "cards",
+    "key": "red",
+    "tool": "image_gen",
+    "prompt": "Wasteland tactical tabletop transparent collectible card illustration; no words or logos."
+  },
+  {
+    "kind": "cards",
+    "key": "gold",
+    "tool": "image_gen",
+    "prompt": "Create ONE matching rarity card icon using the reference card as the style and shape reference. Replace all red/crimson gemstone and energy with warm gold and amber, luxurious golden metal and a solar amber crystal. Preserve the exquisite weathered tactical fantasy card construction, crisp details and complete centered silhouette. One card only. No words, letters, numbers, logos, hands, scene or background. Isolated on a truly transparent alpha background, no opaque backdrop. This is the gold rarity card variant for the same game UI.\n"
+  },
+  {
+    "kind": "cards",
+    "key": "purple",
+    "tool": "image_gen",
+    "prompt": "Create ONE matching rarity card icon using the reference card as the style and shape reference. Replace all red/crimson gemstone and energy with violet and amethyst, dark silver metal and a violet arcane crystal. Preserve the exquisite weathered tactical fantasy card construction, crisp details and complete centered silhouette. One card only. No words, letters, numbers, logos, hands, scene or background. Isolated on a truly transparent alpha background, no opaque backdrop. This is the purple rarity card variant for the same game UI.\n"
+  },
+  {
+    "kind": "cards",
+    "key": "blue",
+    "tool": "image_gen",
+    "prompt": "Create ONE matching rarity card icon using the reference card as the style and shape reference. Replace all red/crimson gemstone and energy with cobalt blue and cyan, gunmetal and a sapphire tactical crystal. Preserve the exquisite weathered tactical fantasy card construction, crisp details and complete centered silhouette. One card only. No words, letters, numbers, logos, hands, scene or background. Isolated on a truly transparent alpha background, no opaque backdrop. This is the blue rarity card variant for the same game UI.\n"
+  },
+  {
+    "kind": "cards",
+    "key": "green",
+    "tool": "image_gen",
+    "prompt": "Create ONE matching rarity card icon using the reference card as the style and shape reference. Replace all red/crimson gemstone and energy with emerald green, weathered steel and an emerald life-energy crystal. Preserve the exquisite weathered tactical fantasy card construction, crisp details and complete centered silhouette. One card only. No words, letters, numbers, logos, hands, scene or background. Isolated on a truly transparent alpha background, no opaque backdrop. This is the green rarity card variant for the same game UI.\n"
+  },
+  {
+    "kind": "cards",
+    "key": "white",
+    "tool": "image_gen",
+    "prompt": "Create ONE matching rarity card icon using the reference card as the style and shape reference. Replace all red/crimson gemstone and energy with ivory white and cool silver, brushed steel and a clear quartz crystal. Preserve the exquisite weathered tactical fantasy card construction, crisp details and complete centered silhouette. One card only. No words, letters, numbers, logos, hands, scene or background. Isolated on a truly transparent alpha background, no opaque backdrop. This is the white rarity card variant for the same game UI.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "大衣",
+    "tool": "image_gen",
+    "prompt": "Create one premium game inventory illustration of a heavy long charcoal trench coat with accessible patch pockets, folded loosely as a loot container. Wasteland tactical tabletop art, hand painted semi-realistic 3D object, restrained worn materials, high detail, crisp recognizable silhouette, three-quarter isometric view, complete object centered with generous transparent margins, subtle warm highlights and cool shadows. Isolated transparent alpha background, no ground plane, no scene, no cast shadow outside the object, no text, no letters, no numbers, no logo, no border, no labels. Single object only. Square canvas. Distinct everyday container recognizable on a small mobile inventory tile.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "外套",
+    "tool": "image_gen",
+    "prompt": "Create one premium game inventory illustration of a short weathered olive field jacket with chest cargo pockets, folded loosely as a loot container. Wasteland tactical tabletop art, hand painted semi-realistic 3D object, restrained worn materials, high detail, crisp recognizable silhouette, three-quarter isometric view, complete object centered with generous transparent margins, subtle warm highlights and cool shadows. Isolated transparent alpha background, no ground plane, no scene, no cast shadow outside the object, no text, no letters, no numbers, no logo, no border, no labels. Single object only. Square canvas. Distinct everyday container recognizable on a small mobile inventory tile.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "饭盒",
+    "tool": "image_gen",
+    "prompt": "Create one premium game inventory illustration of a rectangular stainless steel lunch box, hinged lid open, divided interior. Wasteland tactical tabletop art, hand painted semi-realistic 3D object, restrained worn materials, high detail, crisp recognizable silhouette, three-quarter isometric view, complete object centered with generous transparent margins, subtle warm highlights and cool shadows. Isolated transparent alpha background, no ground plane, no scene, no cast shadow outside the object, no text, no letters, no numbers, no logo, no border, no labels. Single object only. Square canvas. Distinct everyday container recognizable on a small mobile inventory tile.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "塑料收纳盒",
+    "tool": "image_gen",
+    "prompt": "Create one premium game inventory illustration of a translucent rectangular household storage tub with a blue clip-on lid. Wasteland tactical tabletop art, hand painted semi-realistic 3D object, restrained worn materials, high detail, crisp recognizable silhouette, three-quarter isometric view, complete object centered with generous transparent margins, subtle warm highlights and cool shadows. Isolated transparent alpha background, no ground plane, no scene, no cast shadow outside the object, no text, no letters, no numbers, no logo, no border, no labels. Single object only. Square canvas. Distinct everyday container recognizable on a small mobile inventory tile.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "纸箱",
+    "tool": "image_gen",
+    "prompt": "Create one premium game inventory illustration of a small worn brown corrugated cardboard box with open flaps. Wasteland tactical tabletop art, hand painted semi-realistic 3D object, restrained worn materials, high detail, crisp recognizable silhouette, three-quarter isometric view, complete object centered with generous transparent margins, subtle warm highlights and cool shadows. Isolated transparent alpha background, no ground plane, no scene, no cast shadow outside the object, no text, no letters, no numbers, no logo, no border, no labels. Single object only. Square canvas. Distinct everyday container recognizable on a small mobile inventory tile.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "抽屉",
+    "tool": "image_gen",
+    "prompt": "Create one premium game inventory illustration of a pulled-out wooden furniture drawer with a small brass handle. Wasteland tactical tabletop art, hand painted semi-realistic 3D object, restrained worn materials, high detail, crisp recognizable silhouette, three-quarter isometric view, complete object centered with generous transparent margins, subtle warm highlights and cool shadows. Isolated transparent alpha background, no ground plane, no scene, no cast shadow outside the object, no text, no letters, no numbers, no logo, no border, no labels. Single object only. Square canvas. Distinct everyday container recognizable on a small mobile inventory tile.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "衣柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a tall vintage wooden two-door wardrobe with one door ajar. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "鞋柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a low wooden shoe cabinet with three slanted storage shelves. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "购物袋",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a crinkled reusable plastic shopping bag with loop handles. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "帆布袋",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a khaki canvas tote bag with long cloth handles. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "塑料篮",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: an open red plastic household shopping basket with two swinging handles. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "书柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a tall wooden bookshelf with a few dusty old books and empty shelf space. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "医疗包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a green soft zippered first aid bag with white cross patch. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "旅行包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a worn brown travel duffel bag with leather handles. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "工具包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: an open canvas tool tote with wrench and pliers. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "双肩背包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a weathered olive hiking backpack with twin shoulder straps. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "公文包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a brown leather business briefcase with two metal clasps. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "手提箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a rigid old dark blue suitcase with single handle and two buckles. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows, detailed but clean small-icon readability. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "汽车手套箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a detached vehicle dashboard glove compartment with open drop-down door. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "汽车后备箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a cutaway rear car trunk cargo compartment with raised lid. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "储物柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a single slim gray metal locker with vented door. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "快递周转箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a stackable industrial plastic delivery tote with folding split lid. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "武器箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a rugged olive rectangular rifle transport case with foam interior. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "高级旅行包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a premium weathered leather weekender bag with brass hardware. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn everyday materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "行李箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a hard shell wheeled travel suitcase with telescopic handle. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "摄影器材包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a padded black camera shoulder bag with visible lens dividers. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "电工工具箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a yellow electricians tool box with insulated screwdriver handles. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "机械维修箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a steel mechanic tool chest with red drawers and ratchet set. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "冷藏箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a white portable insulated cooler with blue lid and metal handle. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "药品柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a compact wall-mounted white medicine cabinet with glass doors and bottles. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "消防装备柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a red fire equipment cabinet with hose reel and helmet. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "电脑机箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: an old upright desktop computer tower, side panel ajar. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "小型保险",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a compact square steel lockbox with a mechanical dial. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "实验样本箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a small scientific sample transport case with test tube rack. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "生物运输箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a sealed white bio specimen transport cooler with yellow hazard emblem. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "医疗急救箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a rigid orange emergency medical case with white cross and organized compartments. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "服务器机柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a tall dark server rack with modular units and tiny cyan status lights. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "安保装备柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a steel security equipment locker with vest, radio and helmet. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "电子防潮柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a compact black glass-front camera dry cabinet with humidity dial. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "战术补给箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a rugged green tactical supply crate with reinforced corners. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "档案密集柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a rolling archive shelving cabinet with files and wheel handle. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "保险箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a large thick steel safe with dial, handle and partly open door. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "军需保险箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a reinforced olive military safe with heavy bolts and serial plate without text. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "珠宝保险柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: an ornate dark steel jewelry safe with velvet lined compartments. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "贵重仪器箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a precision instrument transit case with foam fitted scientific equipment. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "涉密文件柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a tall locked metal document cabinet with secure heavy drawers. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "野战指挥箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: an open portable field command chest with folded map, radio and switches. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "武库保险箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: an imposing gun vault with thick armored door and racks. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "银行金库柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a bank vault safe deposit cabinet with rows of small lockable doors. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "文物保管柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a climate controlled museum artifact cabinet with a single ancient ceramic relic. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "特种军械柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a tall reinforced special weapons armory cabinet with tactical equipment. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "核心数据保险柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a futuristic armored data vault with cyan drive modules and reinforced door. Wasteland tactical tabletop style, hand-painted semi-realistic object, worn materials, crisp recognizable silhouette, three-quarter isometric view, entire object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "床头柜",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a small wooden bedside cabinet with one drawer and lower shelf. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "书桌抽屉",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a slim desk drawer pulled out, containing notebook and pencil. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "钥匙收纳盒",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a small wall-mounted key organizer box, open door and hanging keys. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "饼干铁盒",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a round vintage blue cookie tin with lid leaning to the side. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "午餐保温袋",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a small insulated fabric lunch bag with short carry handles and zipper. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "鞋盒",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a rectangular tan shoe box with a detached flat lid. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "布艺收纳袋",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a soft fabric household storage bag with transparent front and two handles. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "洗漱包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a compact zippered toiletry bag opened to reveal small bottles and toothbrush. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "化妆包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a small burgundy makeup pouch opened with brush and compact powder case. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "笔袋",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a slim zippered canvas pencil case with pencils and eraser. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "塑料整理箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a large transparent organizer bin with green locking handles. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "五金零件盒",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: an open compartment organizer box containing screws, bolts and washers. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "缝纫工具盒",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a small wooden sewing box with thread spools, scissors and pincushion. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "家用药箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a white household medicine box with green carry handle and small cross. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "急救腰包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a red first aid waist pouch with belt, zipper and white cross. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "药瓶收纳盒",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a small partitioned bottle organizer caddy containing medicine bottles. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "野餐篮",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a woven wicker picnic basket with hinged lid and cloth liner. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "运动挎包",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a sporty black and orange crossbody gym bag with broad shoulder strap. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "随车急救箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a compact red automobile first aid case with latch and white cross. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  },
+  {
+    "kind": "containers",
+    "key": "带锁收纳箱",
+    "tool": "image_gen",
+    "prompt": "One premium game inventory illustration: a medium dark metal household storage chest with a prominent brass padlock. Wasteland tactical tabletop style, hand-painted semi-realistic everyday object, gently worn materials, crisp recognizable silhouette, three-quarter isometric view, complete object centered with transparent margins. Warm edge highlights, cool shadows. Isolated transparent alpha background. No scene, ground plane, outside cast shadow, text, letters, numbers, logos, border or labels. Single object, square canvas.\n"
+  }
+]

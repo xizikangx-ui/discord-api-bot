@@ -32,6 +32,7 @@ function dependencyIds(entry) {
           "roomIds",
           "npcIds",
           "allowedRooms",
+        "clearConditions",
         ].includes(k)
       )
         ids.add(v);
@@ -272,7 +273,13 @@ function createLibrary(repo) {
       await repo.put('entry',{id,collection:'conditionTemplates',templateId:template.id,version:1,template,at:Date.now(),source:'conditions-v1',approvedBy:'system:owner-approved-pack'},{scope:'conditionTemplates'},r);added++;
     }return {added};
   });}
-  return { published, propose, approve, seed, installConditions };
+  async function installSupplies(){return repo.tx('content:medical-supplies-v1',async r=>{let added=0;
+    for(const template of require('../rpg/medical-supplies').templates()){
+      const id='catalog:'+template.id;if(await repo.get('entry',id,r))continue;
+      await repo.put('entry',{id,collection:'catalog',templateId:template.id,version:1,template,at:Date.now(),source:'medical-supplies-v1',approvedBy:'system:owner-approved-pack'},{scope:'catalog'},r);added++;
+    }return {added};
+  });}
+  return { published, propose, approve, seed, installConditions, installSupplies };
 }
 module.exports = {
   createLibrary,

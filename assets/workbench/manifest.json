@@ -1,0 +1,475 @@
+{
+  "version": 1,
+  "cards": {
+    "red": {
+      "thumb": "/art/8ebbbbfb58bd-thumb-11ac781137d7.webp",
+      "thumbBytes": 7306,
+      "detail": "/art/8ebbbbfb58bd-detail-845b97c02ea9.webp",
+      "detailBytes": 45740
+    },
+    "gold": {
+      "thumb": "/art/594789922538-thumb-7a0b5d630ece.webp",
+      "thumbBytes": 8504,
+      "detail": "/art/594789922538-detail-4b0ac52ce4a7.webp",
+      "detailBytes": 52698
+    },
+    "purple": {
+      "thumb": "/art/5c319b59ebf5-thumb-d177424816dd.webp",
+      "thumbBytes": 8310,
+      "detail": "/art/5c319b59ebf5-detail-e3ea48a2ae55.webp",
+      "detailBytes": 52116
+    },
+    "blue": {
+      "thumb": "/art/796ec2266d6d-thumb-05a8fcb5dd15.webp",
+      "thumbBytes": 8882,
+      "detail": "/art/796ec2266d6d-detail-4ca512fee2b0.webp",
+      "detailBytes": 56548
+    },
+    "green": {
+      "thumb": "/art/1938a5c97a29-thumb-c24b070c0197.webp",
+      "thumbBytes": 9282,
+      "detail": "/art/1938a5c97a29-detail-00b9bfb07171.webp",
+      "detailBytes": 58322
+    },
+    "white": {
+      "thumb": "/art/cb95289beeaa-thumb-245048f7950f.webp",
+      "thumbBytes": 8902,
+      "detail": "/art/cb95289beeaa-detail-ed1d029730f9.webp",
+      "detailBytes": 56376
+    }
+  },
+  "containers": {
+    "大衣": {
+      "thumb": "/art/25b676117497-thumb-290f0ccd648d.webp",
+      "thumbBytes": 8468,
+      "detail": "/art/25b676117497-detail-980bfa78c8bb.webp",
+      "detailBytes": 47574
+    },
+    "外套": {
+      "thumb": "/art/80458ef0e420-thumb-a31f520d5e52.webp",
+      "thumbBytes": 9748,
+      "detail": "/art/80458ef0e420-detail-286b1c6493a0.webp",
+      "detailBytes": 57772
+    },
+    "饭盒": {
+      "thumb": "/art/22de711585cb-thumb-7419ad0a9c0f.webp",
+      "thumbBytes": 9676,
+      "detail": "/art/22de711585cb-detail-c3c20b3805af.webp",
+      "detailBytes": 56628
+    },
+    "塑料收纳盒": {
+      "thumb": "/art/25557d1007d8-thumb-cc36326cfc66.webp",
+      "thumbBytes": 8392,
+      "detail": "/art/25557d1007d8-detail-0170cc2a13fd.webp",
+      "detailBytes": 46672
+    },
+    "纸箱": {
+      "thumb": "/art/b4c3142993aa-thumb-a16dbb24e803.webp",
+      "thumbBytes": 8066,
+      "detail": "/art/b4c3142993aa-detail-7e9304ead6c5.webp",
+      "detailBytes": 47742
+    },
+    "抽屉": {
+      "thumb": "/art/2fbb5e3aea19-thumb-645e705602c4.webp",
+      "thumbBytes": 7874,
+      "detail": "/art/2fbb5e3aea19-detail-f1d004beb655.webp",
+      "detailBytes": 50206
+    },
+    "衣柜": {
+      "thumb": "/art/7ec4644036fb-thumb-184ac2157b77.webp",
+      "thumbBytes": 7966,
+      "detail": "/art/7ec4644036fb-detail-2812417e1db8.webp",
+      "detailBytes": 53744
+    },
+    "鞋柜": {
+      "thumb": "/art/d3ccaebebc3b-thumb-5dad3bf9b919.webp",
+      "thumbBytes": 10740,
+      "detail": "/art/d3ccaebebc3b-detail-4a605d89bbb5.webp",
+      "detailBytes": 67718
+    },
+    "购物袋": {
+      "thumb": "/art/ffc7b9f409f5-thumb-5fb269c0ae2d.webp",
+      "thumbBytes": 9594,
+      "detail": "/art/ffc7b9f409f5-detail-f791e228b91b.webp",
+      "detailBytes": 59850
+    },
+    "帆布袋": {
+      "thumb": "/art/f3c61dd9ae8f-thumb-859c10cb5850.webp",
+      "thumbBytes": 9402,
+      "detail": "/art/f3c61dd9ae8f-detail-4d3e1a18a939.webp",
+      "detailBytes": 53266
+    },
+    "塑料篮": {
+      "thumb": "/art/75b96e49820e-thumb-c842d3bef300.webp",
+      "thumbBytes": 13106,
+      "detail": "/art/75b96e49820e-detail-ecf072c89c66.webp",
+      "detailBytes": 71890
+    },
+    "书柜": {
+      "thumb": "/art/d4f33c4ad472-thumb-712ce46e9b84.webp",
+      "thumbBytes": 6654,
+      "detail": "/art/d4f33c4ad472-detail-a1278e17de80.webp",
+      "detailBytes": 46080
+    },
+    "医疗包": {
+      "thumb": "/art/ba40a000987e-thumb-ada68f864095.webp",
+      "thumbBytes": 10326,
+      "detail": "/art/ba40a000987e-detail-2f33ad394d02.webp",
+      "detailBytes": 74478
+    },
+    "旅行包": {
+      "thumb": "/art/0a2d98c0380a-thumb-1b6ee491bf72.webp",
+      "thumbBytes": 10164,
+      "detail": "/art/0a2d98c0380a-detail-844d616e0356.webp",
+      "detailBytes": 61648
+    },
+    "工具包": {
+      "thumb": "/art/e3e614d29099-thumb-7363bff40f95.webp",
+      "thumbBytes": 12048,
+      "detail": "/art/e3e614d29099-detail-9243e2db2706.webp",
+      "detailBytes": 75230
+    },
+    "双肩背包": {
+      "thumb": "/art/41df5505ea6e-thumb-0f3257968e4c.webp",
+      "thumbBytes": 13302,
+      "detail": "/art/41df5505ea6e-detail-487eeb52e7d7.webp",
+      "detailBytes": 83226
+    },
+    "公文包": {
+      "thumb": "/art/f3226738f0ec-thumb-a351f2e1bbff.webp",
+      "thumbBytes": 10158,
+      "detail": "/art/f3226738f0ec-detail-6e551fbe0d8a.webp",
+      "detailBytes": 64316
+    },
+    "手提箱": {
+      "thumb": "/art/c49a7652fdfb-thumb-f6230e433849.webp",
+      "thumbBytes": 9646,
+      "detail": "/art/c49a7652fdfb-detail-42c91a6f821c.webp",
+      "detailBytes": 67346
+    },
+    "汽车手套箱": {
+      "thumb": "/art/b9e4f58231b9-thumb-f0a2038f6e47.webp",
+      "thumbBytes": 7978,
+      "detail": "/art/b9e4f58231b9-detail-9af68446aac7.webp",
+      "detailBytes": 47838
+    },
+    "汽车后备箱": {
+      "thumb": "/art/3523d3b2104e-thumb-60a24ed11118.webp",
+      "thumbBytes": 11510,
+      "detail": "/art/3523d3b2104e-detail-61df33b823dc.webp",
+      "detailBytes": 75170
+    },
+    "储物柜": {
+      "thumb": "/art/40fb7c672bdd-thumb-90ff7482ba44.webp",
+      "thumbBytes": 6162,
+      "detail": "/art/40fb7c672bdd-detail-7bd0b6a6b8e3.webp",
+      "detailBytes": 35804
+    },
+    "快递周转箱": {
+      "thumb": "/art/e07a63867717-thumb-80591588742b.webp",
+      "thumbBytes": 9220,
+      "detail": "/art/e07a63867717-detail-019e4b145dba.webp",
+      "detailBytes": 54076
+    },
+    "武器箱": {
+      "thumb": "/art/5690c54c01c1-thumb-40f8cb7fd95e.webp",
+      "thumbBytes": 10642,
+      "detail": "/art/5690c54c01c1-detail-baa3078fe3b2.webp",
+      "detailBytes": 64368
+    },
+    "高级旅行包": {
+      "thumb": "/art/4af8de8cb74e-thumb-2525649f91c9.webp",
+      "thumbBytes": 11816,
+      "detail": "/art/4af8de8cb74e-detail-5b0be2097d73.webp",
+      "detailBytes": 71120
+    },
+    "行李箱": {
+      "thumb": "/art/6e4c7081e31c-thumb-48d2ef809277.webp",
+      "thumbBytes": 8708,
+      "detail": "/art/6e4c7081e31c-detail-54c34c041005.webp",
+      "detailBytes": 54214
+    },
+    "摄影器材包": {
+      "thumb": "/art/770a6bdfaaee-thumb-e4399326979d.webp",
+      "thumbBytes": 11892,
+      "detail": "/art/770a6bdfaaee-detail-b1887d793ce0.webp",
+      "detailBytes": 74770
+    },
+    "电工工具箱": {
+      "thumb": "/art/7c4c3992eb3c-thumb-20dbf7a7bc1f.webp",
+      "thumbBytes": 12498,
+      "detail": "/art/7c4c3992eb3c-detail-aed13a4402c5.webp",
+      "detailBytes": 72754
+    },
+    "机械维修箱": {
+      "thumb": "/art/d0630b445a45-thumb-9919b6f01369.webp",
+      "thumbBytes": 10858,
+      "detail": "/art/d0630b445a45-detail-be5bd6b66491.webp",
+      "detailBytes": 67486
+    },
+    "冷藏箱": {
+      "thumb": "/art/5ba06201ffb4-thumb-a4dde33abad6.webp",
+      "thumbBytes": 11242,
+      "detail": "/art/5ba06201ffb4-detail-0d257b26502b.webp",
+      "detailBytes": 69790
+    },
+    "药品柜": {
+      "thumb": "/art/98dc08b0887c-thumb-64deee5ac84d.webp",
+      "thumbBytes": 10606,
+      "detail": "/art/98dc08b0887c-detail-34b7fd356dfd.webp",
+      "detailBytes": 67568
+    },
+    "消防装备柜": {
+      "thumb": "/art/08985382c582-thumb-a6713afb9efb.webp",
+      "thumbBytes": 10048,
+      "detail": "/art/08985382c582-detail-79170f53d3b6.webp",
+      "detailBytes": 64412
+    },
+    "电脑机箱": {
+      "thumb": "/art/a8d5e23eb568-thumb-cd33b125f6a8.webp",
+      "thumbBytes": 11046,
+      "detail": "/art/a8d5e23eb568-detail-24bbba61da36.webp",
+      "detailBytes": 74522
+    },
+    "小型保险": {
+      "thumb": "/art/4b6f3e5344ec-thumb-3b3b64672294.webp",
+      "thumbBytes": 10646,
+      "detail": "/art/4b6f3e5344ec-detail-d8d6823ae233.webp",
+      "detailBytes": 74226
+    },
+    "实验样本箱": {
+      "thumb": "/art/4c585a5be755-thumb-8056731ca60e.webp",
+      "thumbBytes": 10998,
+      "detail": "/art/4c585a5be755-detail-d9a23b88b4f7.webp",
+      "detailBytes": 67372
+    },
+    "生物运输箱": {
+      "thumb": "/art/491aa8ab9185-thumb-1d977211db84.webp",
+      "thumbBytes": 10496,
+      "detail": "/art/491aa8ab9185-detail-82bedf5f9f1f.webp",
+      "detailBytes": 59556
+    },
+    "医疗急救箱": {
+      "thumb": "/art/c6f063be7d93-thumb-08d1a608de20.webp",
+      "thumbBytes": 12414,
+      "detail": "/art/c6f063be7d93-detail-ec9e73667e8e.webp",
+      "detailBytes": 71490
+    },
+    "服务器机柜": {
+      "thumb": "/art/a7cb31dad0ac-thumb-cbbcb9fe740e.webp",
+      "thumbBytes": 6702,
+      "detail": "/art/a7cb31dad0ac-detail-a434d0e3b6a5.webp",
+      "detailBytes": 47962
+    },
+    "安保装备柜": {
+      "thumb": "/art/b4d71ee64b4a-thumb-125b675d9d37.webp",
+      "thumbBytes": 8906,
+      "detail": "/art/b4d71ee64b4a-detail-1676b34d9ed1.webp",
+      "detailBytes": 60218
+    },
+    "电子防潮柜": {
+      "thumb": "/art/ea6d03a694c0-thumb-174055e04f5d.webp",
+      "thumbBytes": 7660,
+      "detail": "/art/ea6d03a694c0-detail-d3b88e0a3cb5.webp",
+      "detailBytes": 49876
+    },
+    "战术补给箱": {
+      "thumb": "/art/96c15f97a16b-thumb-bd6117944aea.webp",
+      "thumbBytes": 9886,
+      "detail": "/art/96c15f97a16b-detail-24c83fbb7e0e.webp",
+      "detailBytes": 63130
+    },
+    "档案密集柜": {
+      "thumb": "/art/353c1da9491f-thumb-6b1fc8bc7ea0.webp",
+      "thumbBytes": 10050,
+      "detail": "/art/353c1da9491f-detail-1df62da0e498.webp",
+      "detailBytes": 67338
+    },
+    "保险箱": {
+      "thumb": "/art/bd9955e4cffe-thumb-3b6a7fd2ee7b.webp",
+      "thumbBytes": 10206,
+      "detail": "/art/bd9955e4cffe-detail-dbfa05859a96.webp",
+      "detailBytes": 71576
+    },
+    "军需保险箱": {
+      "thumb": "/art/d346b32c943d-thumb-2eaadaaa604d.webp",
+      "thumbBytes": 10576,
+      "detail": "/art/d346b32c943d-detail-ea820c7e6206.webp",
+      "detailBytes": 71334
+    },
+    "珠宝保险柜": {
+      "thumb": "/art/4781b73ced1e-thumb-252dfba81e1d.webp",
+      "thumbBytes": 11508,
+      "detail": "/art/4781b73ced1e-detail-c47a3abeccab.webp",
+      "detailBytes": 77986
+    },
+    "贵重仪器箱": {
+      "thumb": "/art/8dea60bc3ab3-thumb-06d391a89bf3.webp",
+      "thumbBytes": 10178,
+      "detail": "/art/8dea60bc3ab3-detail-3709a63bd825.webp",
+      "detailBytes": 56480
+    },
+    "涉密文件柜": {
+      "thumb": "/art/2bb7aa0c8a86-thumb-343415126b0a.webp",
+      "thumbBytes": 7456,
+      "detail": "/art/2bb7aa0c8a86-detail-0d41ef94e519.webp",
+      "detailBytes": 51316
+    },
+    "野战指挥箱": {
+      "thumb": "/art/96b56525e669-thumb-712ffd92ea06.webp",
+      "thumbBytes": 12090,
+      "detail": "/art/96b56525e669-detail-566dca19f0b0.webp",
+      "detailBytes": 78104
+    },
+    "武库保险箱": {
+      "thumb": "/art/b9bf987f78db-thumb-aac64a3393a9.webp",
+      "thumbBytes": 12240,
+      "detail": "/art/b9bf987f78db-detail-e801fa569d3c.webp",
+      "detailBytes": 81406
+    },
+    "银行金库柜": {
+      "thumb": "/art/35f6b31536e4-thumb-82a031df2418.webp",
+      "thumbBytes": 11048,
+      "detail": "/art/35f6b31536e4-detail-656fb9001e83.webp",
+      "detailBytes": 74796
+    },
+    "文物保管柜": {
+      "thumb": "/art/236a2ca21893-thumb-5c771a82579a.webp",
+      "thumbBytes": 9444,
+      "detail": "/art/236a2ca21893-detail-a039886abf30.webp",
+      "detailBytes": 62576
+    },
+    "特种军械柜": {
+      "thumb": "/art/91e570c29194-thumb-55348aec1a3b.webp",
+      "thumbBytes": 10576,
+      "detail": "/art/91e570c29194-detail-70525d0bedd5.webp",
+      "detailBytes": 69850
+    },
+    "核心数据保险柜": {
+      "thumb": "/art/6f0eb8fe0767-thumb-9bed8cc64cd1.webp",
+      "thumbBytes": 11556,
+      "detail": "/art/6f0eb8fe0767-detail-20093cceacc1.webp",
+      "detailBytes": 74126
+    },
+    "床头柜": {
+      "thumb": "/art/2c3a711da430-thumb-513bcfbb365f.webp",
+      "thumbBytes": 9036,
+      "detail": "/art/2c3a711da430-detail-9447935702de.webp",
+      "detailBytes": 55108
+    },
+    "书桌抽屉": {
+      "thumb": "/art/0f6093a93d24-thumb-11e27d7489c5.webp",
+      "thumbBytes": 8264,
+      "detail": "/art/0f6093a93d24-detail-ff89c18abed9.webp",
+      "detailBytes": 52128
+    },
+    "钥匙收纳盒": {
+      "thumb": "/art/315676cdb23f-thumb-cad424bd0620.webp",
+      "thumbBytes": 12916,
+      "detail": "/art/315676cdb23f-detail-b38be430f92e.webp",
+      "detailBytes": 89652
+    },
+    "饼干铁盒": {
+      "thumb": "/art/8b5564b55c4f-thumb-ddcd0308dea4.webp",
+      "thumbBytes": 9416,
+      "detail": "/art/8b5564b55c4f-detail-a605ebbaa8a4.webp",
+      "detailBytes": 63798
+    },
+    "午餐保温袋": {
+      "thumb": "/art/feeb340ba77e-thumb-1bb8cfe25b34.webp",
+      "thumbBytes": 9394,
+      "detail": "/art/feeb340ba77e-detail-573ae15d6eb4.webp",
+      "detailBytes": 61162
+    },
+    "鞋盒": {
+      "thumb": "/art/2b1c32d5c07a-thumb-e2d00386ff71.webp",
+      "thumbBytes": 6168,
+      "detail": "/art/2b1c32d5c07a-detail-d745a5cddf63.webp",
+      "detailBytes": 32574
+    },
+    "布艺收纳袋": {
+      "thumb": "/art/23cdd230277b-thumb-bea8d35f6888.webp",
+      "thumbBytes": 11100,
+      "detail": "/art/23cdd230277b-detail-b5bfd720a6f5.webp",
+      "detailBytes": 70396
+    },
+    "洗漱包": {
+      "thumb": "/art/de5d62349672-thumb-b139d988b7d4.webp",
+      "thumbBytes": 10712,
+      "detail": "/art/de5d62349672-detail-c2e9779b241d.webp",
+      "detailBytes": 68920
+    },
+    "化妆包": {
+      "thumb": "/art/24481006d9e1-thumb-303d05a8ff87.webp",
+      "thumbBytes": 9976,
+      "detail": "/art/24481006d9e1-detail-87ce1b8386c4.webp",
+      "detailBytes": 63860
+    },
+    "笔袋": {
+      "thumb": "/art/6823a24aa50c-thumb-89811a35c9a8.webp",
+      "thumbBytes": 8344,
+      "detail": "/art/6823a24aa50c-detail-110f88a33a79.webp",
+      "detailBytes": 55450
+    },
+    "塑料整理箱": {
+      "thumb": "/art/9fb0b3fcbc44-thumb-06538b050815.webp",
+      "thumbBytes": 9346,
+      "detail": "/art/9fb0b3fcbc44-detail-d26920e7c80c.webp",
+      "detailBytes": 57956
+    },
+    "五金零件盒": {
+      "thumb": "/art/cab0656b1dc1-thumb-709b9f05e60e.webp",
+      "thumbBytes": 11452,
+      "detail": "/art/cab0656b1dc1-detail-d254bffbd0df.webp",
+      "detailBytes": 73390
+    },
+    "缝纫工具盒": {
+      "thumb": "/art/fb769bb36caf-thumb-a6d80df20220.webp",
+      "thumbBytes": 11426,
+      "detail": "/art/fb769bb36caf-detail-2edd9d875328.webp",
+      "detailBytes": 75408
+    },
+    "家用药箱": {
+      "thumb": "/art/3883256da30a-thumb-d8cbc18a10c3.webp",
+      "thumbBytes": 9910,
+      "detail": "/art/3883256da30a-detail-ea71a363ab7f.webp",
+      "detailBytes": 51646
+    },
+    "急救腰包": {
+      "thumb": "/art/bc1c514ca29f-thumb-0f211878d716.webp",
+      "thumbBytes": 8900,
+      "detail": "/art/bc1c514ca29f-detail-821e334e2cff.webp",
+      "detailBytes": 55554
+    },
+    "药瓶收纳盒": {
+      "thumb": "/art/cb23502b058f-thumb-7788215f1fb1.webp",
+      "thumbBytes": 10484,
+      "detail": "/art/cb23502b058f-detail-40fc740472f0.webp",
+      "detailBytes": 70610
+    },
+    "野餐篮": {
+      "thumb": "/art/cf7b5bf6d737-thumb-39d36a208832.webp",
+      "thumbBytes": 13630,
+      "detail": "/art/cf7b5bf6d737-detail-e9ec1b011023.webp",
+      "detailBytes": 80596
+    },
+    "运动挎包": {
+      "thumb": "/art/1837e5b4e354-thumb-3868f129602e.webp",
+      "thumbBytes": 9276,
+      "detail": "/art/1837e5b4e354-detail-bab877898a3d.webp",
+      "detailBytes": 53340
+    },
+    "随车急救箱": {
+      "thumb": "/art/e4d75d5467d2-thumb-ae631313bb07.webp",
+      "thumbBytes": 8182,
+      "detail": "/art/e4d75d5467d2-detail-9519ea6bf178.webp",
+      "detailBytes": 50570
+    },
+    "带锁收纳箱": {
+      "thumb": "/art/ca02fac525ee-thumb-f5aedd11343e.webp",
+      "thumbBytes": 10210,
+      "detail": "/art/ca02fac525ee-detail-299f8c41f767.webp",
+      "detailBytes": 63192
+    }
+  }
+}

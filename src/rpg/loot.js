@@ -54,7 +54,7 @@ function generate(state, box, rng = randomInt, luck = 1, existingContainer = fal
   for (let n = 0; n < size; n++) {
     const r = rarity(state, box, rng, luck, batch.rates);
     let pool = Object.values(state.catalog).filter(t => t.published && t.rarity === r.id &&
-      (box === 'card' ? t.kind === '卡牌' : (t.boxes || []).includes(box)));
+      (box === 'card' ? t.kind === '卡牌' : require('./containers').sources(box).some(name=>(t.boxes || []).includes(name))));
     if (!pool.length && box === 'card') pool = [{ id: 'blank_' + r.id, version: 1, kind: '卡牌', name: r.name + '色空白卡牌',
       rarity: r.id, weight: 0, value: 0, effects: [], traitIds: [], uniqueText: '等待GM定义能力。', description: '同色占位卡牌。' }];
     C.requireThat(pool.length, '该箱型的' + r.name + '色掉落池未配置。');

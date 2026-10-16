@@ -98,6 +98,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
     }
     const conditionBefore=C.clone(state), conditionPack=require('./conditions').install(state);
     if(conditionPack){state.revision++;state.events.push({id:'rpg-conditions-v1',at:Date.now(),actorId:actor(),label:'安装基础异常内容',result:conditionPack,revision:state.revision});if(database)await database.save(guild,conditionBefore,state);else await persist(guild,state);}
+    if(state.supplyContainersVersion!==1){const beforeSupplies=C.clone(state),report=require('./containers').install(state);state.revision++;state.events.push({id:'rpg-supply-containers-v1',at:Date.now(),actorId:actor(),label:'补齐生活与医疗容器',result:report,revision:state.revision});if(database)await database.save(guild,beforeSupplies,state);else await persist(guild,state);}
     states.set(guild, state); frozen.delete(guild);
     return C.clone(state);
   }

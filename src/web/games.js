@@ -195,7 +195,7 @@ function createGames({
       deriveDelivery: derive,
       metrics,
     }),
-    loading = new Map(), stamps=new Map();
+    loading = new Map(), stamps=new Map(),versionCache=require('./versions').createVersionCache();
   let timer,
     pumping = false,
     stopped = false,
@@ -217,10 +217,11 @@ function createGames({
           (r) => r.kind === "system",
         )?.id;
         s.platform = "web";
+        require('../rpg/markets').initialize(s);
         require("../rpg/skills").migrate(s);
         require("../rpg/ammunition").migrate(s);
         const entries = await library.published();
-        if (entries.some(e=>e.source!=="conditions-v1"))
+        if (entries.some(e=>!["conditions-v1","medical-supplies-v1"].includes(e.source)))
           for (const collection of L.collections) if(collection!=="conditionTemplates")s[collection] = {};
         L.applySync(s, entries, L.planSync(s, entries));
         await database.save(id, null, s);
@@ -230,6 +231,7 @@ function createGames({
     loading.set(id, job);
     try {
       await job;
+      if(store.select(id,s=>s.webMarketVersion!==1))await store.transact(id,'web-markets-v1','system:web',s=>require('../rpg/markets').initialize(s),'初始化关闭的营地市场',{delivery:false});
       if(!stamps.has(id))stamps.set(id,versions(id).sectionVersions);
       if(store.select(id,needsLifecycle))await store.transact(id,'web-lifecycle-recover:'+store.select(id,s=>s.revision),'system:web',()=>({recovered:true}),'恢复战斗结束检查');
       if (store.select(id, Loot.needsBackfill))
@@ -831,6 +833,7 @@ function createGames({
     }
   }
   const unsubscribe = store.onCommit((group,change) => {
+    if(change)versionCache.commit(change.before,change.next);
     const sections=change?Sections.changed(change.before,change.next):Object.keys(Sections.definitions),v=versions(group);
     const next={...v.sectionVersions};for(const key of sections)next[key]=v.revision;stamps.set(group,next);
     if(sections.length)broadcast(group, {
@@ -865,12 +868,12 @@ function createGames({
       await pumpPromise;
       await store.drain();
     },
-    view: async (group, uid, sections=null) => {
+    view: async (group, uid, sections=null,context=null) => {
       const done=metrics?.start('game.read');
       try{
-      const a=await authorize(group, uid);
+      const a=context||await authorize(group, uid);
       const roomIds = new Set((await chat.rooms(group, uid,undefined,a)).map((r) => r.id));
-      return store.select(group, (s) => ({...P.playerView(s, uid, { roomIds,fields:sections&&Sections.fields(sections) }),...versions(group),sections,versions:require("./versions").versions(s,{uid,roomIds,gm:["admin","gm"].includes(a.role),sources:sections&&Sections.sources(sections)})}));
+      return store.select(group, (s) => ({...P.playerView(s, uid, { roomIds,fields:sections&&Sections.fields(sections) }),...versions(group),sections,versions:versionCache.get(s,{uid,roomIds,gm:["admin","gm"].includes(a.role),sources:sections&&Sections.sources(sections)})}));
       }finally{done?.();}
     },
   };

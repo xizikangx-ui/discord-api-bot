@@ -1,6 +1,8 @@
 const SkillBook=React.lazy(()=>import("./skills").then(m=>({default:m.SkillBook})));
 import {freshKills} from "./kill-effects";
 import { BattleLoot } from "./battle-loot";
+import {workbenchArt} from "./item-art";
+window.workbenchArt=workbenchArt;
 import { notificationTarget } from "./notification-target";
 import { GroupHome, MemberDirectory, ChannelManager } from "./community";
 import React, { useState, useEffect, useRef, Suspense } from "react";
@@ -11,9 +13,11 @@ import {Result} from "../../gm-web/src/result";
 import {Field,SearchSelect} from "../../gm-web/src/controls";
 const gmComponent=name=>React.lazy(()=>import("../../gm-web/src/main").then(m=>({default:m[name]})));
 const Templates=gmComponent('Templates'),Grant=gmComponent('Grant'),World=gmComponent('World'),Commands=gmComponent('Commands'),Audit=gmComponent('Audit');
+const Workbench=React.lazy(()=>import('./workbench').then(m=>({default:m.Workbench})));
+const Market=React.lazy(()=>import('./market').then(m=>({default:m.Market})));
 const playerComponent=name=>React.lazy(()=>import("./players").then(m=>({default:m[name]})));
 const PlayerPanel=playerComponent('PlayerPanel'),ExplorePanel=playerComponent('ExplorePanel'),BattlePanel=playerComponent('BattlePanel'),ActivitiesPanel=playerComponent('ActivitiesPanel');
-import {allSections,mergeGame,refreshQueue,unreadEvent,markRead} from './refresh-state';
+import {allSections,visibleSections,mergeGame,refreshQueue,unreadEvent,markRead} from './refresh-state';
 import {chatTasks} from './chat-tasks';
 import {roomMessages,mergeMessages} from "./chat-state";
 import "./style.css";
@@ -217,6 +221,7 @@ function Keep({ show, children }) {
   return seen || show ? <div hidden={!show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></div> : null;
 }
 function PendingTasks({game,userId,onNavigate,onOpen}){const tasks=chatTasks(game,userId);return tasks.length?<div className="chat-tasks" aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}>{t.text}</button>)}</div>:null;}
+function ConsoleStatus({data}){const p=data?.player,b=data?.battle;if(!p)return null;return <div className="console-status" aria-label="常驻角色状态"><b>{p.name}</b><span>HP {p.health.hp}/{p.health.maxHP}</span><span className={p.health.downed?'danger':''}>倒地 {p.health.reserveHP}/{p.health.maxHP}</span><span>AP {p.ap}</span>{b&&<><span>轮 {b.actionRound?.number||1} · {b.actionRound?.counts?.[b.actorId]||0} 次</span><span>下次 {b.nextCost} AP</span><span>快 {b.quick} / 正 {b.formal}</span></>}</div>;}
 function App() {
   const [me, Me] = useState(null),
     [booting, Boot] = useState(true),
@@ -252,7 +257,7 @@ function App() {
   const ws = useRef(null),
     active = useRef({}),
     seenDeaths=useRef(new Set()),liveReady=useRef(false),prefsRef=useRef(null),
-    refreshTimer = useRef(null),
+    refreshTimer = useRef(null),deferredSections=useRef(new Map()),
     busyRef = useRef(false),
     pendingRef = useRef(null),
     gameRef=useRef(null), readQueues=useRef(new Map()),directoryGroup=useRef(null),epoch=useRef(0),
@@ -261,7 +266,7 @@ function App() {
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
-  active.current = { groupId, roomId, scope };
+  active.current = { groupId, roomId, scope,tab };
   pendingRef.current=pendingOperation;gameRef.current=game;
   prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"tactical";
   useEffect(()=>{if(!killEffect)return;const t=setTimeout(()=>KillEffect(null),2100);return()=>clearTimeout(t);},[killEffect]);
@@ -284,10 +289,11 @@ function App() {
     const g=active.current.groupId;if(!g)return;
     const generation=epoch.current;
     if(!readQueues.current.has(g))readQueues.current.set(g,refreshQueue(
-      async keys=>api('/groups/'+g+'/game'+(gameRef.current?'?sections='+keys.join(','):'')),
-      data=>{if(active.current.groupId!==g||epoch.current!==generation)return;if(!liveReady.current){for(const id of data.historicalDeathIds||[])seenDeaths.current.add(id);liveReady.current=true;}gameRef.current=mergeGame(gameRef.current,data);Game(gameRef.current);}
+      async keys=>api('/groups/'+g+'/game?sections='+keys.join(',')),
+      data=>{if(active.current.groupId!==g||epoch.current!==generation)return;if(!liveReady.current){for(const id of data.historicalDeathIds||[])seenDeaths.current.add(id);liveReady.current=true;}gameRef.current=mergeGame(gameRef.current,data);Game(gameRef.current);},
+      (k,v)=>v<0||(gameRef.current?.sectionVersions?.[k]??-1)<v
     ));
-    const jobs=[readQueues.current.get(g)(options.sections||allSections)];
+    const jobs=[readQueues.current.get(g)(options.sections||visibleSections(active.current.tab,gameRef.current),options.expected||{})];
     if(directoryGroup.current!==g||options.directory){directoryGroup.current=g;jobs.push(Promise.all([api('/groups/'+g+'/rooms'),api('/groups/'+g+'/members')]).then(([r,m])=>{if(active.current.groupId===g&&epoch.current===generation){Rooms(r);Members(m);}}).catch(e=>{if(epoch.current===generation)directoryGroup.current=null;throw e;}));}
     await Promise.all(jobs);
   }
@@ -315,7 +321,7 @@ function App() {
     window.gmMediaBase = "/api/web/v1" + base;
     window.gmDirect=true;
     window.gmSession = { guildId: groupId, userId: me.user.id };
-    if (gm)
+    if (gm && active.current.tab==="gm")
       Promise.all([api(base + "/schemas"), api(base + "/directory")])
         .then(([s, d]) => {
           if (active.current.groupId !== groupId) return;
@@ -327,10 +333,15 @@ function App() {
         })
         .catch((e) => E(e.message));
   }, [groupId, me?.user.id, gm]);
+  useEffect(()=>{if(!groupId||!me)return;void refresh({sections:visibleSections(tab,gameRef.current)}).catch(e=>E(e.message));
+    if(gm&&tab==='gm'&&!schema){const base='/groups/'+groupId+'/gm';const target=groupId;Promise.all([api(base+'/schemas'),api(base+'/directory')]).then(([s,d])=>{if(active.current.groupId!==target)return;Schema(s);window.gmSchema=s;window.gmDirectory=d;window.gmBoxes=s.boxes;Object.assign(labels,s.attributeLabels);}).catch(e=>E(e.message));}
+  },[tab,groupId,me?.user.id,gm]);
+  useEffect(()=>{if(tab==='chat'&&(game?.dashboard?.battle||game?.dashboard?.map))void refresh({sections:visibleSections(tab,game)}).catch(()=>{});},[game?.dashboard?.battle?.id,game?.dashboard?.map?.id]);
+  useEffect(()=>{if(game?.dashboard&&!game.dashboard.player&&game.sectionVersions.core===undefined)void refresh({sections:['core']}).catch(()=>{});},[!!game?.dashboard,game?.dashboard?.player?.id,groupId]);
   useEffect(()=>{
     if(!groupId||!me||!foreground)return;
     let alive=true,pending=false;
-    async function check(){if(pending)return;pending=true;try{const v=await api('/groups/'+groupId+'/version');if(!alive||active.current.groupId!==groupId)return;const keys=allSections.filter(k=>v.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]);if(keys.length)await refresh({sections:keys});}catch{}finally{pending=false;}}
+    async function check(){if(pending)return;pending=true;try{const v=await api('/groups/'+groupId+'/version');if(!alive||active.current.groupId!==groupId)return;const keys=visibleSections(active.current.tab,gameRef.current).filter(k=>v.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]);if(keys.length)await refresh({sections:keys,expected:v.sectionVersions});}catch{}finally{pending=false;}}
     void check();const timer=setInterval(check,5000);return()=>{alive=false;clearInterval(timer);};
   },[groupId,me?.user.id,foreground]);
   useEffect(() => {
@@ -365,7 +376,7 @@ function App() {
         const kills=freshKills(event,seenDeaths.current,liveReady.current);if(kills.length&&prefsRef.current?.killEffects!==false)KillEffect({id:kills.join(":"),count:kills.length});
         if(event.type==='room-unread'){Rooms(old=>unreadEvent(old,event.data));}
         else if(event.type==='state'){
-          if(document.visibilityState==='visible')refresh({sections:event.data.sections||allSections}).catch(e=>E(e.message));
+          if(busyRef.current&&pendingRef.current){for(const key of event.data.sections||allSections)deferredSections.current.set(key,event.data.revision);}else if(document.visibilityState==='visible')refresh({sections:(event.data.sections||allSections).filter(k=>visibleSections(active.current.tab,gameRef.current).includes(k)&&event.data.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]),expected:event.data.sectionVersions}).catch(e=>E(e.message));
         } else if(event.type==='permissions') {
           epoch.current++;directoryGroup.current=null;readQueues.current.clear();refresh({directory:true}).catch(()=>{});
         } else ChatEvent(event);
@@ -410,8 +421,10 @@ function App() {
     } finally {
       busyRef.current=false;
       B(false);
+      const keys=[...deferredSections.current].filter(([k,v])=>visibleSections(active.current.tab,gameRef.current).includes(k)&&(gameRef.current?.sectionVersions?.[k]??-1)<v).map(([k])=>k);deferredSections.current.clear();if(keys.length)void refresh({sections:keys}).catch(()=>{});
     }
   }
+  async function runChat(fn){try{return await fn();}catch(e){E(e.message);throw e;}}
   async function prepare(command, params, isGM = false) {
     if (command === "storage.recover") {
       await run(async () => {
@@ -422,12 +435,12 @@ function App() {
     }
     if(pendingOperation){await run(()=>checkDirect()).catch(()=>{});return;}
     const targetGroup=groupId, operationId=id(), request={groupId:targetGroup,operationId,command,params,isGM};
-    await run(async()=>{
+    return await run(async()=>{
       PendingOperation(request);saveLocal('pendingOperation',request);
       try{
-        const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:game?.versions});
+        const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:gameRef.current?.versions,includePatch:true,sections:[...new Set([...visibleSections(active.current.tab,gameRef.current),'dashboard','core','market'])].filter(k=>k!=='management').join(',')});
         if(active.current.groupId!==targetGroup)return;
-        R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');await refresh();
+        if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,r.gamePatch);Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
       }catch(e){
         if(active.current.groupId!==targetGroup)throw e;
         if(['CONFLICT','VALIDATION','FORBIDDEN','NOT_FOUND'].includes(e.code)){
@@ -442,9 +455,9 @@ function App() {
   }
   async function checkDirect(request=pendingOperation){
     if(!request)return;
-    const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId);
+    const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId+'?includePatch=1&sections='+visibleSections(active.current.tab,gameRef.current).concat('core','market').join(','));
     if(active.current.groupId!==request.groupId || pendingRef.current?.operationId!==request.operationId)return;
-    if(r.status==='committed'){E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');await refresh();}
+    if(r.status==='committed'){if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,r.gamePatch);Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
     else if(r.status==='uncommitted'){PendingOperation(null);saveLocal('pendingOperation',null);N('权威记录确认此操作未保存。填写内容已保留，可重新提交。');}
     else N(r.status==='processing'?'原操作仍在处理中，请稍后查询。':'保存结果尚未明确，修改保持暂停。');
     return r;
@@ -717,8 +730,8 @@ function App() {
           </section>
         ) : (
           <>
-            <div className={"chat-workspace "+(tab!=="chat"?"with-panel":"")+(tab==="gm"?" gm-workspace":"")}><div hidden={tab==="gm"} className="chat-page">
-              <div className="player-toolbar" aria-label="玩家工具栏">{[["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]].map(([k,name])=><button key={k} className={tab===k?"active":""} onClick={()=>Tab(tab===k?"chat":k)}>{name}</button>)}</div>
+            <div className={"chat-workspace with-panel "+(tab==="chat"?" console-collapsed":"")+(tab==="gm"?" gm-workspace":"")}><div hidden={tab==="gm"} className="chat-page">
+              <div className="player-toolbar" aria-label="玩家工具栏"><button className={tab==="chat"?"active":""} onClick={()=>Tab(tab==="chat"?"console":"chat")}>行动台</button>{[["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]].map(([k,name])=><button key={k} className={tab===k?"active":""} onClick={()=>Tab(tab===k?"chat":k)}>{name}</button>)}</div>
               {game?.player&&<div className="chat-character" aria-label="当前角色状态"><strong>{game.player.name}</strong><span>HP {game.player.hp}/{game.player.stats.maxHP}</span>{game.player.health.downed&&<span className="urgent">倒地生命 {game.player.health.reserveHP}/{game.player.stats.maxHP}</span>}<span>AP {game.player.ap}</span>{game.player.conditions.length>0&&<span>异常 {game.player.conditions.length} 项</span>}</div>}
               <PendingTasks game={game} userId={me.user.id} onNavigate={navigateNotice} onOpen={Tab}/>
               {result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看个人结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}
@@ -730,8 +743,8 @@ function App() {
                   chatEvent,
                   members,
                   rooms,
-                  run,
-                  busy,
+                  run:runChat,
+                  busy:false,
                   game,
                   prepare,
                   navigateNotice,
@@ -743,8 +756,9 @@ function App() {
                 onRead={(id,sequence)=>Rooms(old=>markRead(old,id,sequence))}
               />
             </div>
-            <div className={"page-content "+(tab!=="gm"?"player-drawer":"")} key={groupId} hidden={tab === "chat"}>
-              <header className="drawer-header"><b>{({character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b><button onClick={()=>Tab("chat")} aria-label="关闭操作面板">×</button></header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
+            <div className={"page-content "+(tab!=="gm"?"player-drawer":"")} key={groupId}>
+              <header className="drawer-header"><div><ConsoleStatus data={tab!=="gm"?game?.dashboard:null}/><b>{({console:"玩家一体操作台",chat:"玩家一体操作台",character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b></div><button onClick={()=>Tab("chat")} aria-label="关闭操作面板">×</button></header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
+              <Keep show={tab==="chat"||tab==="console"}>{game&&<Workbench {...{game,groupId,prepare,run,refresh,busy}} userId={me.user.id} error={E} onOpen={(target,detail)=>{if(detail)Navigation({...detail,key:id()});Tab(target);}}/>}</Keep>
               <Keep show={tab==="more"}><section className="panel service-menu"><h3>营地服务</h3>{[["home","公告与未读"],["library","公共模板库"],["settings","成员、私聊与账号"],["bag","收藏柜与兑换券"],["activities","规则与名词"]].map(([k,name])=><button key={k} onClick={()=>Tab(k)}>{name}</button>)}</section></Keep>
               <Keep show={tab === "home"}>
                 <GroupHome {...{ game, group, members, rooms, Preview }} onRoom={openRoom} onNavigate={navigateNotice} />
@@ -753,6 +767,7 @@ function App() {
                 {game && (
                   <PlayerPanel
                     tab={tab}
+                    navigation={navigation}
                     game={game}
                     groupId={groupId}
                     userId={me.user.id}
@@ -790,6 +805,7 @@ function App() {
                         ["maps", "地图管理"],
                         ["battles", "战斗管理"],
                         ["content", "内容与公示"],
+                        ["markets", "营地市场"],
                         ["audit", "记录与审计"],
                       ].map(([k, v]) => (
                         <button
@@ -813,6 +829,7 @@ function App() {
                     <Keep show={gmTab === "battles"}>
                       <World {...common} kind="battles" navigation={navigation} />
                     </Keep>
+                    <Keep show={gmTab === "markets"}><Market {...{groupId}} type="weapon" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/><Market {...{groupId}} type="armor" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/></Keep>
                     <Keep show={gmTab === "content"}>
                       <Commands
                         {...common}

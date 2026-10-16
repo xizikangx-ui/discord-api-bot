@@ -2136,8 +2136,8 @@ test('rule autocomplete reaches new chapters beyond Discord choice limit and sti
 const Pack=require('../src/rpg/content-pack'),Containers=require('../src/rpg/containers'),Variants=require('../src/rpg/room-variants'),Strength=require('../src/rpg/npc-strength'),Layout=require('../src/rpg/random-layout'),RP=require('../src/rpg/rp'),Clean=require('../src/rpg/map-cleanup');
 function expanded(){const s=state();Pack.install(s);return s;}
 function seededRng(seed){let z=seed;return(a,b)=>{z=(Math.imul(z,1664525)+1013904223)>>>0;return a+z%(b-a);};}
-test('expansion content pack adds 52 containers, 240 unique modern props, 20 categories and monsters once',()=>{
- const s=expanded(),props=Object.values(s.catalog).filter(t=>t.id.startsWith('modern_'));assert.equal(C.BOXES.length,52);assert.equal(props.length,240);assert.equal(new Set(props.map(t=>t.name)).size,240);
+test('expansion content pack adds 72 containers, 240 unique modern props, 20 categories and monsters once',()=>{
+ const s=expanded(),props=Object.values(s.catalog).filter(t=>t.id.startsWith('modern_'));assert.equal(C.BOXES.length,72);assert.equal(props.length,240);assert.equal(new Set(props.map(t=>t.name)).size,240);
  const oldNames=new Set(Object.values(s.catalog).filter(t=>t.id.startsWith('seed_')).map(t=>t.name));for(const p of props){assert.ok(!oldNames.has(p.name));assert.ok(p.description.length>7);assert.ok(p.weight>=0&&p.value>0);assert.ok(p.tags.length&&p.boxes.length);assert.equal(p.kind,'杂物');assert.deepEqual(p.effects,[]);}
  assert.deepEqual(L.COLORS.map(c=>props.filter(p=>p.rarity===c).length),[60,60,50,40,20,10]);assert.equal(Object.keys(s.npcTemplates).length,20);assert.equal(Object.keys(s.mapCategories).length,20);assert.equal(Object.keys(s.roomTemplates).length,20);assert.equal(s.contentMigration.report.variants,200);assert.equal(Pack.install(s),null);
 });

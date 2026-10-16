@@ -174,6 +174,9 @@ async function main() {
       const q=M.newCharacter('验收队友',{strength:6,constitution:6,mind:5,appearance:4,intelligence:5,agility:6,knowledge:5});q.userId=partner;s.players[partner]=q;x.join(s,m,partner);
       const coupon=require('../../src/rpg/coupons'),pool=coupon.publish(s,{name:'验收补给券',description:'隔离验收',mode:'bundle',entries:[{ref:medicine.id,quantity:1}]});coupon.grant(s,pool.id,[{uid:u.id,characterId:p.id,quantity:1}]);
       const lootId=C.id('i');enemy.inventory[lootId]={...C.clone(i),id:lootId};
+      const Market=require('../../src/rpg/markets');Market.manage(s,'market.save',{marketId:'weapon',id:'demo-sword',templateId:t.id,quantity:5,price:10});Market.manage(s,'market.toggle',{marketId:'weapon',baseVersion:1,open:true});
+      p.tickets.boxes['医疗包']=2;p.tickets.boxes['抽屉']=1;
+      for(const rarity of ['white','green','blue','purple','gold','red'])M.receive(p,M.makeItem({id:'qa-card-'+rarity,version:1,published:true,kind:'卡牌',name:'验收卡牌',rarity,weight:0,value:0,effects:[],traitIds:[]},1));
       m.cells['1,0']={x:1,y:0,type:'corridor'};
     }
     battle.actors.push({id:C.id('a'),name:enemy.name,team:'enemy',character:enemy,x:45,y:25,retreated:false,humanoid:process.env.WEB_DEMO_WORKSPACE==='1',baseXP:3,ai:{mode:process.env.WEB_DEMO_WORKSPACE==='1'?'auto':'manual'}});battle.width=3;battle.height=3;B.start(s,battle,null,(lo)=>lo);

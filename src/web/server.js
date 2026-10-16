@@ -252,6 +252,7 @@ function createWeb({
               ".css": "text/css; charset=utf-8",
               ".svg": "image/svg+xml",
               ".png": "image/png",
+              ".webp": "image/webp",
               ".gif": "image/gif",
               ".ttf": "font/ttf",
               ".woff2": "font/woff2",
@@ -259,7 +260,7 @@ function createWeb({
           "cache-control":
             path.extname(selected) === ".html"
               ? "no-cache"
-              : /\/(assets|effects|fonts)\//.test(u.pathname)?"public,max-age=31536000,immutable":"public,max-age=3600",
+              : /\/(assets|effects|fonts|art)\//.test(u.pathname)?"public,max-age=31536000,immutable":"public,max-age=3600",
           "content-security-policy":
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
           "x-content-type-options": "nosniff",
@@ -565,14 +566,15 @@ function createWeb({
       }
       if (rest === "/version" && !p)
         return answer(games.versions(group));
-      if (rest === "/game" && !p) return answer(await games.view(group, uid,require('./game-sections').parse(u.searchParams.get('sections'))));
+      if (rest === "/game" && !p) return answer(await games.view(group, uid,require('./game-sections').parse(u.searchParams.get('sections')),a));
+      if(rest.startsWith('/markets/')&&!p){const type=rest.slice('/markets/'.length);return answer(games.store.select(group,s=>require('../rpg/markets').view(s,type,{page:u.searchParams.get('page')||0,q:u.searchParams.get('q')||'',kind:u.searchParams.get('kind')||'',gm:isGM&&u.searchParams.get('manage')==='1'})));}
       if(['/game/execute','/gm/execute'].includes(rest)&&p){
         const key=group+':'+uid+':'+p.operationId;
         if(p.command==='npc.portrait'&&p.params)p.params.mediaId ||= p.params.uploadId;
         const job=games.execute(group,uid,p.command,p.params||{},p.operationId,p.versions,rest==='/gm/execute');pending.set(key,job);
-        try{return answer(await job);}finally{if(pending.get(key)===job)pending.delete(key);}
+        try{const saved=await job;let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');gamePatch=await games.view(group,uid,keys,a);}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...saved,...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
       }
-      if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length);return answer(pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op));}
+      if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length),result=pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op);if(result.status==='committed'&&u.searchParams.get('includePatch')==='1')result.gamePatch=await games.view(group,uid,require('./game-sections').parse(u.searchParams.get('sections')||'dashboard,core,battle,explore,bag,market'),a);return answer(result);}
       if (rest === "/game/preview" && p)
         return answer(
           await games.preview(
@@ -778,7 +780,7 @@ function createWeb({
             "lootPublications",
             "containerDefinitions",
             "couponRedemptions",
-            "merchantTrades",
+            "merchantTrades", "markets", "marketTrades",
           ];
         S.ok(allowed.includes(source), "查询类型无效。");
         let all = Object.values(s[source] || {});
@@ -1050,6 +1052,7 @@ function createWeb({
     ready = true;
     metrics.startReporting(pool);
     await library.installConditions();
+    await library.installSupplies();
     games.start();
     void deletion.resume();
     deletionTimer=setInterval(()=>void deletion.resume().catch(()=>{}),30000);deletionTimer.unref();

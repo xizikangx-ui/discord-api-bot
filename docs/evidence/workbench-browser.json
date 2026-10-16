@@ -1,0 +1,11 @@
+{
+  "environment": "Windows Chrome, loopback in-memory isolation",
+  "checks": [
+    "finite stock purchase applies partial receipt and preserves chat draft",
+    "container collection paginates twelve and searches independently of market",
+    "GM prices, unlists, re-enables and closes each market without confirmation"
+  ],
+  "errors": [],
+  "submitMs": 52,
+  "afterSubmitGameReads": 0
+}

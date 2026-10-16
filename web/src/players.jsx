@@ -2,6 +2,7 @@ import {gridCells} from '../../gm-web/src/ui-state';
 import React, { useState, useEffect, useRef } from "react";
 import { api, id, mediaUrl } from "./api";
 import { Result } from "../../gm-web/src/result";
+import {ItemArt,Art} from "./item-art";
 import { BattleLoot } from "./battle-loot";
 const statuses={active:'进行中',paused:'已暂停',ended:'已结束',recruiting:'招募中',draft:'草稿',editing:'协商中',ready:'待双方同意',completed:'已完成',cancelled:'已取消',expired:'已过期',locked:'未开启',opened:'已开启',claimed:'已领取'};
 const attrs = {
@@ -70,6 +71,7 @@ export function PlayerPanel({
   prepare,
   run,
   refresh,
+  navigation,
 }) {
   const p = game.player,
     [name, Name] = useState(""),
@@ -94,6 +96,7 @@ export function PlayerPanel({
         ...p.profile,
       });
   }, [p?.id]);
+  useEffect(()=>{if(navigation?.type==='inventory')Selected(navigation.id);},[navigation?.key]);
   const item = p?.inventory[selected],
     set = (k, v) => F({ ...form, [k]: v });
   if (!p)
@@ -410,20 +413,7 @@ export function PlayerPanel({
                     }
                     onClick={() => Selected(i.id)}
                   >
-                    {["red", "gold"].includes(i.snapshot.rarity) && (
-                      <img
-                        alt=""
-                        src={
-                          "/api/web/v1/groups/" +
-                          groupId +
-                          "/icons/" +
-                          i.templateId
-                        }
-                        onError={(e) =>
-                          (e.currentTarget.style.display = "none")
-                        }
-                      />
-                    )}
+                    <ItemArt item={i} groupId={groupId}/>
                     <b>{i.snapshot.name}</b>
                     <small>
                       {i.snapshot.kind} · ×{i.quantity}
@@ -459,6 +449,7 @@ export function PlayerPanel({
                   {item.snapshot.kind}
                 </span>
                 <h3>{item.snapshot.name}</h3>
+                <ItemArt item={item} groupId={groupId} size="detail" className="item-detail-art"/>
                 <p>{item.snapshot.description}</p>
                 {item.snapshot.kind === "修复道具" && (
                   <>
@@ -712,6 +703,7 @@ export function PlayerPanel({
           <h3>兑换券</h3>
           {game.coupons.map((c) => (
             <article key={c.id}>
+              <Art kind="container" name={c.box||c.name} className="room-container-art"/>
               <h4>
                 {c.name} · 剩余 {c.balance}
               </h4>
@@ -900,7 +892,7 @@ function AdvancedInventory({ item, selected, p, form, set, prepare }) {
     </details>
   );
 }
-export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation }) {
+export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation, compact=false }) {
   const [mid, Map] = useState(""),
     [cell, Cell] = useState(""),
     [key, Key] = useState(""),
@@ -1140,7 +1132,7 @@ export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation 
     </>
   );
 }
-export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navigation }) {
+export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navigation, compact=false }) {
   const [bid, Battle] = useState(""),
     [action, Action] = useState("attack"),
     [x, X] = useState({
@@ -1182,7 +1174,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navi
   }
   return (
     <>
-      <section className="panel">
+      <section className={"panel "+(compact&&action!=="move"?"battle-map-collapsed":"")}>
         <span className="eyebrow">TACTICAL BATTLEFIELD</span>
         <h3>战斗面板</h3>
         <Select
