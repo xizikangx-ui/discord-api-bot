@@ -13,7 +13,7 @@ function createMedia(
     portraitAllowed = async () => false,
   },
 ) {
-  async function upload(a, p) {
+  async function upload(a, p, { kind } = {}) {
     S.ok(bucket && client, "图片存储尚未配置。", "UNAVAILABLE");
     S.ok(/^[a-zA-Z0-9_-]{8,100}$/.test(p.uploadId || ""), "上传编号无效。");
     const id = S.hash(a.user.id + ":" + p.uploadId);
@@ -44,17 +44,18 @@ function createMedia(
         owner: a.user.id,
         groupId: a.group.id,
         roomId: p.roomId || null,
-        kind: p.roomId ? "chat" : "portrait",
+        kind: p.roomId ? "chat" : kind || "portrait",
         status: "sending",
         key: "media/" + id + ".enc",
         hash: S.hash(image),
         at: Date.now(),
       };
+    const scope = record.kind === "avatar" ? a.user.id : a.group.id;
     const nonce = crypto.randomUUID();
     const reservation = await repo.tx("upload:" + id, async (r) => {
       await accounts.member(a.group.id, a.user.id, r);
       if (p.roomId) await chat.access(a.user.id, p.roomId, r);
-      await repo.put("media", record, { scope: a.group.id }, r);
+      await repo.put("media", record, { scope }, r);
       return { nonce };
     });
     if (reservation.nonce !== nonce) {
@@ -63,6 +64,7 @@ function createMedia(
         old?.owner === a.user.id &&
           old.roomId === record.roomId &&
           old.groupId === record.groupId &&
+          old.kind === record.kind &&
           old.hash === record.hash,
         "上传编号或图片内容冲突。",
         "CONFLICT",
@@ -80,19 +82,29 @@ function createMedia(
         }),
       );
       record.status = "ready";
-      await repo.tx("upload-ready:"+id,async r=>{await accounts.member(a.group.id,a.user.id,r);await repo.put("media", record, { scope: a.group.id },r);return {id};});
+      await repo.tx("upload-ready:"+id,async r=>{await accounts.member(a.group.id,a.user.id,r);await repo.put("media", record, { scope },r);return {id};});
       return { id };
     } catch {
       if(await repo.get("groupDeletion",a.group.id)){await repo.put('mediaCleanup',{id,key:record.key,groupId:a.group.id});try{await client.send(new commands.DeleteObjectCommand({Bucket:bucket,Key:record.key}));await repo.remove('mediaCleanup',id);}catch{/* durable cleanup retries this key */}S.fail("此团已删除，图片不会发布。","NOT_FOUND");}
       record.status = "uncertain";
-      await repo.put("media", record, { scope: a.group.id }).catch(() => {});
+      await repo.put("media", record, { scope }).catch(() => {});
       S.fail("图片上传结果待核对，原操作编号已保留。", "UNCERTAIN");
     }
   }
-  async function read(userId, id) {
+  async function read(userId, id, groupId, messageId) {
     const f = await repo.get("media", id);
     S.ok(f?.status === "ready", "图片不存在。", "NOT_FOUND");
-    await accounts.member(f.groupId, userId);
+    const owner = f.kind === "avatar" ? await repo.get("user", f.owner) : null;
+    if (f.kind === "avatar" && owner?.avatar?.webMediaId === id) {
+      // A published account avatar can be seen in any current shared group.
+      // The group is supplied by the caller and both memberships are rechecked.
+      if(userId===f.owner&&!groupId)await accounts.user(userId);
+      else {
+        const g = groupId || f.groupId;
+        await accounts.member(g, userId);
+        await accounts.member(g, f.owner);
+      }
+    } else await accounts.member(f.groupId, userId);
     if (f.roomId) {
       await chat.access(userId, f.roomId);
       const m = f.messageId && (await repo.findMessage(f.messageId));
@@ -103,9 +115,14 @@ function createMedia(
         "FORBIDDEN",
       );
     }
-    if (!f.roomId)
+    let spoken=false;
+    if(messageId&&f.kind==='portrait'){
+      const message=await repo.findMessage(messageId);
+      if(message&&!message.deleted&&message.speaker?.avatar?.webMediaId===id){const {room}=await chat.access(userId,message.roomId);spoken=room.groupId===f.groupId;}
+    }
+    if (!f.roomId && !(f.kind === "avatar" && owner?.avatar?.webMediaId === id))
       S.ok(
-        f.owner === userId || (await portraitAllowed(userId, f.groupId, id)),
+        f.owner === userId || spoken || (await portraitAllowed(userId, f.groupId, id)),
         "图片尚未用于公开角色资料。",
         "FORBIDDEN",
       );
@@ -137,9 +154,9 @@ function createMedia(
       "UNCERTAIN",
     );
     f.status = "ready";
-    await repo.tx("upload-reconcile:"+id,async r=>{await accounts.member(f.groupId,a.user.id,r);await repo.put("media", f, { scope: f.groupId },r);return {id};});
+    await repo.tx("upload-reconcile:"+id,async r=>{await accounts.member(f.groupId,a.user.id,r);await repo.put("media", f, { scope: f.kind === "avatar" ? f.owner : f.groupId },r);return {id};});
     return { id };
   }
-  return { upload, read, reconcile };
+  return { upload, uploadAvatar: (a,p) => upload(a, { ...p, roomId: null }, { kind: "avatar" }), read, reconcile };
 }
 module.exports = { createMedia };

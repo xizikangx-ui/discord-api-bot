@@ -3,10 +3,10 @@ export const id = () => crypto.randomUUID();
 export function setCsrf(value) {
   csrf = value;
 }
-export async function api(path, body) {
+export async function api(path, body, { timeoutMs = 20000 } = {}) {
   const r = await fetch("/api/web/v1" + path, {
     method: body === undefined ? "GET" : "POST",
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(timeoutMs),
     headers:
       body === undefined
         ? {}

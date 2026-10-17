@@ -132,9 +132,14 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
             kind === "dice"
               ? C.dice(p.expression || body || "1d100", p.mode || "normal")
               : undefined;
-        let characterName;
+        let characterName, speaker;
         if (kind === "rp") {
-          const character = await getCharacter(room.groupId, userId);
+          if(p.npcId){
+            accounts.gm((await access(userId,roomId,r)).a);
+            speaker=await getNPC(room.groupId,p.npcId);
+            S.ok(speaker,'NPC 已变化，请重新选择。','CONFLICT');
+          }
+          const character = speaker || await getCharacter(room.groupId, userId);
           S.ok(character, "请先在此团建卡。");
           characterName = character.name;
         }
@@ -151,13 +156,14 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
           replyTo: reply?.id,
           replySummary: reply
             ? {
-                author: reply.authorName,
+                author: reply.characterName || reply.authorName,
                 text: reply.deleted ? "消息已删除" : reply.text.slice(0, 120),
               }
             : undefined,
           characterName,
+          ...(speaker?{speaker}:{}),
           dice,
-          system: p.system,
+          system: system ? p.system : undefined,
           at: Date.now(),
         };
         await repo.put("room", live, { scope: room.groupId }, r);
@@ -171,10 +177,23 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
         return m;
       },
     );
-    broadcast(roomId, { type: "message", data: result });
-    return result;
+    const displayed = (await withAvatars(room.groupId, [result]))[0];
+    broadcast(roomId, { type: "message", data: displayed });
+    return displayed;
   }
   let getCharacter = async () => null;
+  let getProfiles = async () => ({});
+  let getNPC = async () => null;
+  async function withAvatars(groupId, messages) {
+    const ids = [...new Set(messages.filter(m => !m.deleted && m.kind !== "system").map(m => m.authorId))];
+    const profiles = ids.length ? await getProfiles(groupId, ids) : {};
+    return messages.map(m => {
+      const p = profiles[m.authorId];
+      if (!p || m.deleted || m.kind === "system") return m;
+      return { ...m, accountAvatar: p.avatar || null, characterAvatar: p.characterAvatar || null,
+        avatar: m.kind === "rp" ? p.characterAvatar || p.avatar || null : p.avatar || p.characterAvatar || null };
+    });
+  }
   async function remove(userId, id) {
     const m = await repo.findMessage(id);
     S.ok(m, "消息不存在。");
@@ -216,7 +235,7 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
       : m;
   }
   async function history(userId, roomId, q) {
-    await access(userId, roomId);
+    const { room } = await access(userId, roomId);
     S.ok(
       Number.isSafeInteger(q.after) &&
         q.after >= 0 &&
@@ -224,7 +243,7 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
         q.before >= 0,
       "消息游标无效。",
     );
-    return (await repo.history(roomId, q)).map(visible);
+    return withAvatars(room.groupId, (await repo.history(roomId, q)).map(visible));
   }
   async function update(a, id, p) {
     const value = await repo.tx(
@@ -278,7 +297,7 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
               attachments: [],
             }),
             text: p.text,
-            system: p.system,
+            system: system ? p.system : undefined,
             sequence: ++room.sequence,
             at: Date.now(),
           };
@@ -311,6 +330,8 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
     setCharacterReader: (fn) => {
       getCharacter = fn;
     },
+    setProfileReader: (fn) => { getProfiles = fn; },
+    setNPCReader: fn => { getNPC = fn; },
   };
 }
 module.exports = { createChat };

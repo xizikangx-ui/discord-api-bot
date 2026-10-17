@@ -9,7 +9,9 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     displayName: u.displayName,
     admin: !!u.admin,
     disabled: !!u.disabled,
-    preferences: {artStyle:"magic",killEffects:true,...u.preferences},
+    avatar: u.avatar || null,
+    avatarVersion: u.avatarVersion || 0,
+    preferences: {artStyle:"magic",killEffects:true,messageSound:true,sendShortcut:"ctrlEnter",...u.preferences},
   });
   async function user(id, r) {
     const u = await repo.get("user", id, r);
@@ -211,6 +213,31 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     );
     return { token: secret, expiresAt: Date.now() + 15 * 60000 };
   }
+  function avatarView(u, groupId) {
+    return u?.avatar?.webMediaId
+      ? { ...u.avatar, groupId: groupId || u.avatar.groupId }
+      : null;
+  }
+  async function setAvatar(a, p) {
+    S.ok(/^[a-zA-Z0-9_-]{8,100}$/.test(p.operationId || ""), "操作编号无效。");
+    const baseVersion = p.baseVersion ?? (a.user.avatarVersion || 0);
+    return repo.tx("account-avatar:" + a.user.id + ":" + p.operationId, async r => {
+      await member(a.group.id, a.user.id, r);
+      const u = await repo.get("user", a.user.id, r, true);
+      S.ok((u.avatarVersion || 0) === baseVersion, "头像已在其他页面修改，请刷新后重试。", "CONFLICT");
+      if (p.clear) delete u.avatar;
+      else {
+        const f = await repo.get("media", p.mediaId, r);
+        S.ok(f?.owner === u.id && f.groupId === a.group.id && f.status === "ready" && f.kind === "avatar" && !f.roomId,
+          "请选择本人已完成的头像上传。", "FORBIDDEN");
+        u.avatar = { webMediaId: f.id, groupId: f.groupId, version: (u.avatarVersion || 0) + 1 };
+      }
+      u.avatarVersion = (u.avatarVersion || 0) + 1;
+      u.version++;
+      await repo.put("user", u, { lookup: S.hash(u.name) }, r);
+      return { avatar: avatarView(u, a.group.id), user: publicUser(u) };
+    });
+  }
   const inviteMode = i => i.mode || "single";
   function inviteView(i) {
     return {id:i.id,mode:inviteMode(i),createdAt:i.createdAt || i.expiresAt-7*86400000,expiresAt:i.expiresAt,
@@ -391,6 +418,8 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     recover,
     changePassword,
     resetToken,
+    avatarView,
+    setAvatar,
     invite,
     invites,
     revokeInvite,

@@ -1,0 +1,1 @@
+{"name":"yichang-book-desktop","productName":"异常之书","version":"1.0.0","private":true,"main":"main.cjs","scripts":{"start":"electron .","package":"node package.cjs","test":"node --test test.cjs"},"devDependencies":{"electron":"44.9.0","@electron/packager":"20.3.0"}}

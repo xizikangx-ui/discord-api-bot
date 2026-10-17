@@ -211,11 +211,14 @@ small {
   color: #b4c4b4;
 }
 .message-list {
+  min-height: 0;
   padding: 18px 28px;
   flex: 1;
   overflow: auto;
   scrollbar-color: #4e6558 transparent;
 }
+.chat-bottom { height: 1px; }
+.chat-new-messages { align-self: center; margin: -40px 12px 8px; z-index: 3; border-radius: 24px; background: #353354; color: #f0ecff; box-shadow: 0 3px 16px #0008; }
 .message {
   display: flex;
   gap: 13px;

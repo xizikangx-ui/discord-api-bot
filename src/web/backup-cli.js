@@ -66,8 +66,9 @@ async function restoreImages(storage, crypt, archive, repo, prefix) {
       crypto.createHash("sha256").update(bytes).digest("hex") === image.digest,
       "备份图片摘要不符。",
     );
-    const decoded = crypt.open("image", image.id, bytes),
-      record = await repo.get("media", image.id);
+    const record = await repo.get("media", image.id);
+    S.ok(record,'备份媒体元数据缺失。');
+    const decoded = crypt.open(record.kind==='music'?'audio':'image', image.id, bytes);
     S.ok(
       record && record.hash === S.hash(Buffer.from(decoded.data, "base64")),
       "备份图片与元数据不符。",
@@ -83,7 +84,7 @@ async function restoreImages(storage, crypt, archive, repo, prefix) {
     );
     keys.push(key);
     record.key = key;
-    await repo.put("media", record, { scope: record.groupId });
+    await repo.put("media", record, { scope: record.kind==='avatar'?record.owner:record.groupId });
   }
   return keys;
 }

@@ -74,7 +74,7 @@ function createWeb({
       broadcast: (room, event) => {
         background.run(() => emit(room, event, true));
         if (["message", "deleted"].includes(event.type))
-          background.run(() => notifyUnread(room, event.data.sequence));
+          background.run(() => notifyUnread(room, event.data.sequence, event.data.authorId));
       },
     }),
     library = require("./library").createLibrary(content),
@@ -89,7 +89,8 @@ function createWeb({
       broadcast: (group, event) => background.run(() => emit(group, event)),
       metrics,
     });
-  async function notifyUnread(roomId, sequence) {
+  const music=require('./music').createMusic({repo,accounts,crypt,storage,changed:group=>background.run(()=>emit(group,{type:'music',data:{groupId:group}}))});
+  async function notifyUnread(roomId, sequence, authorId) {
     const room = await repo.get("room", roomId);
     if (!room) return;
     await Promise.allSettled(
@@ -108,7 +109,7 @@ function createWeb({
             ws.send(
               JSON.stringify({
                 type: "room-unread",
-                data: { roomId, sequence },
+                data: { roomId, sequence, authorId },
               }),
             );
           } catch {
@@ -119,30 +120,53 @@ function createWeb({
   }
   chat.setCharacterReader(async (g, u) => {
     await games.ensure(g);
-    return games.store.select(g, (s) => s.players[u]);
+    return games.store.select(g, (s) => s.players[u] ? { name: s.players[u].name } : null);
   });
+  async function avatarProfiles(group, ids) {
+    await games.ensure(group);
+    const characters = games.store.select(group, s => Object.fromEntries(ids.map(id => [id, s.players[id]?.portraits?.avatar || null])));
+    const result = {};
+    await Promise.all(ids.map(async id => {
+      const [u,m] = await Promise.all([repo.get("user",id),repo.get("member",group+":"+id)]);
+      if (!u || u.disabled || (!u.admin && !m?.active)) return;
+      result[id] = { avatar: accounts.avatarView(u,group), avatarVersion: u.avatarVersion || 0,
+        characterAvatar: characters[id]?.webMediaId ? { ...characters[id], groupId: group } : null };
+    }));
+    return result;
+  }
+  chat.setProfileReader(avatarProfiles);
+  async function npcSpeakers(group){
+    await games.ensure(group);
+    return games.store.select(group,s=>[
+      ...Object.values(s.npcTemplates).filter(n=>n.published).map(n=>({id:'template:'+n.id,name:n.name,source:'NPC 模板',avatar:n.portraits?.avatar||null})),
+      ...Object.values(s.battles).filter(b=>b.status!=='ended').flatMap(b=>b.actors.filter(a=>a.character&&!a.userId).map(a=>({id:'actor:'+b.id+':'+a.id,name:a.name,source:b.name,avatar:a.character.portraits?.avatar||null})))
+    ]);
+  }
+  chat.setNPCReader(async(group,id)=>(await npcSpeakers(group)).find(n=>n.id===id)||null);
+  async function notifyAvatar(userId, group, account = false) {
+    const groups = new Set([group]);
+    if(account){
+      const user=await repo.get("user",userId);
+      if(user?.admin){for(const g of await repo.list("group"))if(!g.archived&&!g.deleting)groups.add(g.id);}
+      else {for(const m of await repo.list("member"))if(m.userId===userId&&m.active)groups.add(m.groupId);}
+    }
+    await Promise.allSettled([...groups].map(groupId=>emit(groupId,{type:"avatar",data:{userId,groupId}})));
+  }
   const media = require("./media").createMedia(repo, crypt, {
       ...storage,
       chat,
       accounts,
       portraitAllowed: async (uid, group, id) => {
         const a = await accounts.member(group, uid);
-        const s = games.store.snapshot(group);
-        const has = (p) =>
-          Object.values(p?.portraits || {}).some((f) => f.webMediaId === id);
-        if (Object.values(s.players).some(has)) return true;
-        if (
-          ["admin", "gm"].includes(a.role) &&
-          Object.values(s.npcTemplates).some(has)
-        )
-          return true;
-        return Object.values(s.battles)
-          .filter((b) => b.status !== "ended")
-          .some((b) =>
-            b.actors.some((actor) =>
-              has(require("../rpg/combat").actorCharacter(s, actor)),
-            ),
-          );
+        await games.ensure(group);
+        const found = games.store.select(group,s=>{
+          const has=p=>Object.values(p?.portraits||{}).some(f=>f.webMediaId===id);
+          return { public: Object.values(s.players).some(has) || (["admin","gm"].includes(a.role) && Object.values(s.npcTemplates).some(has)),
+            battles: Object.values(s.battles).filter(b=>b.status!=="ended"&&b.actors.some(actor=>has(require("../rpg/combat").actorCharacter(s,actor)))).map(b=>({channelId:b.channelId})) };
+        });
+        if(found.public)return true;
+        for(const b of found.battles)try{await chat.access(uid,b.channelId,undefined,a);return true;}catch{/* Hidden battle portraits remain private. */}
+        return false;
       },
     }),
     renderer =
@@ -286,11 +310,17 @@ function createWeb({
           "数据库结果待核对，网站修改已暂停。",
           "UNCERTAIN",
         );
+        if(pth.endsWith('/music/upload')){
+          const early=await accounts.session(cookie(req));
+          S.ok(req.headers['x-web-csrf']===early.session.csrf,'请求校验失败，请重新登录。','FORBIDDEN');
+          accounts.gm(await accounts.member(pth.split('/')[2],early.user.id));
+          limit('music-upload:'+early.user.id,6);
+        }
         p = await body(
           req,
-          pth.endsWith("/media") || pth.endsWith("/portraits")
+          pth.endsWith("/media") || pth.endsWith("/portraits") || pth.endsWith("/avatar")
             ? 6 * 1024 * 1024
-            : 2 * 1024 * 1024,
+            : pth.endsWith('/music/upload') ? 17 * 1024 * 1024 : 2 * 1024 * 1024,
         );
       }
       if (pth === "/auth/status" && req.method === "GET")
@@ -389,8 +419,11 @@ function createWeb({
       if (pth === "/groups/join" && p)
         return answer(await accounts.join(auth.user, p.code));
       if(pth==='/preferences' && p){
-        S.ok(['tactical','magic','psychic'].includes(p.artStyle),'请选择战术、魔法或精神风格。');
-        return answer(await repo.tx('preferences:'+uid+':'+crypto.randomUUID(),async r=>{const u=await accounts.user(uid,r);u.preferences={artStyle:p.artStyle,killEffects:p.killEffects!==false};u.version++;await repo.put('user',u,{lookup:S.hash(u.name)},r);return u.preferences;}));
+        if(p.artStyle!==undefined)S.ok(['tactical','magic','psychic'].includes(p.artStyle),'请选择战术、魔法或精神风格。');
+        if(p.sendShortcut!==undefined)S.ok(['enter','ctrlEnter'].includes(p.sendShortcut),'发送快捷键无效。');
+        const patch=Object.fromEntries(['artStyle','killEffects','messageSound','sendShortcut'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]));
+        for(const k of ['killEffects','messageSound'])if(p[k]!==undefined)S.ok(typeof p[k]==='boolean','开关选项无效。');
+        return answer(await repo.tx('preferences:'+uid+':'+crypto.randomUUID(),async r=>{const u=await repo.get('user',uid,r,true);S.ok(u&&!u.disabled,'账号已停用。','UNAUTHORIZED');u.preferences={...accounts.publicUser(u).preferences,...patch};u.version++;await repo.put('user',u,{lookup:S.hash(u.name)},r);return u.preferences;}));
       }
       const deletePath=pth.match(/^\/admin\/groups\/([^/]+)\/(delete|deletion)$/);
       if(deletePath){accounts.admin(auth.user);return answer(deletePath[2]==='delete'&&p?await deletion.start(auth.user,deletePath[1],p):await deletion.status(auth.user,deletePath[1]));}
@@ -425,7 +458,7 @@ function createWeb({
       if (pth === "/library/review" && p)
         return answer(await library.approve(auth.user, p.id, p));
       if (pth.startsWith("/media/") && !p) {
-        const bytes = await media.read(uid, pth.slice(7));
+        const bytes = await media.read(uid, pth.slice(7), u.searchParams.get("groupId"), u.searchParams.get('messageId'));
         res.writeHead(200, {
           "content-type": "image/webp",
           "cache-control": "private,no-store",
@@ -473,12 +506,22 @@ function createWeb({
         rest = "/" + parts.slice(3).join("/");
       isGM = ["admin", "gm"].includes(a.role);
       await games.ensure(group);
+      if(rest==='/chat/personas'&&!p){accounts.gm(a);return answer(await npcSpeakers(group));}
+      if(rest==='/music'&&!p)return answer(await music.read(uid,group));
+      if(rest==='/music/upload'&&p)return answer(await music.upload(a,p));
+      if(rest==='/music/control'&&p)return answer(await music.command(a,p));
+      if(rest.startsWith('/music/files/')&&!p){
+        const audio=await music.bytes(uid,group,rest.slice('/music/files/'.length));
+        res.writeHead(200,{'content-type':audio.mime,'content-length':audio.bytes.length,'cache-control':'private,no-store','x-content-type-options':'nosniff'});return res.end(audio.bytes);
+      }
       if (rest === "/members" && !p) {
         const members = await repo.list("member", group),
+          profiles = await avatarProfiles(group,members.map(m=>m.userId)),
           result = [];
         for (const m of members) {
           const user = await repo.get("user", m.userId);
-          result.push({ ...m, name: user?.displayName || m.userId });
+          result.push({ ...m, name: user?.displayName || m.userId, avatar: profiles[m.userId]?.avatar || null,
+            characterAvatar: profiles[m.userId]?.characterAvatar || null, avatarVersion: profiles[m.userId]?.avatarVersion || 0 });
         }
         return answer(result);
       }
@@ -528,6 +571,13 @@ function createWeb({
         return answer(await chat.update(a, p.id, p));
       if (rest === "/dm" && p) return answer(await chat.dm(a, p.userId));
       if (rest === "/media" && p) return answer(await media.upload(a, p));
+      if (rest === "/avatar" && p) {
+        let mediaId;
+        if (!p.clear) mediaId = (await media.uploadAvatar(a,p)).id;
+        const saved = await accounts.setAvatar(a,{ ...p,mediaId });
+        background.run(()=>notifyAvatar(uid,group,true));
+        return answer(saved);
+      }
       if (rest === "/media/reconcile" && p)
         return answer(await media.reconcile(a, p.id));
       if (
@@ -583,7 +633,7 @@ function createWeb({
         const key=group+':'+uid+':'+p.operationId;
         if(p.command==='npc.portrait'&&p.params)p.params.mediaId ||= p.params.uploadId;
         const job=games.execute(group,uid,p.command,p.params||{},p.operationId,p.versions,rest==='/gm/execute');pending.set(key,job);
-        try{const saved=await job;let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');gamePatch=await games.view(group,uid,keys,a);}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...saved,...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
+        try{const saved=await job;if(p.command==='character.portrait')background.run(()=>notifyAvatar(uid,group));let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');gamePatch=await games.view(group,uid,keys,a);}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...saved,...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
       }
       if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length),result=pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op);if(result.status==='committed'&&u.searchParams.get('includePatch')==='1')result.gamePatch=await games.view(group,uid,require('./game-sections').parse(u.searchParams.get('sections')||'dashboard,core,battle,explore,bag,market'),a);return answer(result);}
       if (rest === "/game/preview" && p)
@@ -597,11 +647,14 @@ function createWeb({
           ),
         );
       if (rest === "/game/commit" && p) {
+        const portrait = games.store.select(group,s=>s.forms[p.draftId]?.command === "character.portrait");
         const job = games.commit(group, uid, p.draftId),
           key = group + ":" + uid + ":" + p.draftId;
         pending.set(key, job);
         try {
-          return answer(await job);
+          const saved=await job;
+          if(portrait)background.run(()=>notifyAvatar(uid,group));
+          return answer(saved);
         } finally {
           pending.delete(key);
         }

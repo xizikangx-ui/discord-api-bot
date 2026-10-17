@@ -86,7 +86,26 @@ export function PlayerPanel({
     [q, Q] = useState(""),
     [sub, Sub] = useState("inventory"),
     [showPage, ShowPage] = useState(0),
-    [offers, Offers] = useState({});
+    [offers, Offers] = useState({}),
+    [portraitBusy, PortraitBusy] = useState(false),
+    [portraitNotice, PortraitNotice] = useState("");
+  const portraitScope=useRef({groupId,characterId:p?.id}),portraitRequest=useRef(0);
+  portraitScope.current={groupId,characterId:p?.id};
+  useEffect(()=>{portraitRequest.current++;PortraitBusy(false);PortraitNotice("");},[groupId,p?.id]);
+  async function uploadPortrait(file){
+    if(!file||portraitBusy)return;
+    if(file.size>4*1024*1024||!['image/png','image/jpeg','image/webp'].includes(file.type)){PortraitNotice('请选择4 MiB以内的PNG、JPEG或WebP图片。');return;}
+    const target={groupId,characterId:p.id},token=++portraitRequest.current;
+    const current=()=>token===portraitRequest.current&&portraitScope.current.groupId===target.groupId&&portraitScope.current.characterId===target.characterId;
+    PortraitBusy(true);PortraitNotice("");
+    try{
+      const uploaded=await run(async()=>api('/groups/'+target.groupId+'/media',{uploadId:id(),data:await fileData(file)}));
+      if(!uploaded||!current())return;
+      const result=await prepare('character.portrait',{slot:'avatar',mediaId:uploaded.id,characterId:target.characterId});
+      if(current())PortraitNotice(result?.status==='committed'?'角色头像已更新。':'头像尚未确认保存，请查看上方提示。');
+    }catch(e){if(current())PortraitNotice(e.message||'头像上传失败，请保留当前页面查看原因。');}
+    finally{if(current())PortraitBusy(false);}
+  }
   useEffect(() => {
     if (p)
       P({
@@ -177,7 +196,7 @@ export function PlayerPanel({
           {p.portraits?.avatar?.webMediaId && (
             <img
               className="portrait"
-              src={mediaUrl(p.portraits.avatar.webMediaId)}
+              src={mediaUrl(p.portraits.avatar.webMediaId)+'?groupId='+encodeURIComponent(groupId)}
               alt="角色头像"
             />
           )}
@@ -316,32 +335,20 @@ export function PlayerPanel({
             </button>
           </div>
           <label className="upload-button">
-            上传角色头像
+            {portraitBusy?'正在上传并保存…':'上传角色头像'}
             <input
               type="file"
               accept="image/png,image/jpeg,image/webp"
+              disabled={portraitBusy}
               onChange={(e) => {
                 const file = e.target.files[0];
-                if (file)
-                  run(async () => {
-                    const data = await fileData(file);
-                    return api("/groups/" + groupId + "/media", {
-                      uploadId: id(),
-                      data,
-                    });
-                  })
-                    .then(
-                      (f) =>
-                        f &&
-                        prepare("character.portrait", {
-                          slot: "avatar",
-                          mediaId: f.id,
-                        }),
-                    )
-                    .catch(() => {});
+                e.target.value='';
+                void uploadPortrait(file);
               }}
             />
           </label>
+          {portraitNotice&&<p role="status">{portraitNotice}</p>}
+          <p className="muted">角色头像显示在角色资料和角色RP中；普通聊天可在“更多 → 成员、私聊与账号”设置聊天头像，GM也可使用。</p>
         </section>
         <section className="panel">
           <h3>技能与状态</h3>

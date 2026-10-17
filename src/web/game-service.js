@@ -174,6 +174,7 @@ function applyPlayer(s, uid, command, p) {
   if (command === "character.portrait") {
     const c = character();
     H.requireAction(c);
+    if(p.characterId!==undefined)S.ok(c.id===p.characterId,"角色已变化，请重新选择头像。");
     S.ok(["avatar", "illustration"].includes(p.slot), "图片位置无效。");
     c.portraits ||= {};
     if (p.clear) delete c.portraits[p.slot];

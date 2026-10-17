@@ -15,3 +15,8 @@ Thumbs.db
 gm-web/runtime/
 gm-web/release/
 gm-web-demo/
+clients/desktop/release/
+clients/android/.gradle/
+clients/android/.runtime/
+clients/android/local.properties
+clients/android/**/build/

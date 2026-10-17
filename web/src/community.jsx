@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { api, mediaUrl } from "./api";
+import { Avatar } from './avatar';
 export function GroupHome({ game, group, members, rooms, Preview, onRoom, onNavigate }) {
   return (
     <>
@@ -67,7 +68,7 @@ export function GroupHome({ game, group, members, rooms, Preview, onRoom, onNavi
     </>
   );
 }
-export function MemberDirectory({ members, game, openDM, me }) {
+export function MemberDirectory({ members, game, openDM, me, groupId }) {
   return (
     <section className="panel">
       <h3>营地成员与角色</h3>
@@ -78,9 +79,9 @@ export function MemberDirectory({ members, game, openDM, me }) {
           return (
             <article key={m.userId}>
               <div className="result-row">
-                <b>
+                <div className="member-identity"><Avatar avatar={m.avatar || m.characterAvatar} groupId={groupId} name={m.name}/><b>
                   {m.name} · {m.role === "gm" ? "GM" : "玩家"}
-                </b>
+                </b></div>
                 {m.userId !== me.user.id && (
                   <button onClick={() => openDM(m.userId)}>一对一私聊</button>
                 )}

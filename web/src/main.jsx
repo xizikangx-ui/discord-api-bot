@@ -5,6 +5,8 @@ import {workbenchArt} from "./item-art";
 window.workbenchArt=workbenchArt;
 import { notificationTarget } from "./notification-target";
 import { GroupHome, MemberDirectory, ChannelManager } from "./community";
+import { Avatar, AccountAvatar } from "./avatar";
+import { avatarSource, mergeAvatarMembers } from "./avatar-state";
 import React, { useState, useEffect, useRef, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { api, id, setCsrf, mediaUrl } from "./api";
@@ -23,6 +25,10 @@ import {chatTasks} from './chat-tasks';
 import {consoleKey,readConsole,saveConsole} from './console-state';
 import {Invitations} from './invites';
 import {roomMessages,mergeMessages} from "./chat-state";
+import {useChatScroll} from "./use-chat-scroll";
+import {useMessageSound} from './chat-audio';
+import {shouldSend} from './chat-audio-state';
+import {GroupMusic} from './music';
 import "./style.css";
 import "./book-theme.css";
 const date = (v) =>
@@ -281,11 +287,14 @@ function App() {
     busyRef = useRef(false),
     pendingRef = useRef(null),
     gameRef=useRef(null), readQueues=useRef(new Map()),directoryGroup=useRef(null),epoch=useRef(0),
+    memberRead=useRef(null),memberReadVersion=useRef(0),
     [foreground,Foreground]=useState(document.visibilityState==='visible'),
     [mobileSide, MobileSide] = useState(false);
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
+  const receiveSound=useMessageSound(me?.user.id,me?.user.preferences?.messageSound);
+  async function savePreferences(patch){const target=me?.user.id;try{const value=await api('/preferences',patch);Me(old=>old?.user.id===target?{...old,user:{...old.user,preferences:value}}:old);}catch(e){E(e.message);}}
   const panelKey=consoleKey(me?.user.id,groupId,mobileConsole),panelPref=consolePrefs[panelKey]||readConsole(localStorage,panelKey,mobileConsole),panelOpen=panelPref.open;
   function setConsole(change){const next={...panelPref,...change};ConsolePrefs(old=>({...old,[panelKey]:next}));saveConsole(localStorage,panelKey,next);}
   function Tab(next){if(next==='gm'){SetTab(next);return;}if(next==='chat'){SetTab(panelPref.pane==='console'?'chat':panelPref.pane);return;}const pane=next==='console'?'console':next;setConsole({pane,open:true});SetTab(pane==='console'?'chat':pane);}
@@ -310,6 +319,31 @@ function App() {
   useEffect(() => {
     boot();
   }, []);
+  function applyMembers(rows) {
+    Members(old => mergeAvatarMembers(old, rows));
+    const self = rows.find(m => m.userId === me?.user.id);
+    if (self) Me(old => old?.user.id === self.userId && (self.avatarVersion || 0) >= (old.user.avatarVersion || 0) ? { ...old, user: { ...old.user, avatar: self.avatar, avatarVersion: self.avatarVersion || 0 } } : old);
+  }
+  async function refreshMembers() {
+    const target = active.current.groupId, generation = epoch.current;
+    if (!target) return;
+    const existing = memberRead.current;
+    if (existing?.groupId === target && existing.generation === generation) { existing.again = true; return existing.promise; }
+    const request = { groupId: target, generation, again: false, version: ++memberReadVersion.current };
+    memberRead.current = request;
+    request.promise = api('/groups/' + target + '/members').then(rows => {
+      if (active.current.groupId === target && epoch.current === generation && memberReadVersion.current === request.version) applyMembers(rows);
+    }).finally(() => {
+      if (memberRead.current === request) memberRead.current = null;
+      if (request.again && active.current.groupId === target && epoch.current === generation) void refreshMembers().catch(() => {});
+    });
+    return request.promise;
+  }
+  function avatarSaved(response, target, userId) {
+    memberReadVersion.current++;
+    Me(old => old?.user.id === userId && (response.user?.avatarVersion || 0) >= (old.user.avatarVersion || 0) ? { ...old, user: { ...old.user, avatar: response.avatar, avatarVersion: response.user.avatarVersion } } : old);
+    if (active.current.groupId === target) Members(old => old.map(m => m.userId === userId ? { ...m, avatar: response.avatar, avatarVersion: response.user.avatarVersion } : m));
+  }
   async function refresh(options={}) {
     const g=active.current.groupId;if(!g)return;
     const generation=epoch.current;
@@ -319,7 +353,7 @@ function App() {
       (k,v)=>v<0||(gameRef.current?.sectionVersions?.[k]??-1)<v
     ));
     const jobs=[readQueues.current.get(g)(options.sections||visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),options.expected||{})];
-    if(directoryGroup.current!==g||options.directory){directoryGroup.current=g;jobs.push(Promise.all([api('/groups/'+g+'/rooms'),api('/groups/'+g+'/members')]).then(([r,m])=>{if(active.current.groupId===g&&epoch.current===generation){Rooms(r);Members(m);}}).catch(e=>{if(epoch.current===generation)directoryGroup.current=null;throw e;}));}
+    if(directoryGroup.current!==g||options.directory){directoryGroup.current=g;jobs.push(Promise.all([api('/groups/'+g+'/rooms'),refreshMembers()]).then(([r])=>{if(active.current.groupId===g&&epoch.current===generation)Rooms(r);}).catch(e=>{if(epoch.current===generation)directoryGroup.current=null;throw e;}));}
     await Promise.all(jobs);
   }
   useEffect(()=>{const changed=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',changed);return()=>document.removeEventListener('visibilitychange',changed);},[]);
@@ -334,6 +368,7 @@ function App() {
     liveReady.current=false;KillEffect(null);
     epoch.current++;Game(null);gameRef.current=null;directoryGroup.current=null;readQueues.current.clear();Tab("chat");Navigation(null);
     Rooms([]);
+    Members([]);
     Room("");
     Schema(null);
     Preview(null);
@@ -398,8 +433,10 @@ function App() {
       };
       socket.onmessage = (e) => {
         const event = JSON.parse(e.data);
+        receiveSound(event);
         const kills=freshKills(event,seenDeaths.current,liveReady.current);if(kills.length&&prefsRef.current?.killEffects!==false)KillEffect({id:kills.join(":"),count:kills.length});
-        if(event.type==='room-unread'){Rooms(old=>unreadEvent(old,event.data));}
+        if(event.type==='avatar'){refreshMembers().catch(()=>{});}
+        else if(event.type==='room-unread'){Rooms(old=>unreadEvent(old,event.data));}
         else if(event.type==='state'){
           if(busyRef.current&&pendingRef.current){for(const key of event.data.sections||allSections)deferredSections.current.set(key,event.data.revision);}else if(document.visibilityState==='visible')refresh({sections:(event.data.sections||allSections).filter(k=>visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).includes(k)&&event.data.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]),expected:event.data.sectionVersions}).catch(e=>E(e.message));
         } else if(event.type==='permissions') {
@@ -720,6 +757,7 @@ function App() {
           </div>
         )}
         {pendingOperation && <div className="banner" role="status"><span>上一操作待核对；仍可查看消息和面板。</span><button disabled={busy} onClick={()=>run(()=>checkDirect()).catch(()=>{})}>查询保存结果</button></div>}
+        {groupId&&<GroupMusic key={scope} groupId={groupId} userId={me.user.id} gm={gm} event={chatEvent} preferences={me.user.preferences||{}} onPreferences={savePreferences}/>}
         {(game?.dashboard?game.dashboard.battle?.pending?.length:game?.battles.some((b) => b.pending.length)) && (
           <div className="banner defense-card" role="status">
             你有待结算的受击，请及时防守。
@@ -750,6 +788,7 @@ function App() {
                 game,
                 openDM,
                 AccountRecovery,
+                onAvatarSaved: avatarSaved,
                 rooms,
               }}
             />
@@ -775,6 +814,7 @@ function App() {
                   prepare,
                   navigateNotice,
                   gm,
+                  onPreferences:savePreferences,
                 }}
                 error={E}
                 notice={N}
@@ -897,6 +937,7 @@ function App() {
                     openDM,
                     rooms,
                     AccountRecovery,
+                    onAvatarSaved: avatarSaved,
                   }}
                 />
               </Keep>
@@ -975,7 +1016,7 @@ function App() {
                   }).catch(() => {});
               }}
             >
-              <span className="avatar">{m.name?.slice(0, 1)}</span>
+              <Avatar avatar={m.avatar || m.characterAvatar} groupId={groupId} name={m.name}/>
               <span>
                 {m.name}
                 <small>{m.role === "gm" ? "GM" : "玩家"}</small>
@@ -1062,18 +1103,22 @@ function Chat({
   notice,
   onRead,
   visible,
+  onPreferences,
 }) {
   const [storedMessages, Messages] = useState([]),
     [drafts, Drafts] = useState({}),
     [composers, Composers] = useState({}),
     [online, Online] = useState([]),
+    [personas,Personas]=useState([]),
     [sending, Sending] = useState(false),
     [inView, InView] = useState(false),
     [foreground, Foreground] = useState(document.visibilityState==='visible');
   const messages=roomMessages(storedMessages,roomId);
+  const scroll=useChatScroll(roomId,messages,visible);
   const composer=composers[roomId]||{},attachments=composer.attachments||[],reply=composer.reply||null,kind=composer.kind||'text',mode=composer.mode||'normal';
   const change=(key,v)=>Composers(old=>{const c=old[roomId]||{},value=typeof v==='function'?v(c[key]||[]):v;return {...old,[roomId]:{...c,[key]:value}};});
   const Attachments=v=>change('attachments',v),Reply=v=>change('reply',v),Kind=v=>change('kind',v),Mode=v=>change('mode',v);
+  useEffect(()=>{if(!gm){Personas([]);return;}let alive=true;api('/groups/'+groupId+'/chat/personas').then(rows=>{if(alive)Personas(rows);}).catch(()=>{});return()=>{alive=false;};},[groupId,gm,kind==='rp']);
   const sendingRooms=useRef(new Set());
   const bottom = useRef(null),
     active = useRef(roomId),
@@ -1090,10 +1135,12 @@ function Chat({
         "/messages" +
         (before ? "?before=" + before : ""),
     );
-    if (active.current === roomId)
+    if (active.current === roomId) {
+      if(before)scroll.preserveHistory();
       Messages((old) =>
         mergeMessages(old,r),
       );
+    }
   }
   async function catchUp() {
     if (!roomId) return;
@@ -1142,7 +1189,7 @@ function Chat({
       );
   }, [chatEvent, roomId]);
   useEffect(()=>{const handler=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',handler);return()=>document.removeEventListener('visibilitychange',handler);},[]);
-  useEffect(()=>{const observer=new IntersectionObserver(([entry])=>InView(entry.isIntersecting));if(bottom.current)observer.observe(bottom.current);return()=>observer.disconnect();},[roomId]);
+  useEffect(()=>{const observer=new IntersectionObserver(([entry])=>InView(entry.isIntersecting),{root:scroll.list.current});if(bottom.current)observer.observe(bottom.current);return()=>observer.disconnect();},[roomId]);
   useEffect(()=>{if(messages.length)cursor.current=Math.max(cursor.current,messages.at(-1).sequence);},[messages.at(-1)?.sequence]);
   useEffect(()=>{if(visible&&foreground&&inView&&roomId&&messages.length)api('/rooms/'+encodeURIComponent(roomId)+'/read',{sequence:messages.at(-1).sequence}).then(()=>onRead(roomId,messages.at(-1).sequence)).catch(()=>{});},[visible,foreground,inView,roomId,messages.at(-1)?.sequence]);
   async function send(e) {
@@ -1155,6 +1202,7 @@ function Chat({
       data = {
         text,
         kind,
+        ...(kind==='rp'&&gm&&composer.npcId?{npcId:composer.npcId}:{}),
         mode,
         attachments: attachments.map((a) => a.id),
         replyTo: reply?.id,
@@ -1170,9 +1218,7 @@ function Chat({
         "/rooms/" + encodeURIComponent(roomId) + "/messages",
         payload,
       );
-      if(active.current===roomId)Messages((old) =>
-        mergeMessages(old,[m]),
-      );
+      if(active.current===roomId){scroll.followLatest();Messages((old) => mergeMessages(old,[m]));}
       Drafts((old) => ({ ...old, [roomId]: old[roomId]===text?"":old[roomId] }));
       Attachments([]);
       Reply(null);
@@ -1224,7 +1270,8 @@ function Chat({
         </span>
         <small>{online.length} 人在线 · 消息仅保存在网站</small>
       </div>
-      <div className="message-list">
+      <div className="message-list" ref={scroll.list} onScroll={scroll.onScroll} tabIndex={0} aria-label="聊天记录">
+        <div ref={scroll.content}>
         {messages.length >= 50 && (
           <button
             className="subtle older"
@@ -1251,6 +1298,7 @@ function Chat({
           .map((m) => (
             <article
               key={m.id}
+              data-message-id={m.id}
               className={
                 "message " +
                 (m.kind === "system"
@@ -1261,15 +1309,11 @@ function Chat({
                 (m.deleted ? "deleted" : "")
               }
             >
-              <div className="avatar">
-                {m.kind === "system"
-                  ? "⚑"
-                  : (m.characterName || m.authorName).slice(0, 1)}
-              </div>
+              <Avatar avatar={m.kind === 'system' ? null : m.speaker ? {...m.speaker.avatar,messageId:m.id} : avatarSource(m, members.find(member => member.userId === m.authorId))} groupId={groupId} name={m.characterName || m.authorName || ''} symbol={m.kind === 'system' ? '⚑' : undefined}/>
               <div className="message-content">
                 <div className={"message-title art-"+(window.webArtStyle||"magic")}>
                   <b className={m.kind==="rp"?"art-title":""}>{m.characterName || m.authorName}</b>
-                  {m.kind === "rp" && <span className="badge">角色 RP</span>}
+                  {m.kind === "rp" && <span className="badge">{m.speaker?'NPC RP · GM '+m.authorName:'角色 RP'}</span>}
                   {m.system?.npcId && (
                     <span className="badge">NPC · 固定操作卡</span>
                   )}
@@ -1332,8 +1376,10 @@ function Chat({
               </div>
             </article>
           ))}
-        <div ref={bottom} />
+        <div ref={bottom} className="chat-bottom" />
+        </div>
       </div>
+      {scroll.unseen>0&&<button type="button" className="chat-new-messages" onClick={scroll.followLatest}>{scroll.unseen} 条新消息 · 回到最新 ↓</button>}
       <form className="composer" onSubmit={send}>
         {reply && (
           <div className="reply-banner">
@@ -1380,7 +1426,7 @@ function Chat({
             delete client.current[roomId];
           }}
           onKeyDown={(e) => {
-            if (e.ctrlKey && e.key === "Enter") send(e);
+            if (shouldSend(e,me.user.preferences?.sendShortcut||'ctrlEnter')) { e.preventDefault(); void send(e); }
           }}
         />
         <div className="composer-tools">
@@ -1398,6 +1444,7 @@ function Chat({
               <option value="rp">角色 RP</option>
               <option value="dice">掷骰（如 2d20+3）</option>
             </select>
+            {kind==='rp'&&gm&&<select aria-label="RP 发言身份" value={composer.npcId||''} onChange={e=>{change('npcId',e.target.value);delete client.current[roomId];}}><option value="">我的玩家角色</option>{personas.map(n=><option key={n.id} value={n.id}>{n.name} · {n.source}</option>)}</select>}
             {kind === "dice" && (
               <select
                 aria-label="掷骰模式"
@@ -1425,7 +1472,7 @@ function Chat({
           </button>
         </div>
         <small className="muted">
-          Ctrl + Enter 发送 ·{" "}
+          <select aria-label="发送快捷键" value={me.user.preferences?.sendShortcut||'ctrlEnter'} onChange={e=>onPreferences({sendShortcut:e.target.value})}><option value="ctrlEnter">Ctrl / ⌘ + Enter 发送</option><option value="enter">Enter 发送 · Shift + Enter 换行</option></select> ·{" "}
           {kind === "rp" ? "RP 不改变规则判定" : "断线后保留输入与原消息编号"}
         </small>
       </form>
@@ -1687,6 +1734,7 @@ function Settings({
   openDM,
   rooms,
   AccountRecovery,
+  onAvatarSaved,
 }) {
   const [devices, Devices] = useState([]),
     [users, Users] = useState([]),
@@ -1705,7 +1753,8 @@ function Settings({
   }, []);
   return (
     <>
-      {group && <MemberDirectory {...{ members, game, openDM, me }} />}
+      {group && <AccountAvatar {...{ me, groupId }} member={members.find(m => m.userId === me.user.id)} onSaved={onAvatarSaved}/>}
+      {group && <MemberDirectory {...{ members, game, openDM, me, groupId }} />}
       {group && ["admin", "gm"].includes(group.role) && (
         <ChannelManager {...{ groupId, rooms, members, run, refresh }} />
       )}
@@ -1867,7 +1916,7 @@ function Settings({
         )}
       </section>
       <section className="panel">
-        <h3>展示偏好</h3><label className="field"><span>技能及 RP 标题风格</span><select value={preferences.artStyle} onChange={e=>Preferences({...preferences,artStyle:e.target.value})}><option value="tactical">战术 · 钢铁铭文</option><option value="magic">魔法 · 星火符文</option><option value="psychic">精神 · 幻象回响</option></select></label><label><input type="checkbox" checked={preferences.killEffects} onChange={e=>Preferences({...preferences,killEffects:e.target.checked})}/>播放击杀特效</label><button onClick={()=>run(async()=>{await api('/preferences',preferences);await boot();notice('展示偏好已保存。');}).catch(()=>{})}>保存展示偏好</button>
+        <h3>展示偏好</h3><label className="field"><span>技能及 RP 标题风格</span><select value={preferences.artStyle} onChange={e=>Preferences({...preferences,artStyle:e.target.value})}><option value="tactical">战术 · 钢铁铭文</option><option value="magic">魔法 · 星火符文</option><option value="psychic">精神 · 幻象回响</option></select></label><label><input type="checkbox" checked={preferences.killEffects} onChange={e=>Preferences({...preferences,killEffects:e.target.checked})}/>播放击杀特效</label><button onClick={()=>run(async()=>{await api('/preferences',{artStyle:preferences.artStyle,killEffects:preferences.killEffects});await boot();notice('展示偏好已保存。');}).catch(()=>{})}>保存展示偏好</button>
         <h3>账号安全</h3>
         <form
           onSubmit={(e) => {
