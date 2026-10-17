@@ -1,0 +1,7 @@
+'use strict';
+const C=require('../../src/rpg/constants'),M=require('../../src/rpg/model'),W=require('../../src/web/world'),{atlas}=require('../../src/web/world-atlas');
+function fixture(){W.setPublished(atlas);const s=require('./rpg-harness').state();s.platform='web';W.init(s);W.apply(s,'GM','world.sync',{},true);for(const color of ['white','green','blue','purple','gold','red'])s.catalog['test-food-'+color]={id:'test-food-'+color,version:1,published:true,kind:'食物',name:'验收口粮'+color,rarity:color,weight:.1,value:10,heal:'1d4',effects:[],traitIds:[],boxes:[...C.BOXES]};for(const uid of Object.keys(s.players)){s.players[uid].balance=100000;s.players[uid].hp=5;const item=M.makeItem(s.catalog['test-food-white'],100);s.players[uid].inventory[item.id]=item;W.apply(s,'GM','world.assign',{uid,characterId:s.players[uid].id,cityId:'ever-city-001'},true);}const routeId=Object.values(atlas.routes).find(r=>r.from==='ever-city-001'||r.to==='ever-city-001').id;return{s,routeId};}
+const food=(s,uid,count)=>[{id:Object.values(s.players[uid].inventory).find(i=>i.snapshot.kind==='食物').id,quantity:count}];
+function params(s,routeId,uid='1',users=[]){const q=W.quote(s,uid,[routeId]);return{routeIds:[routeId],users,foods:food(s,uid,q.food),quote:{fee:q.fee,hours:q.hours,food:q.food,routeVersions:Object.fromEntries(q.steps.map(r=>[r.id,r.version]))}};}
+function atomic(s,uid,command,p,gm=false,options={}){const copy=C.clone(s),result=W.apply(copy,uid,command,p,gm,options);Object.assign(s,copy);return result;}
+module.exports={fixture,food,params,atomic};

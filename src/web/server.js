@@ -33,6 +33,7 @@ function createWeb({
         schema: "web_content",
       });
   content.setGroupRepository?.(repo);
+  const worldLibrary=require('./world-library').createWorldLibrary(content);
   const sockets = new Set(),
     limits = new Map(),
     pending = new Map();
@@ -82,6 +83,7 @@ function createWeb({
       repo,
       accounts,
       library,
+      worldLibrary,
       chat,
       ...gameCrypt,
       broadcast: (group, event) => background.run(() => emit(group, event)),
@@ -396,6 +398,7 @@ function createWeb({
         accounts.admin(auth.user);
         return answer((await repo.list("user")).map(accounts.publicUser));
       }
+      if(pth==='/admin/world/install'&&p)return answer(await worldLibrary.install(auth.user,p));
       if (pth === "/admin/reset" && p)
         return answer(await accounts.resetToken(auth.user, p.userId));
       if (pth === "/admin/user" && p) {
@@ -571,6 +574,9 @@ function createWeb({
       }
       if (rest === "/version" && !p)
         return answer(games.versions(group));
+      if(!p&&rest==='/world/atlas')return answer(games.store.select(group,s=>require('./world').overview(s)));
+      if(!p&&rest.startsWith('/world/cities/'))return answer(games.store.select(group,s=>require('./world').detail(s,uid,rest.slice('/world/cities/'.length),isGM)));
+      if(!p&&rest==='/world/quote')return answer(games.store.select(group,s=>require('./world').quote(s,uid,(u.searchParams.get('routes')||'').split(',').filter(Boolean))));
       if (rest === "/game" && !p) return answer(await games.view(group, uid,require('./game-sections').parse(u.searchParams.get('sections')),a));
       if(rest.startsWith('/markets/')&&!p){const type=rest.slice('/markets/'.length);return answer(games.store.select(group,s=>require('../rpg/markets').view(s,type,{page:u.searchParams.get('page')||0,q:u.searchParams.get('q')||'',kind:u.searchParams.get('kind')||'',gm:isGM&&u.searchParams.get('manage')==='1'})));}
       if(['/game/execute','/gm/execute'].includes(rest)&&p){
@@ -955,6 +961,7 @@ function createWeb({
     await repo.init();
     await content.init();
     await database.acquireLease("standalone-web");
+    await worldLibrary.refresh();
     for (const g of await repo.list("group")) if(!g.deleting) await games.ensure(g.id);
     server = http.createServer((req, res) => {
       const done=metrics.start(req.url.startsWith('/api/')?'request.api':'request.static');res.once('finish',()=>{done();metrics.gauge('http.lastStatus',res.statusCode);});

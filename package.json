@@ -12,8 +12,9 @@
     "test:gm-web": "npm --prefix gm-web test",
     "start:web": "node --env-file-if-exists=.env src/web/server.js",
     "build:web": "npm --prefix web ci --no-fund && npm --prefix web run build",
-    "test:web": "node --test test/web.test.js test/web-workspace.test.js test/web-background-tasks.test.js test/web-invitations.test.js test/web-invitations-postgres.test.js test/web-book-assets.test.js test/web-postgres.test.js",
-    "test:economy": "node --test test/economy.test.js test/management-notice-exemptions.test.js test/permission-audit-actors.test.js"
+    "test:web": "node --test test/web.test.js test/web-workspace.test.js test/web-background-tasks.test.js test/web-invitations.test.js test/web-invitations-postgres.test.js test/web-book-assets.test.js test/web-postgres.test.js test/web-world.test.js test/web-world-http.test.js test/web-world-sync.test.js test/web-world-postgres.test.js",
+    "test:economy": "node --test test/economy.test.js test/management-notice-exemptions.test.js test/permission-audit-actors.test.js",
+    "test:web:world": "node --test test/web-world.test.js test/web-world-http.test.js test/web-world-sync.test.js test/web-world-postgres.test.js"
   },
   "engines": {
     "node": ">=24.5"

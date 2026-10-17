@@ -7,6 +7,7 @@ const C = require("../rpg/constants"),
   S = require("./security"),
   D = require("../rpg/action-drafts");
 const playerCommands = {
+  'world.propose':'申请跨城旅行','world.vote':'同意或拒绝旅行','world.cancel':'取消旅行申请','world.investigate':'调查城市周边','world.event':'处理途中事件',
   "market.purchase": "购买市场货品",
   "character.roll": "生成／重掷角色",
   "character.confirm": "确认角色",
@@ -108,6 +109,8 @@ function normalizeAction(s, uid, p) {
   return x;
 }
 function applyPlayer(s, uid, command, p) {
+  if(command.startsWith('world.'))return require('./world').apply(s,uid,command,p);
+  if(command==='map.join'||command==='battle.join')require('./world').guardJoin(s,uid,command==='map.join'?'map':'battle',p.mapId||p.battleId);
   if(command==='market.purchase')return require('../rpg/markets').purchase(s,uid,p);
   if(command==="merchant.trade"){const V=require("../rpg/merchant"),f=V.quote(s,uid,p.mapId,p.cell,p.mode,p.itemId,p.quantity);return V.execute(s,uid,f.id);}
   if (command === "character.roll")
@@ -116,7 +119,9 @@ function applyPlayer(s, uid, command, p) {
     S.ok(s.characterDrafts[uid]?.id === p.draftId, "角色草稿已变化。");
     S.ok(["male", "female"].includes(p.gender), "请选择角色性别。");
     s.characterDrafts[uid].gender = p.gender;
-    return M.confirmCharacter(s, uid);
+    const confirmed=M.confirmCharacter(s, uid);
+    if(s.worldSettings?.main?.enabled&&s.worldSettings.main.originCityId)require('./world').apply(s,uid,'world.assign',{uid,characterId:s.players[uid].id,cityId:s.worldSettings.main.originCityId},true);
+    return confirmed;
   }
   const character = () => M.player(s, uid);
   if (command === "character.profile") {
@@ -340,6 +345,7 @@ function playerGuards(s, uid, command, p) {
   const refs = [
     { source: "players", id: uid, hash: G.fingerprint(s.players[uid]) },
   ];
+  if(command.startsWith('world.'))refs.push(...require('./world').guards(s,uid,p,false));
   for (const [key, source] of Object.entries({
     mapId: "explorations",
     battleId: "battles",
@@ -385,7 +391,7 @@ function actionRestrictions(b,p,uid){
   result.attack=reasons.length&&reasons.every(Boolean)?reasons[0]:Z.reason(p,'attack',null,'quick');
   return result;
 }
-function playerView(s, uid, { roomIds, fields } = {}) {
+function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
   const visible = (o) => !roomIds || !o.channelId || roomIds.has(o.channelId);
   const p = s.players[uid],
     maps = Object.values(s.explorations).filter(
@@ -395,8 +401,10 @@ function playerView(s, uid, { roomIds, fields } = {}) {
       (b) => visible(b) && b.status !== "ended",
     ),
     result = {
+      get world(){return require('./world').stateView(s,uid,gm);},
       get dashboard(){const b=p&&battles.find(b=>b.actors.some(a=>a.userId===uid&&!a.deathId&&(!a.characterId||a.characterId===p.id))),a=b?.actors.find(a=>a.userId===uid),m=maps.find(m=>m.participants?.[uid]);
         const tasks=[];
+        for(const j of Object.values(s.worldJourneys||{}))if(j.members.includes(uid)&&j.characters[uid]===p?.id&&['confirming','approval','travelling'].includes(j.status))tasks.push({key:j.id,text:j.status==='confirming'?'跨城旅行待确认':j.status==='approval'?'远征等待GM特批':'旅行途中 · 处理事件',system:{worldJourneyId:j.id}});
         if(b){for(const h of require('../rpg/aoe').hits(b).filter(h=>h.targetId===a.id))tasks.push({key:h.id,text:'待防守 · '+b.name,system:{battleId:b.id,hitId:h.id,kind:'webDefense'}});if(b.status==='active'&&b.current?.actorId===a.id)tasks.push({key:b.id,text:'轮到你行动 · '+b.name,system:{battleId:b.id}});}
         for(const map of maps){for(const r of Object.values(map.moves||{}))if(r.status==='pending'&&r.members.includes(uid))tasks.push({key:r.id,text:'全队移动待确认 · '+map.name,system:{mapId:map.id}});if(map.participants?.[uid]&&require('../rpg/rp').waiting(map))tasks.push({key:map.id,text:'等待环境描述 · '+map.name,system:{mapId:map.id}});}
         return {tasks,player:p?{id:p.id,name:p.name,hp:p.hp,ap:p.ap,balance:p.balance,level:p.level,stats:M.stats(p),health:H.snapshot(p),tickets:p.tickets,conditions:p.conditions.map(c=>({name:c.template?.name,severity:c.severity})),inventoryCount:Object.keys(p.inventory).length}:null,

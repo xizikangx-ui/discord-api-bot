@@ -43,6 +43,7 @@ function grantBatch(s,rows){
 }
 function editable(b){ok(b&&['recruiting','paused'].includes(b.status)&&!b.pending,'请先暂停并完成待防守结算。');}
 function apply(s,user,command,p){
+  if(command.startsWith('world.'))return require('../web/world').apply(s,user,command,p,true);
   if(command.startsWith('market.'))return require('./markets').manage(s,command,p);
   if(command==='templates.publish')return publishBatch(s,p.rows,user);
   if(command==='grant')return grantBatch(s,p.rows);
@@ -126,6 +127,7 @@ function rowsFor(command,p){
   return p.rows;
 }
 function guards(s,command,p){const rows=rowsFor(command,p),refs=[];const add=(source,id)=>{ok(s[source]?.[id],'引用已删除，请重新选择。');refs.push({source,id,hash:fingerprint(s[source][id])});};
+  if(command.startsWith('world.'))refs.push(...require('../web/world').guards(s,null,p,true));
   if(p.mapId)add('explorations',p.mapId);if(p.battleId){add('battles',p.battleId);for(const a of s.battles[p.battleId].actors)if(a.userId&&s.players[a.userId])add('players',a.userId);}
   if(p.uid)add('players',p.uid);for(const r of rows){if(r.uid)add('players',r.uid);if(r.ref){const src={item:'catalog',skill:'skillTemplates',checkskill:'checkSkillTemplates',coupon:'couponPools'}[r.type];if(src)add(src,r.ref);}if(r.id&&KINDS[r.kind])add(KINDS[r.kind],r.id);}
   if(p.templateId){const src=command.startsWith('market.')?'catalog':command.includes('merchant')?'merchantTemplates':command.startsWith('map.cell')?'roomTemplates':command==='map.restock'?'catalog':command==='battle.condition'?'conditionTemplates':'npcTemplates';add(src,p.templateId);}

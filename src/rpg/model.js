@@ -311,6 +311,12 @@ function reserved(state, userId, excludedOffer) {
     coins += side.coins;
     for (const selected of side.items) items[selected.id] = (items[selected.id] || 0) + selected.quantity;
   }
+  // Website travel uses the same available-asset calculation as trades and purchases.
+  for (const j of Object.values(state.worldJourneys || {})) {
+    if(j.id===excludedOffer||!['confirming','approval'].includes(j.status)||j.expiresAt<=Date.now()||!j.yes.includes(userId)||j.characters[userId]!==state.players[userId]?.id)continue;
+    coins+=j.fee;
+    for(const f of j.foods[userId]||[])items[f.id]=(items[f.id]||0)+f.quantity;
+  }
   return { items, coins };
 }
 function available(state, userId, itemId, excludedOffer) {

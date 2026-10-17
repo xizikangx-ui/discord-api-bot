@@ -3,7 +3,7 @@ const G = require('../rpg/gm-service');
 // Opaque baselines describe objects already available to this user. They carry no contents.
 function versions(s, { uid, roomIds, gm = false, sources },hash=(source,id)=>G.fingerprint(id?s[source]?.[id]:s[source])) {
   const result = { 'config:': hash('config') };
-  for (const source of [...new Set([...Object.values(G.KINDS), 'players', 'characterDrafts', 'battles', 'explorations', 'offers', 'checks', 'sessions', 'deaths', 'corpses','markets'])]) {
+  for (const source of [...new Set([...Object.values(G.KINDS), 'players', 'characterDrafts', 'battles', 'explorations', 'offers', 'checks', 'sessions', 'deaths', 'corpses','markets',...require('./world').collections])]) {
     if(sources&&!sources.includes(source))continue;
     for (const [id, value] of Object.entries(s[source] || {})) {
       if(!gm&&Object.values(G.KINDS).includes(source)&&!value.published)continue;
@@ -12,10 +12,12 @@ function versions(s, { uid, roomIds, gm = false, sources },hash=(source,id)=>G.f
       if (!gm && source === 'characterDrafts' && id !== uid) continue;
       if (!gm && ['battles', 'explorations', 'checks', 'sessions'].includes(source) && (value.status === 'draft' || value.channelId && !roomIds.has(value.channelId))) continue;
       if(source==='markets')continue;
+      if(!gm&&source==='worldJourneys'&&!value.members.includes(uid))continue;
       result[source + ':' + id] = hash(source,id);
     }
   }
   for (const source of ['players', 'characterDrafts']) result[source + ':' + uid] = hash(source,uid);
+  for(const source of require('./world').collections)result[source+':'+(source==='worldSettings'?'main':uid)]=hash(source,source==='worldSettings'?'main':uid);
   return result;
 }
 function createVersionCache(){const groups=new Map();return {

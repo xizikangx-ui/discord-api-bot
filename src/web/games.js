@@ -180,6 +180,7 @@ function createGames({
   repo,
   accounts,
   library,
+  worldLibrary,
   chat,
   encrypt,
   decrypt,
@@ -199,7 +200,7 @@ function createGames({
   let timer,
     pumping = false,
     stopped = false,
-    pumpPromise, wakeAt=Infinity, scheduled=false;
+    pumpPromise, wakeAt=Infinity, scheduled=false, worldRefreshAt=0;
   function versions(group){return store.select(group,s=>({revision:s.revision,sectionVersions:stamps.get(group)||Object.fromEntries(Object.keys(Sections.definitions).map(k=>[k,s.revision]))}));}
   function wake(delay=0){if(stopped||!scheduled)return;const at=Date.now()+delay;if(at>=wakeAt)return;clearTimeout(timer);wakeAt=at;timer=setTimeout(()=>{wakeAt=Infinity;pumpPromise=tick();},Math.max(0,delay));timer.unref();}
   async function ensure(id) {
@@ -231,6 +232,7 @@ function createGames({
     loading.set(id, job);
     try {
       await job;
+      if(store.select(id,s=>s.worldUpgradeVersion!==1))await store.transact(id,'web-world-fields-v1','system:web',s=>{require('./world').init(s);return{initialized:true};},'初始化世界地图字段',{delivery:false});
       if(store.select(id,s=>s.webMarketVersion!==1))await store.transact(id,'web-markets-v1','system:web',s=>require('../rpg/markets').initialize(s),'初始化关闭的营地市场',{delivery:false});
       if(!stamps.has(id))stamps.set(id,versions(id).sectionVersions);
       if(store.select(id,needsLifecycle))await store.transact(id,'web-lifecycle-recover:'+store.select(id,s=>s.revision),'system:web',()=>({recovered:true}),'恢复战斗结束检查');
@@ -367,6 +369,8 @@ function createGames({
     }
     for (const id of [
       p.targetUid,
+      ...(command === "world.assign" ? [p.uid] : []),
+      ...(["world.vote","world.permit","world.arrive"].includes(command) && p.journeyId ? store.select(a.group.id,s=>s.worldJourneys[p.journeyId]?.members||[]) : []),
       ...(p.users || []),
       ...rows.filter((r) => r.uid).map((r) => r.uid),
     ].filter(Boolean))
@@ -517,7 +521,7 @@ function createGames({
       if(previous){S.ok(previous.command===command && G.fingerprint(previous.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');return previous.result;}
       const guards=gm?G.guards(s,command,params):P.playerGuards(s,uid,command,params);
       S.ok(expected && typeof expected==='object','页面版本缺失，请刷新后重新操作。','CONFLICT');
-      const conflicts=guards.filter(g=>expected[g.source+':'+(g.id||'')]!==g.hash);
+      const conflicts=guards.filter(g=>(expected[g.source+':'+(g.id||'')]??(g.source.startsWith('world')?G.fingerprint(undefined):undefined))!==g.hash);
       if(conflicts.length){const e=Error('相关内容已变化，已保留输入。请核对最新状态后再次提交。');e.code='CONFLICT';e.details=conflicts.map(g=>({source:g.source,name:(g.id?s[g.source]?.[g.id]:null)?.name||'相关设置',current:g.id?s[g.source]?.[g.id]:undefined}));throw e;}
       await validateReferences(await accounts.member(group,uid),command,params,gm);
       const normalized=C.clone(params);let expiresAt=C.confirmationDeadline(300000);
@@ -584,7 +588,7 @@ function createGames({
     for (const j of tasks) {
       const room = j.roomId
         ? rooms.find((r) => r.id === j.roomId && !r.archived)
-        : j.kind === "webNotice"
+          : j.kind === "webNotice"
           ? gmRoom
           : publicRoom;
       if (!room) continue;
@@ -597,7 +601,8 @@ function createGames({
           ...(j.source?{[j.source]:{[j.objectId]:st[j.source]?.[j.objectId]}}:{})};
       });
       let text, system;
-      if (j.kind === "webActivity") {
+      if(j.kind==='webWorld'||j.kind==='webNotice'&&j.journeyId){text=j.text;system={worldJourneyId:j.journeyId,kind:j.kind};}
+      else if (j.kind === "webActivity") {
         const value = s[j.source]?.[j.objectId];
         if (!value) continue;
         text =
@@ -717,15 +722,21 @@ function createGames({
       );
     }
   }
-  async function tick() {
-    if (pumping || stopped) return;
+  function tick() {
+    if (pumping || stopped) return pumpPromise || Promise.resolve();
     pumping = true;
+    pumpPromise = pump();
+    return pumpPromise;
+  }
+  async function pump() {
     try {
       database.assertLease();
+      if(worldLibrary&&Date.now()-worldRefreshAt>=86400000){await worldLibrary.refresh();worldRefreshAt=Date.now();}
       for (const group of store.guilds()) {
         if (store.frozen(group)) continue;
         const s = store.select(group,st=>({
           librarySync:st.librarySync,
+          worldSettings:st.worldSettings?.main,
           battles:Object.fromEntries(Object.entries(st.battles).map(([id,b])=>[id,{id,status:b.status,pending:{hits:require('../rpg/aoe').hits(b).map(h=>({expiresAt:h.expiresAt}))},due:require('../rpg/npc-auto').due(st,b),terminal:!!B.terminalOutcome(st,b)}])),
           offers:Object.values(st.offers).map(o=>({status:o.status,expiresAt:o.expiresAt})),sessions:Object.values(st.sessions).map(x=>({startsAt:x.startsAt,reminder:x.reminder})),
           explorations:Object.values(st.explorations).map(m=>({status:m.status,moves:Object.values(m.moves||{}).map(r=>({status:r.status,expiresAt:r.expiresAt})),pending:Object.values(m.cells).some(c=>c.room?.encounter==='pending'&&(c.room.autoStart??c.room.snapshot.autoStart))})),
@@ -757,6 +768,7 @@ function createGames({
         if (
           due ||
           s.lifecycle ||
+          store.select(group,st=>Object.values(st.worldJourneys||{}).some(j=>['confirming','approval'].includes(j.status)&&j.expiresAt<=now)) ||
           expires ||
           sessions ||
           maps ||
@@ -770,6 +782,7 @@ function createGames({
             "system:web",
             (st) => {
               require("../rpg/activities").expireAll(st, now);
+              require('./world').expire(st,now);
               for (const session of Object.values(st.sessions))
                 if (
                   session.startsAt <= now &&
@@ -797,16 +810,15 @@ function createGames({
           );
         await publishJobs(group);
         const g = await repo.get("group", group);
-        if (
-          g && !g.deleting && g.autoSync !== false &&
-          now - (s.librarySync?.lastSyncAt || 0) >= 86400000
-        ) {
-          const entries = await library.published();
+        const publicDue=now-(s.librarySync?.lastSyncAt||0)>=86400000,
+          worldDue=require('./world').syncDue(s.worldSettings,now);
+        if(g&&!g.deleting&&g.autoSync!==false&&(publicDue||worldDue)) {
+          const entries=publicDue?await library.published():null;
           await store.transact(
             group,
-            "web-auto-sync:" + Math.floor(now / 86400000),
+            "web-auto-sync:"+Math.floor(now/86400000)+':'+(publicDue?'library':'world')+':'+require('./world').publishedVersion(),
             "system:web",
-            (st) => L.applySync(st, entries, L.planSync(st, entries)),
+            (st) => {const result={};if(publicDue)result.library=L.applySync(st,entries,L.planSync(st,entries));if(worldDue&&require('./world').syncDue(st.worldSettings?.main,now))result.world=require('./world').sync(st,now);return result;},
             "公共库每日同步",
             { delivery: false },
           );
@@ -828,6 +840,7 @@ function createGames({
         for(const x of Object.values(s.sessions))if(x.reminder.status==='pending')times.push(x.startsAt);
         for(const p of Object.values(s.players))for(const e of p.temporaryEffects||[])if(e.expiresAt)times.push(e.expiresAt);
         for(const m of Object.values(s.explorations))for(const r of Object.values(m.moves||{}))if(r.status==='pending')times.push(r.expiresAt);
+        for(const j of Object.values(s.worldJourneys||{}))if(['confirming','approval'].includes(j.status))times.push(j.expiresAt);
         return Math.max(100,Math.min(30000,...times.map(t=>t-now)));
       }));wake(delay);}
     }
@@ -873,7 +886,7 @@ function createGames({
       try{
       const a=context||await authorize(group, uid);
       const roomIds = new Set((await chat.rooms(group, uid,undefined,a)).map((r) => r.id));
-      return store.select(group, (s) => ({...P.playerView(s, uid, { roomIds,fields:sections&&Sections.fields(sections) }),...versions(group),sections,versions:versionCache.get(s,{uid,roomIds,gm:["admin","gm"].includes(a.role),sources:sections&&Sections.sources(sections)})}));
+      return store.select(group, (s) => ({...P.playerView(s, uid, { roomIds,fields:sections&&Sections.fields(sections),gm:["admin","gm"].includes(a.role) }),...versions(group),sections,versions:versionCache.get(s,{uid,roomIds,gm:["admin","gm"].includes(a.role),sources:sections&&Sections.sources(sections)})}));
       }finally{done?.();}
     },
   };

@@ -1,0 +1,21 @@
+"use strict";
+const S=require('./security'),W=require('./world'),{atlas}=require('./world-atlas'),{createHash}=require('node:crypto');
+function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));return value;}
+function contentHash(value){return createHash('sha256').update(JSON.stringify(canonical({cities:value.cities,routes:value.routes}))).digest('hex');}
+function validate(a){
+ const cities=Object.values(a.cities),roads=Object.values(a.routes),names=new Set();
+ S.ok(cities.length===240&&cities.filter(c=>c.major).length>=24,'世界图册城市数量不符。');
+ for(const c of cities){S.ok(!names.has(c.name),'城市名称重复。');names.add(c.name);S.ok((c.description.match(/\p{Script=Han}/gu)||[]).length>=(c.major?300:120),'城市正文不足。');}
+ S.ok(cities.filter(c=>c.stability==='A').length===1&&cities.find(c=>c.stability==='A').id==='ever-city-001','希望市评级不符。');
+ S.ok(cities.filter(c=>c.stability==='H').length===1&&cities.find(c=>c.stability==='H').id==='ever-city-161','原爆点评级不符。');
+ const seen=new Set([cities[0].id]);let changed=true;while(changed){changed=false;for(const r of roads){S.ok(a.cities[r.from]&&a.cities[r.to]&&r.fee>=0&&r.hours>0,'路线引用无效。');if(seen.has(r.from)&&!seen.has(r.to)){seen.add(r.to);changed=true;}if(seen.has(r.to)&&!seen.has(r.from)){seen.add(r.from);changed=true;}}}S.ok(seen.size===240,'路网不连通。');return true;
+}
+function createWorldLibrary(repo){
+ const scope=version=>atlas.id+':v:'+version;
+ async function read(meta,revision=false,r){const namespace=revision?scope(meta.version):atlas.id,[cityRows,routeRows]=await Promise.all([repo.list(revision?'worldCityVersion':'worldCity',namespace,r),repo.list(revision?'worldRouteVersion':'worldRoute',namespace,r)]),cities=Object.fromEntries(cityRows.map(row=>{const c=revision?row.value:row;return[c.id,c];})),routes=Object.fromEntries(routeRows.map(row=>{const road=revision?row.value:row;return[road.id,road];})),value={...meta,id:atlas.id,cities,routes};validate(value);S.ok(contentHash({cities,routes})===meta.contentHash,'世界图册校验失败。');return value;}
+ async function archive(value,r){const id=scope(value.version);if(await repo.get('worldAtlasRevision',id,r))return;for(const c of Object.values(value.cities))await repo.put('worldCityVersion',{id:id+':'+c.id,value:c},{scope:id},r);for(const road of Object.values(value.routes))await repo.put('worldRouteVersion',{id:id+':'+road.id,value:road},{scope:id},r);const {cities,routes,...meta}=value;await repo.put('worldAtlasRevision',{...meta,id,contentHash:contentHash({cities,routes})},{scope:atlas.id},r);}
+ async function refresh(){const meta=await repo.get('worldAtlas',atlas.id);if(!meta){W.setPublished(null);return null;}const value=await read(meta),history=[];for(const revision of await repo.list('worldAtlasRevision',atlas.id))if(revision.version!==meta.version)history.push(await read(revision,true));W.setPublished(value,history);return value;}
+ async function install(user,p){S.ok(user.admin,'只有网站管理员可发布世界图册。','FORBIDDEN');S.ok(/^[a-zA-Z0-9_-]{8,100}$/.test(p.operationId||''),'操作编号无效。');validate(atlas);const result=await repo.tx('world-atlas-install:'+p.operationId,async r=>{const prior=await repo.get('worldAtlas',atlas.id,r,true);if(prior?.version===atlas.version){await archive(await read(prior,false,r),r);return{published:true,version:prior.version,alreadyInstalled:true};}S.ok(Number(p.baseVersion||0)===(prior?.version||0),'世界图册版本已变化。','CONFLICT');S.ok(!prior||atlas.version>prior.version,'当前代码图册旧于已发布版本，不能回退公共资料。','CONFLICT');if(prior)await archive(await read(prior,false,r),r);for(const c of Object.values(atlas.cities))await repo.put('worldCity',c,{scope:atlas.id},r);for(const road of Object.values(atlas.routes))await repo.put('worldRoute',road,{scope:atlas.id},r);const {cities,routes,...meta}=atlas;const approved={...meta,contentHash:contentHash({cities,routes}),approvedBy:user.id,at:Date.now()};await repo.put('worldAtlas',approved,{},r);await archive({...approved,cities,routes},r);return{published:true,version:atlas.version,cities:240,routes:Object.keys(atlas.routes).length};});await refresh();return result;}
+ return{refresh,install};
+}
+module.exports={createWorldLibrary,validate,contentHash};

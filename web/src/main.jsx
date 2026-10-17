@@ -14,6 +14,7 @@ import {Field,SearchSelect} from "../../gm-web/src/controls";
 const gmComponent=name=>React.lazy(()=>import("../../gm-web/src/main").then(m=>({default:m[name]})));
 const Templates=gmComponent('Templates'),Grant=gmComponent('Grant'),World=gmComponent('World'),Commands=gmComponent('Commands'),Audit=gmComponent('Audit');
 const Workbench=React.lazy(()=>import('./workbench').then(m=>({default:m.Workbench})));
+const WorldExplorer=React.lazy(()=>import('./world-map').then(m=>({default:m.ExplorationHub}))),AtlasManager=React.lazy(()=>import('./world-map').then(m=>({default:m.WorldMap})));
 const Market=React.lazy(()=>import('./market').then(m=>({default:m.Market})));
 const playerComponent=name=>React.lazy(()=>import("./players").then(m=>({default:m[name]})));
 const PlayerPanel=playerComponent('PlayerPanel'),ExplorePanel=playerComponent('ExplorePanel'),BattlePanel=playerComponent('BattlePanel'),ActivitiesPanel=playerComponent('ActivitiesPanel');
@@ -219,12 +220,23 @@ function Auth({ done }) {
     </div>
   );
 }
-function Keep({ show, children }) {
+class PanelErrorBoundary extends React.Component {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidUpdate(previous) {
+    if (this.state.failed && previous.resetKey !== this.props.resetKey) this.setState({ failed: false });
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <section className="panel panel-load-error" role="alert"><h3>这个面板暂时无法打开</h3><p>网站可能刚刚更新，或网络加载中断。聊天和导航仍可继续使用。</p><p>请先复制并保存未提交的填写和未发送文字，再点击下方按钮手动刷新。刷新不会自动重新执行操作；之前待核对的结果仍需按原记录查询。</p><button type="button" onClick={() => window.location.reload()}>保存填写后刷新页面</button></section>;
+  }
+}
+function Keep({ show, children, resetKey = '' }) {
   const [seen, Seen] = useState(show);
   useEffect(() => {
     if (show) Seen(true);
   }, [show]);
-  return seen || show ? <div hidden={!show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></div> : null;
+  return seen || show ? <div hidden={!show}><PanelErrorBoundary resetKey={resetKey+':'+show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></PanelErrorBoundary></div> : null;
 }
 function PendingTasks({game,userId,onNavigate,onOpen}){const tasks=chatTasks(game,userId);return tasks.length?<div className="chat-tasks" aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}>{t.text}</button>)}</div>:null;}
 function ConsoleStatus({data}){const p=data?.player,b=data?.battle;if(!p)return null;return <div className="console-status" aria-label="常驻角色状态"><b>{p.name}</b><span>HP {p.health.hp}/{p.health.maxHP}</span><span className={p.health.downed?'danger':''}>倒地 {p.health.reserveHP}/{p.health.maxHP}</span><span>AP {p.ap}</span>{b&&<><span>轮 {b.actionRound?.number||1} · {b.actionRound?.counts?.[b.actorId]||0} 次</span><span>下次 {b.nextCost} AP</span><span>快 {b.quick} / 正 {b.formal}</span></>}</div>;}
@@ -771,7 +783,7 @@ function App() {
               />
             </div>
             <div id="player-operation-panel" hidden={!panelOpen&&tab!=="gm"} className={"page-content "+(tab!=="gm"?"player-drawer":"")} key={groupId}>
-              <header className="drawer-header"><div><b>{({console:"玩家一体操作台",chat:"玩家一体操作台",character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b></div>{tab!=="gm"&&<button onClick={()=>setConsole({open:false})} aria-label="收起操作台">⌄</button>}</header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
+              <header className="drawer-header"><div><b>{({console:"玩家一体操作台",chat:"玩家一体操作台",character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b></div>{tab!=="gm"&&<button onClick={()=>setConsole({open:false})} aria-label="收起操作台">⌄</button>}</header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<PanelErrorBoundary resetKey={groupId+':'+tab+':'+gmTab}><Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
               <Keep show={panelOpen&&(tab==="chat"||tab==="console")}>{game&&<Workbench {...{game,groupId,prepare,run,refresh,busy}} userId={me.user.id} active={panelOpen&&(tab==="chat"||tab==="console")} error={E} onOpen={(target,detail)=>{if(detail)Navigation({...detail,key:id()});Tab(target);}}/>}</Keep>
               <Keep show={panelOpen&&tab==="more"}><section className="panel service-menu"><h3>营地服务</h3>{[["home","公告与未读"],["library","公共模板库"],["settings","成员、私聊与账号"],["bag","收藏柜与兑换券"],["activities","规则与名词"]].map(([k,name])=><button key={k} onClick={()=>Tab(k)}>{name}</button>)}</section></Keep>
               <Keep show={panelOpen&&tab === "home"}>
@@ -793,7 +805,7 @@ function App() {
               </Keep>
               <Keep show={panelOpen&&tab === "explore"}>
                 {game && (
-                  <ExplorePanel {...{ game, groupId, prepare, run, refresh }} navigation={navigation} active={panelOpen&&tab==="explore"} />
+                  <WorldExplorer {...{ game, groupId, prepare, run, refresh,gm }} admin={me.user.admin} userId={me.user.id} navigation={navigation} active={panelOpen&&tab==="explore"} openMap={mapId=>Navigation({type:'map',id:mapId,key:id()})} />
                 )}
               </Keep>
               <Keep show={panelOpen&&tab === "battle"}>
@@ -818,6 +830,7 @@ function App() {
                         ["templates", "内容录入"],
                         ["grant", "角色与发放"],
                         ["maps", "地图管理"],
+                        ["world", "世界图册"],
                         ["battles", "战斗管理"],
                         ["content", "内容与公示"],
                         ["markets", "营地市场"],
@@ -841,6 +854,7 @@ function App() {
                     <Keep show={gmTab === "maps"}>
                       <World {...common} kind="maps" navigation={navigation} openTemplates={() => GmTab("templates")} />
                     </Keep>
+                    <Keep show={gmTab==='world'}><AtlasManager {...{game,groupId,prepare,run,refresh}} gm={true} admin={me.user.admin} userId={me.user.id} active={tab==='gm'&&gmTab==='world'} onMap={mapId=>{Navigation({type:'map',id:mapId,key:id()});Tab('explore');}}/></Keep>
                     <Keep show={gmTab === "battles"}>
                       <World {...common} kind="battles" navigation={navigation} />
                     </Keep>
@@ -886,7 +900,7 @@ function App() {
                   }}
                 />
               </Keep>
-            </Suspense></div></div>
+            </Suspense></PanelErrorBoundary></div></div>
           </>
         )}
       </main>

@@ -1,7 +1,8 @@
 'use strict';
 const G=require('../rpg/gm-service'),S=require('./security');
 const definitions={
-  dashboard:{fields:['dashboard','containers'],sources:['players','characterDrafts','battles','explorations','corpses','offers','containerDefinitions','markets','config']},
+  world:{fields:['world'],sources:['worldSettings','worldCities','worldRoutes','worldLocations','worldJourneys','worldSites','players']},
+  dashboard:{fields:['dashboard','containers'],sources:['players','characterDrafts','battles','explorations','corpses','offers','containerDefinitions','markets','config','worldJourneys','worldLocations','worldSettings']},
   market:{fields:['markets'],sources:['markets','catalog']},
   core:{fields:['player','draft','roster','skills','historicalDeathIds'],sources:['players','characterDrafts','skillTemplates','deaths']},
   bag:{fields:['offers','coupons'],sources:['offers','couponPools','catalog']},
