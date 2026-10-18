@@ -27,3 +27,5 @@
 原 1.0.0 用户须手动覆盖安装一次 1.1.0，保留原目录和应用数据。之后 Windows 从应用菜单检查客户端更新，下载后选择重启安装或稍后；Android 从屏幕边缘“⋮”进入客户端更新，系统最终确认安装。网站日常功能仍即时更新。
 
 安装前校验独立 RSA 签名清单、文件摘要及版本；Android还核对包名和原发布证书。正在提交、待核对或草稿保存失败时拒绝重启。不能用卸载并清除数据代替覆盖升级。详细构建和发布说明见 [客户端说明](../clients/README.md)。
+
+下载 [Windows 1.1.0 安装包](https://github.com/xizikangx-ui/discord-api-bot/releases/download/client-v1.1.0/YichangBook-Setup-1.1.0-x64.exe) 或 [Android 1.1.0 APK](https://github.com/xizikangx-ui/discord-api-bot/releases/download/client-v1.1.0/YichangBook-Android-1.1.0.apk)。Windows 覆盖安装已实测；Android 编译和原证书签名校验通过，尚未完成真机升级测试。
