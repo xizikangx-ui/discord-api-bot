@@ -11,7 +11,7 @@ function probabilities(values, max) {
   ok(weights.reduce((a,b) => a+b, 0) === 10000, '每一项的数量概率之和必须为100%。');
   return weights.map(n => n/100);
 }
-function defaultProbabilities(max) { return Array.from({length:max+1}, (_,n) => n===1 ? 100 : 0); }
+function defaultProbabilities(max) { return Array.from({length:max+1}, (_,n) => max===10?([65,25,8,2][n]||0):n===1 ? 100 : 0); }
 function draw(values, rng = randomInt) {
   const valid = probabilities(values, values.length-1); let roll = rng(0,10000);
   for(let n=0;n<valid.length;n++){ roll-=Math.round(valid[n]*100); if(roll<0)return n; }

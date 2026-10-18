@@ -5,6 +5,8 @@ import { api, id, mediaUrl } from "./api";
 import { Result } from "../../gm-web/src/result";
 import {ItemArt,Art} from "./item-art";
 import { BattleLoot } from "./battle-loot";
+import {BattleStage,DefenseClock} from './battle-presentation';
+import {useRestartDraft} from './use-restart-draft';
 const statuses={active:'进行中',paused:'已暂停',ended:'已结束',recruiting:'招募中',draft:'草稿',editing:'协商中',ready:'待双方同意',completed:'已完成',cancelled:'已取消',expired:'已过期',locked:'未开启',opened:'已开启',claimed:'已领取'};
 const attrs = {
     strength: "力量",
@@ -116,6 +118,7 @@ export function PlayerPanel({
         ...p.profile,
       });
   }, [p?.id]);
+  useRestartDraft('player:'+userId+':'+groupId,{name,selected,form,profile,q,sub,offers},saved=>{Name(saved.name||'');Selected(saved.selected||'');F(saved.form||{quantity:1,attribute:'strength',amount:1,hand:'auto'});if(saved.profile)P(saved.profile);Q(saved.q||'');Sub(saved.sub||'inventory');Offers(saved.offers||{});});
   useEffect(()=>{if(navigation?.type==='inventory')Selected(navigation.id);},[navigation?.key]);
   const item = p?.inventory[selected],
     set = (k, v) => F({ ...form, [k]: v });
@@ -915,7 +918,8 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navi
     [cells, Cells] = useState([]),
     [cell, Cell] = useState(null),
     [image, Image] = useState(false);
-  const b = game.battles.find((b) => b.id === bid) || game.battles[0],
+  useRestartDraft('battle:'+userId+':'+groupId+':'+(compact?'console':'panel'),{bid,action,x,rp},saved=>{Battle(saved.bid||'');Action(saved.action||'attack');if(saved.x)X(saved.x);RP(saved.rp||'');});
+  const b = game.battles.find((b) => b.id === bid) || (!bid ? game.battles[0] : null),
     actor = b?.actors.find((a) => a.userId === userId),
     myTurn = b?.current?.actorId === actor?.id,
     p = game.player;
@@ -943,9 +947,11 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navi
   }
   return (
     <>
+      <BattleStage battle={b} userId={userId} selectedTargetId={x.targetId} compact={compact}/>
       <section className={"panel "+(compact&&action!=="move"?"battle-map-collapsed":"")}>
         <span className="eyebrow">战场纪要</span>
         <h3>战斗面板</h3>
+        {bid&&!b&&<p role="status">当前不在这场活动战斗中；已保存的结算保留在聊天记录。</p>}
         <Select
           label="战斗"
           value={b?.id}
@@ -1033,7 +1039,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navi
                           className={
                             "token " +
                             a.team +
-                            (a.id === b.current?.actorId ? " active" : "")
+                            (a.id === b.current?.actorId ? " active" : "")+(a.id===x.targetId?" target-selected":"")+(b.pending?.some(h=>h.targetId===a.id)?" awaiting":"")
                           }
                         >
                           {a.team === "enemy" ? "▲" : "●"} {a.name}
@@ -1071,6 +1077,7 @@ export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navi
       {b?.pending.map((h) => (
         <section className="panel defense-card" key={h.id}>
           <h3>受到攻击：请选择防守</h3>
+          <DefenseClock expiresAt={h.expiresAt}/>
           <p>
             截止 {new Date(h.expiresAt).toLocaleTimeString()}，填写 RP
             不延长期限。

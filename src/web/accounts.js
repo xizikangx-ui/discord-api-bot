@@ -11,7 +11,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
     disabled: !!u.disabled,
     avatar: u.avatar || null,
     avatarVersion: u.avatarVersion || 0,
-    preferences: {artStyle:"magic",killEffects:true,messageSound:true,sendShortcut:"ctrlEnter",...u.preferences},
+    preferences: {artStyle:"magic",killEffects:true,battleEffects:"full",messageSound:true,sendShortcut:"ctrlEnter",...u.preferences},
   });
   async function user(id, r) {
     const u = await repo.get("user", id, r);

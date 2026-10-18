@@ -1,0 +1,15 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+test('restart drafts preserve chat attachments and form state scoped to account and group, with no submission',async()=>{
+ const {saveRestartDraft,readRestartDraft}=await import('../web/src/restart-drafts.js'),values=new Map(),storage={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)},draft={drafts:{room:'未发送文字'},composers:{room:{reply:{id:'r'},attachments:[{id:'media'}]}},form:{targetId:'npc',rp:'等我回来'}};
+ assert.equal(saveRestartDraft(storage,'me:g',draft),true);assert.deepEqual(readRestartDraft(storage,'me:g'),draft);assert.equal(readRestartDraft(storage,'me:other'),null);assert.equal(readRestartDraft(storage,'other:g'),null);assert.equal(saveRestartDraft({setItem:()=>{throw Error('full');}},'me:g',draft),false);
+ assert.deepEqual(readRestartDraft(storage,'me:g',true),draft);assert.equal(readRestartDraft(storage,'me:g'),null);
+});
+test('scene cleanup disables only old scene cards and keeps chat text, other battles and source data',async()=>{
+ const {clearSceneMessages}=await import('../web/src/restart-drafts.js'),{notificationTarget}=await import('../web/src/notification-target.js'),messages=[{id:'one',text:'原结算文字',system:{battleId:'old-battle',event:{details:{total:9}},corpses:[{id:'old-loot'}]}},{id:'two',text:'手建战斗',system:{battleId:'independent'}},{id:'three',text:'普通聊天'},{id:'four',text:'地图记录',system:{mapId:'old-map'}}];
+ const cleared=clearSceneMessages(messages,{mapIds:['old-map'],battleIds:['old-battle']});assert.equal(cleared[0].text,'原结算文字');assert.equal(cleared[0].system.cleared,true);assert.equal(cleared[0].system.corpses,undefined);assert.equal(cleared[3].system.cleared,true);assert.equal(cleared[1],messages[1]);assert.equal(cleared[2],messages[2]);assert.equal(messages[0].system.cleared,undefined);assert.equal(notificationTarget(cleared[0].system,true),null);assert.equal(notificationTarget(cleared[1].system).id,'independent');
+});
+test('responses that started before scene cleanup cannot restore cleared maps or related loot',async()=>{
+ const {clearSceneGame}=await import('../web/src/restart-drafts.js'),{mergeGame}=await import('../web/src/refresh-state.js'),clears={mapIds:['old-map'],battleIds:['linked-battle']},old={maps:[{id:'old-map'}],battles:[{id:'linked-battle'},{id:'manual'}],corpses:[{battleId:'linked-battle'},{battleId:'manual'}],dashboard:{player:{hp:17,ap:234},map:{id:'old-map'},battle:{id:'linked-battle'}},sections:['explore','battle','dashboard'],sectionVersions:{explore:4,battle:4,dashboard:4},revision:4};
+ const protectedGame=clearSceneGame(old,clears),merged=mergeGame(protectedGame,clearSceneGame(old,clears));assert.deepEqual(merged.maps,[]);assert.deepEqual(merged.battles,[{id:'manual'}]);assert.equal(merged.corpses.length,1);assert.equal(merged.dashboard.map,null);assert.equal(merged.dashboard.battle,null);assert.deepEqual(merged.dashboard.player,{hp:17,ap:234});assert.equal(old.maps.length,1);
+});

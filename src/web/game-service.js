@@ -521,6 +521,7 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
           result: f.gm?f.result:playerResult(f.command,f.result),
         })); },
       get historicalDeathIds() { return Object.values(s.deaths).filter(d=>s.battles[d.battleId]&&visible(s.battles[d.battleId])).map(d=>d.id); },
+      get feedbackBaseline(){return require('./battle-feedback').baseline(Object.values(s.battles).filter(visible));},
       get skills() { return p?B.abilities(p,true).filter(a=>a.attack.kind==="技能"):[]; },
       get revision() { return s.revision; },
       get player() { return p ? { ...p, stats: M.stats(p), health: H.snapshot(p) } : null; },
@@ -588,13 +589,13 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
                           autoStart: require('../rpg/team-movement').automatic(m,c.room),
                           unlocked: c.room.unlocked,
                           containers:
-                            c.room.encounter === "resolved"
-                              ? c.room.containers.map((v) => ({
+                            c.room.containers.map((v) => ({
                                   id: v.id,
                                   box: v.box,
                                   status: v.status,
-                                }))
-                              : [],
+                                  quantity: 1,
+                                  locked: c.room.encounter !== "resolved" || !c.room.unlocked,
+                                })),
                           supplies:
                             c.room.encounter === "resolved"
                               ? c.room.supplies
@@ -608,6 +609,7 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
         ),
       };}); },
       get battles() { return battles.map((b) => ({
+        pendingCount:require('../rpg/aoe').hits(b).length,
         id: b.id,
         name: b.name,
         status: b.status,

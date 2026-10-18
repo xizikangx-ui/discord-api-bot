@@ -1,8 +1,10 @@
 import React,{useEffect,useState} from 'react';
 import {api} from './api';
+import {useRestartDraft} from './use-restart-draft';
 const types={physical:'物理',magical:'魔法',mental:'精神'};
 export function SkillBook({game,groupId,userId,prepare,artStyle='magic',active=true}){
  const [q,Q]=useState(''),[type,Type]=useState(''),[action,Action]=useState(''),[key,Key]=useState(''),[bid,Bid]=useState(''),[target,Target]=useState(''),[center,Center]=useState(null),[targets,Targets]=useState([]),[rp,RP]=useState(''),[check,Check]=useState(null);
+ useRestartDraft('skills:'+userId+':'+groupId,{q,type,action,key,bid,target,center,targets,rp},saved=>{Q(saved.q||'');Type(saved.type||'');Action(saved.action||'');Key(saved.key||'');Bid(saved.bid||'');Target(saved.target||'');Center(saved.center||null);Targets(saved.targets||[]);RP(saved.rp||'');});
  const skills=game.skills||[],skill=skills.find(a=>a.key===key)?.attack,b=game.battles.find(b=>b.id===bid)||game.battles.find(b=>b.actors.some(a=>a.userId===userId)),actor=b?.actors.find(a=>a.userId===userId),area=skill?.aoe?.mode&&skill.aoe.mode!=='single';
  const params=()=>({battleId:b?.id,turnId:b?.current?.id,action:'attack',params:{abilityKey:key,targetId:target,action:skill?.action||'formal',center,targets,firing:{mode:'semi',count:1}},rp});
  useEffect(()=>{if(!active)return;Check(null);if(!skill||!b||!actor)return;let alive=true;const t=setTimeout(()=>api('/groups/'+groupId+'/game/skill-check',params()).then(r=>{if(alive)Check(r);}).catch(e=>{if(alive)Check({available:false,reason:e.message});}),150);return()=>{alive=false;clearTimeout(t);};},[active,groupId,key,b?.id,b?.current?.id,game.versions?.['players:'+userId],game.versions?.['battles:'+b?.id],target,JSON.stringify(center),targets.join(',')]);

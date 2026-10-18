@@ -64,6 +64,13 @@ async function restore(pool, archive, { names } = {}) {
     const groups=new Set((archive.namespaces.game.guilds||[]).map(g=>g.guild_id));
     for(const row of archive.namespaces.platform.records||[])if(row.kind==='group')groups.add(row.id);
     S.ok(!marks.some(m=>groups.has(m.id)),'备份包含已永久删除的团，禁止恢复以免复活。');
+    const gameSource=archive.sourceSchemas?.game||'rpg_web';S.ok(valid(gameSource),'备份游戏命名空间无效。');
+    const removedMaps=(await r.query('SELECT guild_id,object_id FROM "'+gameSource+'".objects WHERE collection=$1',['mapTombstones'])).rows;
+    const oldMaps=new Set((archive.namespaces.game.objects||[]).filter(x=>x.collection==='explorations').map(x=>x.guild_id+':'+x.object_id));
+    S.ok(!removedMaps.some(m=>oldMaps.has(m.guild_id+':'+m.object_id)),'备份包含已清理的旧探索地图，禁止恢复以免复活。');
+    const removedBattles=(await r.query('SELECT guild_id,object_id FROM "'+gameSource+'".objects WHERE collection=$1',['battleTombstones'])).rows;
+    const oldBattles=new Set((archive.namespaces.game.objects||[]).filter(x=>x.collection==='battles').map(x=>x.guild_id+':'+x.object_id));
+    S.ok(!removedBattles.some(b=>oldBattles.has(b.guild_id+':'+b.object_id)),'备份包含已清理的探索战斗，禁止恢复以免复活。');
     for (const [key, d] of Object.entries(definitions)) {
       const schema = names[key];
       S.ok(

@@ -17,6 +17,7 @@ COPY --from=build /app/src ./src
 COPY --from=build /app/assets ./assets
 COPY --from=build /app/web/dist ./web/dist
 COPY package.json ./
+COPY clients/update-public-key.pem ./clients/update-public-key.pem
 COPY PRIVACY.md ./
 USER node
 CMD ["node", "src/web/server.js"]

@@ -1,5 +1,7 @@
 const SkillBook=React.lazy(()=>import("./skills").then(m=>({default:m.SkillBook})));
-import {freshKills} from "./kill-effects";
+import {BattlePresentationProvider, BattleStage, BattleEventDetails, BattleEffectsSettings, useBattleFeedback} from './battle-presentation';
+import {clearSceneMessages,clearSceneGame,readRestartDraft,saveRestartDraft} from './restart-drafts';
+import {useRestartDraft} from './use-restart-draft';
 import { BattleLoot } from "./battle-loot";
 import {workbenchArt} from "./item-art";
 window.workbenchArt=workbenchArt;
@@ -248,6 +250,7 @@ function Keep({ show, children, resetKey = '' }) {
 function PendingTasks({game,userId,onNavigate,onOpen,expanded=false}){const tasks=chatTasks(game,userId);return tasks.length?<div className={'chat-tasks'+(expanded?' expanded':'')} aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}><i className="notification-dot" aria-hidden="true"/>{t.text} →</button>)}</div>:expanded?<div className="chat-tasks" role="status">当前没有待处理事项。</div>:null;}
 function ConsoleStatus({data}){const p=data?.player,b=data?.battle;if(!p)return null;return <div className="console-status" aria-label="常驻角色状态"><b>{p.name}</b><span>HP {p.health.hp}/{p.health.maxHP}</span><span className={p.health.downed?'danger':''}>倒地 {p.health.reserveHP}/{p.health.maxHP}</span><span>AP {p.ap}</span>{b&&<><span>轮 {b.actionRound?.number||1} · {b.actionRound?.counts?.[b.actorId]||0} 次</span><span>下次 {b.nextCost} AP</span><span>快 {b.quick} / 正 {b.formal}</span></>}</div>;}
 function App() {
+  const battleFeedback=useBattleFeedback();
   const [me, Me] = useState(null),
     [booting, Boot] = useState(true),
     [groups, Groups] = useState([]),
@@ -267,7 +270,6 @@ function App() {
     [pendingOperation, PendingOperation] = useState(null),
     [navigation, Navigation] = useState(null),
     [result, R] = useState(null),
-    [killEffect,KillEffect]=useState(null),
     [accountRecovery, AccountRecovery] = useState(""),
     [connected, Conn] = useState(false),
     [chatEvent, ChatEvent] = useState(null),
@@ -283,11 +285,11 @@ function App() {
     [gmTab, GmTab] = useState("templates");
   const ws = useRef(null),
     active = useRef({}),
-    seenDeaths=useRef(new Set()),liveReady=useRef(false),prefsRef=useRef(null),
+    liveReady=useRef(false),prefsRef=useRef(null),
     refreshTimer = useRef(null),deferredSections=useRef(new Map()),
     busyRef = useRef(false),
     pendingRef = useRef(null),
-    gameRef=useRef(null), readQueues=useRef(new Map()),directoryGroup=useRef(null),epoch=useRef(0),
+    gameRef=useRef(null), readQueues=useRef(new Map()),directoryGroup=useRef(null),epoch=useRef(0),sceneClears=useRef({mapIds:[],battleIds:[]}),
     memberRead=useRef(null),memberReadVersion=useRef(0),
     [foreground,Foreground]=useState(document.visibilityState==='visible'),
     [mobileSide, MobileSide] = useState(false);
@@ -308,10 +310,12 @@ function App() {
   function Tab(next){if(next==='gm'){SetTab(next);return;}if(next==='chat'){SetTab(panelPref.pane==='console'?'chat':panelPref.pane);return;}const pane=next==='console'?'console':next;setConsole({pane,open:true});SetTab(pane==='console'?'chat':pane);}
   useEffect(()=>{const q=matchMedia('(max-width:850px)'),change=()=>MobileConsole(q.matches);q.addEventListener('change',change);return()=>q.removeEventListener('change',change);},[]);
   useEffect(()=>{SetTab(panelPref.pane==='console'?'chat':panelPref.pane);},[panelKey]);
-  active.current = { groupId, roomId, scope,tab,panelOpen };
+  active.current = { groupId, roomId, scope,tab,panelOpen,roomIds:rooms.map(room=>room.id) };
   pendingRef.current=pendingOperation;gameRef.current=game;
   prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"magic";
-  useEffect(()=>{if(!killEffect)return;const t=setTimeout(()=>KillEffect(null),2100);return()=>clearTimeout(t);},[killEffect]);
+  useEffect(()=>{battleFeedback.configure(scope,{mode:me?.user.preferences?.battleEffects||'full',onModeChange:next=>savePreferences({battleEffects:next})});},[scope,me?.user.preferences?.battleEffects]);
+  useEffect(()=>{if(!me?.user.id)return;const saved=readRestartDraft(localStorage,'gm-editor:'+me.user.id,true);if(saved)Drafts(old=>({...old,...saved}));},[me?.user.id]);
+  useEffect(()=>{const persist=event=>{if(busyRef.current||pendingRef.current)event.preventDefault();try{sessionStorage.setItem('wasteland-editor-drafts',JSON.stringify(drafts));if(me?.user.id){const mine=Object.fromEntries(Object.entries(drafts).filter(([key])=>key.endsWith(':'+me.user.id)));if(!saveRestartDraft(localStorage,'gm-editor:'+me.user.id,mine)||!saveRestartDraft(localStorage,'navigation:'+me.user.id,{groupId:active.current.groupId,roomId:active.current.roomId}))event.preventDefault();}}catch{event.preventDefault();}};window.addEventListener('book:before-restart',persist);return()=>window.removeEventListener('book:before-restart',persist);},[drafts,me?.user.id]);
   async function boot() {
     try {
       const a = await api("/auth/me");
@@ -357,7 +361,7 @@ function App() {
     const generation=epoch.current;
     if(!readQueues.current.has(g))readQueues.current.set(g,refreshQueue(
       async keys=>api('/groups/'+g+'/game?sections='+keys.join(',')),
-      data=>{if(active.current.groupId!==g||epoch.current!==generation)return;if(!liveReady.current){for(const id of data.historicalDeathIds||[])seenDeaths.current.add(id);liveReady.current=true;}gameRef.current=mergeGame(gameRef.current,data);Game(gameRef.current);},
+      data=>{if(active.current.groupId!==g||epoch.current!==generation)return;if(!battleFeedback.ready()&&Array.isArray(data.feedbackBaseline))battleFeedback.baseline(data.feedbackBaseline);liveReady.current=true;gameRef.current=mergeGame(gameRef.current,clearSceneGame(data,sceneClears.current));Game(gameRef.current);},
       (k,v)=>v<0||(gameRef.current?.sectionVersions?.[k]??-1)<v
     ));
     const jobs=[readQueues.current.get(g)(options.sections||visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),options.expected||{})];
@@ -367,13 +371,14 @@ function App() {
   useEffect(()=>{const changed=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',changed);return()=>document.removeEventListener('visibilitychange',changed);},[]);
   useEffect(() => {
     if (!me) return;
+    const savedNavigation=readRestartDraft(localStorage,'navigation:'+me.user.id);
     const gid = groups.some((g) => g.id === groupId)
       ? groupId
-      : groups[0]?.id || "";
+      : groups.find(g=>g.id===savedNavigation?.groupId)?.id||groups[0]?.id || "";
     if (gid !== groupId) Group(gid);
   }, [groups, me]);
   useEffect(() => {
-    liveReady.current=false;KillEffect(null);
+    liveReady.current=false;sceneClears.current={mapIds:[],battleIds:[]};
     epoch.current++;Game(null);gameRef.current=null;directoryGroup.current=null;readQueues.current.clear();Tab("chat");Navigation(null);
     Rooms([]);
     Members([]);
@@ -413,8 +418,9 @@ function App() {
     void check();const timer=setInterval(check,5000);return()=>{alive=false;clearInterval(timer);};
   },[groupId,me?.user.id,foreground]);
   useEffect(() => {
+    const savedNavigation=readRestartDraft(localStorage,'navigation:'+me?.user.id);
     if (!rooms.some((r) => r.id === roomId))
-      Room(rooms.find((r) => r.kind === "chat")?.id || rooms[0]?.id || "");
+      Room((savedNavigation?.groupId===groupId?rooms.find(r=>r.id===savedNavigation.roomId)?.id:null)||rooms.find((r) => r.kind === "chat")?.id || rooms[0]?.id || "");
   }, [rooms]);
   useEffect(() => {
     if (!me) return;
@@ -428,7 +434,7 @@ function App() {
       );
       ws.current = socket;
       socket.onopen = () => {
-        Conn(true);liveReady.current=false;
+        Conn(true);liveReady.current=false;battleFeedback.reconnect();
         socket.send(
           JSON.stringify({
             type: "subscribe",
@@ -436,13 +442,18 @@ function App() {
             roomId: active.current.roomId || undefined,
           }),
         );
-        refresh().catch(() => {});
+        refresh({sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'battle'])]}).catch(() => {});
         ChatEvent({ type: "reconnect", at: Date.now() });
       };
       socket.onmessage = (e) => {
         const event = JSON.parse(e.data);
         receiveSound(event);
-        const kills=freshKills(event,seenDeaths.current,liveReady.current);if(kills.length&&prefsRef.current?.killEffects!==false)KillEffect({id:kills.join(":"),count:kills.length});
+        if(event.type==='message'&&active.current.roomIds?.includes(event.data?.roomId))battleFeedback.ingest(event,{source:'socket'});
+        if(event.type==='scenes-cleared'&&event.data?.groupId===active.current.groupId){
+          const cleared=event.data;battleFeedback.clear(cleared.battleIds||[]);sceneClears.current={mapIds:[...new Set([...sceneClears.current.mapIds,...(cleared.mapIds||[])])],battleIds:[...new Set([...sceneClears.current.battleIds,...(cleared.battleIds||[])])]};
+          Game(old=>{const next=clearSceneGame(old,sceneClears.current);gameRef.current=next;return next;});
+          Navigation(old=>old&&[...(cleared.mapIds||[]),...(cleared.battleIds||[])].includes(old.id)?null:old);R(null);ChatEvent(event);N('旧探索场景已清理；角色资产保留，请等待GM建立新地图。');void refresh().catch(()=>{});return;
+        }
         if(event.type==='avatar'){refreshMembers().catch(()=>{});}
         else if(event.type==='room-unread'){Rooms(old=>unreadEvent(old,event.data));}
         else if(event.type==='state'){
@@ -510,7 +521,7 @@ function App() {
       try{
         const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:gameRef.current?.versions,includePatch:true,sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'dashboard','core','market'])].filter(k=>k!=='management').join(',')});
         if(active.current.groupId!==targetGroup)return;
-        if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,r.gamePatch);Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
+        battleFeedback.ingest(r.battleFeedback||[],{source:'http'});if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
       }catch(e){
         if(active.current.groupId!==targetGroup)throw e;
         if(['CONFLICT','VALIDATION','FORBIDDEN','NOT_FOUND'].includes(e.code)){
@@ -527,7 +538,7 @@ function App() {
     if(!request)return;
     const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId+'?includePatch=1&sections='+visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).concat('core','market').join(','));
     if(active.current.groupId!==request.groupId || pendingRef.current?.operationId!==request.operationId)return;
-    if(r.status==='committed'){if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,r.gamePatch);Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
+    if(r.status==='committed'){battleFeedback.ingest(r.battleFeedback||[],{source:'http'});if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
     else if(r.status==='uncommitted'){PendingOperation(null);saveLocal('pendingOperation',null);N('权威记录确认此操作未保存。填写内容已保留，可重新提交。');}
     else N(r.status==='processing'?'原操作仍在处理中，请稍后查询。':'保存结果尚未明确，修改保持暂停。');
     return r;
@@ -547,6 +558,7 @@ function App() {
     if (!preview) return;
     const r = await api("/groups/" + groupId + "/game/receipt/" + preview.id);
     if (r.status === "committed") {
+      battleFeedback.ingest(r.battleFeedback||[],{source:'http'});
       R(r.result);
       Preview(null);
       await refresh();
@@ -560,6 +572,7 @@ function App() {
           draftId: f.id,
         });
         if(active.current.groupId!==targetGroup)return;
+        battleFeedback.ingest(r.battleFeedback||[],{source:'http'});
         R(r.result);
         Preview(null);
         N("已保存，网站通知在后台更新。");
@@ -805,8 +818,10 @@ function App() {
               <div className="player-toolbar" aria-label="玩家工具栏"><button aria-expanded={panelOpen} aria-controls="player-operation-panel" onClick={()=>{if(!panelOpen)Tab('console');else setConsole({open:false});}}>{panelOpen?"收起":"操作台"}</button>{shortcuts.map(([k,name])=><button key={k} className={panelOpen&&tab===k?"active":""} onClick={()=>Tab(k)}>{name}{taskBadges[k]>0&&<i className="notification-dot" aria-label={taskBadges[k]+' 项待处理'}/>}</button>)}</div>
               {game?.dashboard?.player&&<ConsoleStatus data={game.dashboard}/>}
               <PendingTasks game={game} userId={me.user.id} onNavigate={system=>{navigateNotice(system);TaskList(false);}} onOpen={target=>{Tab(target);TaskList(false);}} expanded={taskList}/>
+              {!(panelOpen&&(tab==='battle'||(['chat','console'].includes(tab)&&game?.dashboard?.battle)))&&<BattleStage battle={game?.battles?.find(b=>b.id===game?.dashboard?.battle?.id)} userId={me.user.id} compact/>}
               {result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看个人结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}
               <Chat
+                key={scope}
                 {...{
                   groupId,
                   roomId,
@@ -1032,7 +1047,6 @@ function App() {
             </button>
           ))}
       </aside>
-      {killEffect&&<div className={"kill-overlay art-"+(me.user.preferences?.artStyle||"magic")} role="status" key={killEffect.id}><img src="/effects/kill-v1.gif" alt=""/><div><small>胜负已定</small><h2 className="art-title">敌人已击杀</h2>{killEffect.count>1&&<p>本次击杀 {killEffect.count} 名敌人</p>}</div><button onClick={()=>KillEffect(null)}>关闭特效</button></div>}
       {preview && (
         <div className="legacy-draft">
           <section className="panel">
@@ -1130,7 +1144,9 @@ function Chat({
   const bottom = useRef(null),
     active = useRef(roomId),
     client = useRef({}),
-    cursor = useRef(0);
+    cursor = useRef(0),sceneClears=useRef({mapIds:[],battleIds:[]});
+  const protectMessages=incoming=>clearSceneMessages(incoming,sceneClears.current);
+  useRestartDraft('chat:'+me.user.id+':'+groupId,{drafts,composers,client:client.current},saved=>{Drafts(saved.drafts||{});Composers(saved.composers||{});client.current=saved.client||{};},()=>sendingRooms.current.size>0);
   active.current = roomId;
   const room = rooms.find((r) => r.id === roomId),
     readOnly = room?.kind === "system";
@@ -1145,7 +1161,7 @@ function Chat({
     if (active.current === roomId) {
       if(before)scroll.preserveHistory();
       Messages((old) =>
-        mergeMessages(old,r),
+        mergeMessages(old,protectMessages(r)),
       );
     }
   }
@@ -1159,7 +1175,7 @@ function Chat({
       );
       if (active.current !== roomId) return;
       Messages((old) =>
-        mergeMessages(old,batch),
+        mergeMessages(old,protectMessages(batch)),
       );
       if (!batch.length) break;
       after = batch.at(-1).sequence;
@@ -1171,7 +1187,7 @@ function Chat({
     );
     if (active.current === roomId)
       Messages((old) =>
-        mergeMessages(old,fresh),
+        mergeMessages(old,protectMessages(fresh)),
       );
   }
   useEffect(() => {
@@ -1181,6 +1197,7 @@ function Chat({
     Sending(sendingRooms.current.has(roomId));
   }, [roomId]);
   useEffect(() => {
+    if(chatEvent?.type==='scenes-cleared'&&chatEvent.data?.groupId===groupId){sceneClears.current={mapIds:[...new Set([...sceneClears.current.mapIds,...(chatEvent.data.mapIds||[])])],battleIds:[...new Set([...sceneClears.current.battleIds,...(chatEvent.data.battleIds||[])])]};Messages(old=>protectMessages(old));return;}
     if (chatEvent?.type === "reconnect") {
       catchUp().catch(() => {});
       return;
@@ -1192,7 +1209,7 @@ function Chat({
     if (chatEvent?.data?.roomId !== roomId) return;
     if (["message", "deleted"].includes(chatEvent.type))
       Messages((old) =>
-        mergeMessages(old,[chatEvent.data]),
+        mergeMessages(old,protectMessages([chatEvent.data])),
       );
   }, [chatEvent, roomId]);
   useEffect(()=>{const handler=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',handler);return()=>document.removeEventListener('visibilitychange',handler);},[]);
@@ -1374,6 +1391,7 @@ function Chat({
                   </div>
                 )}
                 {m.system?.event && <EventDetails event={m.system.event} />}
+                {m.system?.cleared&&<span className="badge">场景已清理 · 历史记录保留</span>}
                 {m.system?.corpses?.map(c => <BattleLoot key={c.id}
                   corpse={game?.corpses?.find(live => live.id === c.id) || { ...c, canClaim: false, blockedReason: "仅本场参战角色可拾取；若刚结束战斗，请稍候刷新。" }}
                   prepare={prepare} busy={busy} />)}
@@ -1487,55 +1505,7 @@ function Chat({
   );
 }
 function EventDetails({ event }) {
-  const [page, Page] = useState(0),
-    d = event.details || {},
-    parts = d.children || [],
-    current = parts[page],
-    result =
-      current?.result ||
-      (!d.children ? d.results?.[0] : null) ||
-      (["result", "death"].includes(event.type) ? d : null),
-    kills = result?.killed && result?.deathId ? [result.deathId] : [],
-    max =
-      !!result &&
-      !result.dodge?.success &&
-      result.perShot?.some((s) => s.maxRoll);
-  return (
-    <div className="event-details">
-      {kills.length > 0 && <strong className="kill-callout">击杀确认</strong>}
-      {max && <strong className="max-callout">满伤害命中</strong>}
-      {d.healthAfter && (
-        <p>
-          正常 HP {d.healthBefore?.hp} → {d.healthAfter.hp}　倒地 HP{" "}
-          {d.healthBefore?.reserveHP} → {d.healthAfter.reserveHP}
-        </p>
-      )}
-      {event.rpEntries?.map((r, n) => (
-        <blockquote key={r.operationId || n}>{r.text}</blockquote>
-      ))}
-      {parts.length > 0 && (
-        <div className="toolbar">
-          <button disabled={!page} onClick={() => Page(page - 1)}>
-            上一目标／组
-          </button>
-          <span>
-            {current?.name || current?.targetName || ""} {page + 1}/
-            {parts.length}
-          </span>
-          <button
-            disabled={page >= parts.length - 1}
-            onClick={() => Page(page + 1)}
-          >
-            下一目标／组
-          </button>
-        </div>
-      )}
-      <details>
-        <summary>骰点、伤害与结算详情</summary>
-        <Result value={current || d} />
-      </details>
-    </div>
-  );
+  return <BattleEventDetails event={event}/>;
 }
 function Library({ me, groupId, gm, run, error, notice, refresh }) {
   const [entries, Entries] = useState([]),
@@ -1923,7 +1893,7 @@ function Settings({
         )}
       </section>
       <section className="panel">
-        <h3>展示偏好</h3><label className="field"><span>技能及 RP 标题风格</span><select value={preferences.artStyle} onChange={e=>Preferences({...preferences,artStyle:e.target.value})}><option value="tactical">战术 · 钢铁铭文</option><option value="magic">魔法 · 星火符文</option><option value="psychic">精神 · 幻象回响</option></select></label><label><input type="checkbox" checked={preferences.killEffects} onChange={e=>Preferences({...preferences,killEffects:e.target.checked})}/>播放击杀特效</label><button onClick={()=>run(async()=>{await api('/preferences',{artStyle:preferences.artStyle,killEffects:preferences.killEffects});await boot();notice('展示偏好已保存。');}).catch(()=>{})}>保存展示偏好</button>
+        <h3>展示偏好</h3><label className="field"><span>技能及 RP 标题风格</span><select value={preferences.artStyle} onChange={e=>Preferences({...preferences,artStyle:e.target.value})}><option value="tactical">战术 · 钢铁铭文</option><option value="magic">魔法 · 星火符文</option><option value="psychic">精神 · 幻象回响</option></select></label><BattleEffectsSettings/><button onClick={()=>run(async()=>{await api('/preferences',{artStyle:preferences.artStyle});await boot();notice('展示偏好已保存。');}).catch(()=>{})}>保存标题风格</button>
         <h3>账号安全</h3>
         <form
           onSubmit={(e) => {
@@ -2044,4 +2014,4 @@ function Settings({
     </>
   );
 }
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(<BattlePresentationProvider><App /></BattlePresentationProvider>);

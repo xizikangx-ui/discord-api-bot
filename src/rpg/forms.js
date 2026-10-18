@@ -55,7 +55,7 @@ function fields(form) {
   if (kind === 'room') return [...common, refField('categoryIds', '兼容地图大类（可多选）', 'mapCategories', 25),field('autoStart','全队进入后自动开战','bool'),field('obstacles.names','障碍名称池（顿号分隔）','long'),field('obstacles.min','最少障碍数（0—3）','number'),field('obstacles.max','最多障碍数（0—3，按面积限制）','number'),enumField('obstacles.terrain','障碍地形',[{value:'blocked',label:'阻挡（不能通过）'},{value:'difficult',label:'困难（双倍移动消耗）'}]),
     {...enumField('boxes', '固定容器类型', C.BOXES), type: 'multi', limit: C.BOXES.length}, {key:'containerCounts',label:'固定容器数量（下拉选择）',type:'fixedRoom',source:'boxes',refs:'boxes',max:10},
     refField('supplyIds', '固定物资', 'catalog', 25, t => t.kind !== '技能'), {key:'supplyQuantities',label:'固定物资数量（下拉选择）',type:'fixedRoom',source:'catalog',refs:'supplyIds',max:100},
-    refField('npcIds', '固定NPC', 'npcTemplates', 19), {key:'npcQuantities',label:'固定NPC数量（下拉选择）',type:'fixedRoom',source:'npcTemplates',refs:'npcIds',max:19},
+    refField('npcIds', '固定NPC（指定房间必定出现）', 'npcTemplates', 19), {key:'npcQuantities',label:'固定NPC数量（必有，不按概率抽取）',type:'fixedRoom',source:'npcTemplates',refs:'npcIds',max:19},
     refField('keyIds', '入门钥匙（留空免费）', 'catalog', 1, t => t.kind === '钥匙'),
     {key:'randomContainers',label:'随机容器 · 0—6个概率',type:'randomRoom',source:'boxes',max:6,limit:C.BOXES.length},
     {key:'randomSupplies',label:'随机散落物资 · 0—6件概率',type:'randomRoom',source:'catalog',max:6,limit:25,predicate:t=>t.kind!=='技能'},

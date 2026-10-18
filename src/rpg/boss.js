@@ -11,7 +11,7 @@ function publish(s,raw,id,baseVersion=0) {s.bossPools||={};ok((s.bossPools[id]?.
 function assign(s,m,ref,poolId,rng=require('node:crypto').randomInt) {
   ok(['draft','paused'].includes(m.status),'请在草稿或暂停地图时分配。');ok(s.config.rpChannelId,'请先配置GM隐藏操作频道。');const c=m.cells[ref],p=s.bossPools[poolId];ok(p?.published,'BOSS池不存在。');validate(s,p);
   ok(c&&(c.type==='room'||c.hasContents)&&c.passable!==false,'请选择可通行的内容格。');ok(!c.room?.merchant,'行商节点不能直接替换为BOSS房。');ok(!c.touched&&!Object.values(m.participants).some(x=>x.cell===ref),'已经进入的房间不能更换。');ok(!Object.entries(m.cells).some(([r,x])=>r!==ref&&x.room?.boss),'每张地图最多一间BOSS房。');require('./exploration').validateMap(m);
-  const X=require('./exploration');if(!c.room)c.room=X.instantiate(s,X.selectRoom(s,m,c,rng),rng,m.maxRank??10,c.variantId);
+  const X=require('./exploration');if(!c.room)c.room=X.instantiate(s,X.selectRoom(s,m,c,rng),rng,m.maxRank??10,c.variantId,{skipContainer:true});
   c.bossOriginal ||= C.clone(c.room);
   const entries=p.entries.flatMap(e=>Array.from({length:e.quantity},()=>({template:s.npcTemplates[e.ref].randomStrength?require('./npc-strength').freeze(s.npcTemplates[e.ref],rng):C.clone(s.npcTemplates[e.ref]),quantity:1})));
   const r=c.room;r.boss={poolId,version:p.version};r.snapshot.name=p.name;r.snapshot.description=p.description||r.snapshot.description;r.snapshot.autoStart=false;r.autoStart=false;r.npcs=entries;r.snapshot.npcs=C.clone(entries);r.remainingNpcs=C.clone(entries);r.encounter='pending';r.battleId=null;delete r.bossRequest;m.version++;return r;

@@ -65,8 +65,8 @@ test('PostgreSQL isolated integration, concurrency, disconnect and recovery', {s
     for(const b of Object.values(s.battles))if(b.status!=='ended')B.endBattle(s,b);
     // The earlier death tests leave both player characters alive.
     const cf=F.create(s,'GM','mapcategory');cf.data.name='隔离布局类别';const cat=F.publish(s,cf);
-    const template=npc(s,{hpMax:100});const rf=F.create(s,'GM','room');Object.assign(rf.data,{name:'隔离办公室',categoryIds:[cat.id],npcIds:[template.id]});F.publish(s,rf);
-    const m=X.create(s,'GM','pg-layout','隔离地图',1,3,'random',cat.id);X.generate(s,m,minRng);X.publish(s,m);X.join(s,m,'1');m.participants['1'].cell='2,0';m.revealed['2,0']=true;m.cells['2,0'].room.remainingNpcs[0].quantity=22;
+    const template=npc(s,{hpMax:100});const rf=F.create(s,'GM','room');Object.assign(rf.data,{name:'隔离办公室',categoryIds:[cat.id],npcIds:[template.id]});const room=F.publish(s,rf);
+    const m=X.create(s,'GM','pg-layout','隔离地图',1,3,'random',cat.id);m.cells['2,0'].templateId=room.id;m.cells['2,0'].variantId='v1';X.generate(s,m,minRng);X.publish(s,m);X.join(s,m,'1');m.participants['1'].cell='2,0';m.revealed['2,0']=true;m.cells['2,0'].room.remainingNpcs[0].quantity=22;
     const b=B.createBattle(s,'pg-round','GM','隔离行动轮');B.join(s,b,'2');B.start(s,b,null,minRng);return{map:m.id,round:b.id};
    });
    const encounters=await Promise.all(Array.from({length:20},()=>st.transact(seed.guildId,'one-random-encounter','GM',s=>X.encounter(s,s.explorations[refs.map],'2,0',['1'],(lo)=>{draws++;return lo;}).id)));

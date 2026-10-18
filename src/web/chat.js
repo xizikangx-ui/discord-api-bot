@@ -184,15 +184,16 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
   let getCharacter = async () => null;
   let getProfiles = async () => ({});
   let getNPC = async () => null;
+  let getSystem = async (_group,messages) => messages;
   async function withAvatars(groupId, messages) {
     const ids = [...new Set(messages.filter(m => !m.deleted && m.kind !== "system").map(m => m.authorId))];
     const profiles = ids.length ? await getProfiles(groupId, ids) : {};
-    return messages.map(m => {
+    return getSystem(groupId,messages.map(m => {
       const p = profiles[m.authorId];
       if (!p || m.deleted || m.kind === "system") return m;
       return { ...m, accountAvatar: p.avatar || null, characterAvatar: p.characterAvatar || null,
         avatar: m.kind === "rp" ? p.characterAvatar || p.avatar || null : p.avatar || p.characterAvatar || null };
-    });
+    }));
   }
   async function remove(userId, id) {
     const m = await repo.findMessage(id);
@@ -332,6 +333,7 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
     },
     setProfileReader: (fn) => { getProfiles = fn; },
     setNPCReader: fn => { getNPC = fn; },
+    setSystemReader: fn => { getSystem = fn; },
   };
 }
 module.exports = { createChat };

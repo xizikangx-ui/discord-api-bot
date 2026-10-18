@@ -1,5 +1,6 @@
 // Navigation is read-only and must never go through the game mutation executor.
 export function notificationTarget(system, gm = false) {
+  if(system?.cleared)return null;
   if(system?.worldJourneyId)return {tab:'explore',id:system.worldJourneyId,type:'world'};
   if (system?.battleId) return {tab: gm && system.kind === 'webNotice' ? 'gm' : 'battle',gmTab:'battles',id:system.battleId,type:'battle'};
   if (system?.mapId) return {tab: gm && ['webNotice','webEncounterWait'].includes(system.kind) ? 'gm' : 'explore',gmTab:'maps',id:system.mapId,type:'map',...(system.cell?{cell:system.cell}:{})};

@@ -5,7 +5,7 @@ const { migrate } = require('./activities');
 
 // A failed Discord write is not retried with fresh dice. The canonical attachment
 // must be read first; unresolved outcomes freeze this guild until a GM recovers it.
-function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt, fetcher = fetch, database, allowImport = false, backgroundPublications = !!database, metrics, systemActorId, deriveDelivery }) {
+function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt, fetcher = fetch, database, allowImport = false, backgroundPublications = !!database, metrics, systemActorId, deriveDelivery, beforeMutation }) {
   const actor = () => systemActorId || client.user.id;
   const states = new Map(), messages = new Map(), queues = new Map(), frozen = new Map();
   const depths = new Map(), listeners = new Set(), backupMessages = new Map(), backedUp = new Map(), backupJobs = new Map();
@@ -118,10 +118,11 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       C.requireThat(!frozen.has(guild), '存档写入结果待核对，跑团已暂停。GM请使用 /gm 恢复存档。');
       const before = states.get(guild);
       if (before.receipts[operation]) return C.clone(before.receipts[operation].result);
+      beforeMutation?.(guild,operation,options);
       const computeDone = metrics?.start('transaction.compute');
       const next = C.clone(before);
       const result = await fn(next);
-      require('./mortality').reconcile(next, before);
+      if(options.lifecycle!==false)require('./mortality').reconcile(next, before);
       const savedResult = C.clone(result ?? null);
       next.revision++;
       next.receipts[operation] = { at: Date.now(), result: C.clone(savedResult) };

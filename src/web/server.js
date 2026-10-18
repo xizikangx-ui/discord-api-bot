@@ -22,8 +22,10 @@ function createWeb({
   storage = {},
   allowHttp = false,
   renderer: providedRenderer,
+  clientRelease: providedClientRelease,
 }) {
   const metrics=require('./metrics').createMetrics();
+  const clientRelease=providedClientRelease||require('./client-release').createClientRelease();
   const background=require('./background-tasks').createBackgroundTasks(()=>metrics.gauge('notification.failure',1));
   const repo =
       repository || require("./repository").createRepository(pool, crypt),
@@ -180,6 +182,9 @@ function createWeb({
       renderer,
     });
   const deletion=require('./group-deletion').createDeletion({repo,content,accounts,games,database,storage,disconnected:group=>{for(const ws of sockets)if(ws.groupId===group)ws.close(4003,'此团正在删除');}});
+  const explorationReset=require('./exploration-reset').createReset({repo,accounts,games,broadcast:(group,event)=>background.run(()=>emit(group,event))});
+  chat.setSystemReader(async(group,messages)=>{await games.ensure(group);const marks=games.store.select(group,s=>({maps:s.mapTombstones||{},battles:s.battleTombstones||{}}));return require('./exploration-reset').decorate(messages,marks);});
+  async function readableFeedback(saved,group,uid,a){if(!saved.battleFeedback?.length)return saved;const rooms=new Set((await chat.rooms(group,uid,undefined,a)).map(r=>r.id));return{...saved,battleFeedback:saved.battleFeedback.filter(f=>rooms.has(f.channelId))};}
   let deletionTimer;
   const json = (res, status, value) => {
     res.writeHead(status, {
@@ -304,6 +309,8 @@ function createWeb({
           req.headers["x-real-ip"] || req.socket.remoteAddress || "local",
         );
       limit("ip:" + ip, 600);
+      if(req.method==='GET'&&pth==='/client-release'){const release=await clientRelease.get(u.searchParams.get('platform'));res.setHeader('cache-control','public,max-age=60');return release?json(res,200,release.envelope):(res.writeHead(204),res.end());}
+      if(req.method==='GET'&&pth==='/client-release/windows-x64/latest.yml'){const feed=await clientRelease.windowsFeed();S.ok(feed,'尚无可用客户端更新。','NOT_FOUND');res.writeHead(200,{'content-type':'application/yaml; charset=utf-8','cache-control':'public,max-age=60','x-content-type-options':'nosniff'});return res.end(JSON.stringify(feed));}
       let p;
       if (req.method === "POST") {
         checkOrigin(req);
@@ -422,13 +429,17 @@ function createWeb({
       if (pth === "/groups/join" && p)
         return answer(await accounts.join(auth.user, p.code));
       if(pth==='/preferences' && p){
+        if(p.battleEffects!==undefined)S.ok(['full','reduced','off'].includes(p.battleEffects),'请选择完整、简化或关闭战斗动效。');
         if(p.artStyle!==undefined)S.ok(['tactical','magic','psychic'].includes(p.artStyle),'请选择战术、魔法或精神风格。');
         if(p.sendShortcut!==undefined)S.ok(['enter','ctrlEnter'].includes(p.sendShortcut),'发送快捷键无效。');
-        const patch=Object.fromEntries(['artStyle','killEffects','messageSound','sendShortcut'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]));
+        const patch=Object.fromEntries(['artStyle','killEffects','battleEffects','messageSound','sendShortcut'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]));
         for(const k of ['killEffects','messageSound'])if(p[k]!==undefined)S.ok(typeof p[k]==='boolean','开关选项无效。');
         return answer(await repo.tx('preferences:'+uid+':'+crypto.randomUUID(),async r=>{const u=await repo.get('user',uid,r,true);S.ok(u&&!u.disabled,'账号已停用。','UNAUTHORIZED');u.preferences={...accounts.publicUser(u).preferences,...patch};u.version++;await repo.put('user',u,{lookup:S.hash(u.name)},r);return u.preferences;}));
       }
       const deletePath=pth.match(/^\/admin\/groups\/([^/]+)\/(delete|deletion)$/);
+      if(pth==='/admin/exploration-reset/preview'&&!p)return answer(await explorationReset.preview(auth.user));
+      if(pth==='/admin/exploration-reset'&&p)return answer(await explorationReset.start(auth.user,p));
+      if(pth.startsWith('/admin/exploration-reset/')&&!p)return answer(await explorationReset.status(auth.user,pth.split('/').at(-1)));
       if(deletePath){accounts.admin(auth.user);return answer(deletePath[2]==='delete'&&p?await deletion.start(auth.user,deletePath[1],p):await deletion.status(auth.user,deletePath[1]));}
       if (pth === "/admin/users" && !p) {
         accounts.admin(auth.user);
@@ -640,9 +651,9 @@ function createWeb({
         const key=group+':'+uid+':'+p.operationId;
         if(p.command==='npc.portrait'&&p.params)p.params.mediaId ||= p.params.uploadId;
         const job=games.execute(group,uid,p.command,p.params||{},p.operationId,p.versions,rest==='/gm/execute');pending.set(key,job);
-        try{const saved=await job;if(p.command==='character.portrait')background.run(()=>notifyAvatar(uid,group));let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');gamePatch=await games.view(group,uid,keys,a);}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...saved,...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
+        try{const saved=await job;if(p.command==='character.portrait')background.run(()=>notifyAvatar(uid,group));let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');gamePatch=await games.view(group,uid,keys,a);}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...await readableFeedback(saved,group,uid,a),...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
       }
-      if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length),result=pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op);if(result.status==='committed'&&u.searchParams.get('includePatch')==='1')result.gamePatch=await games.view(group,uid,require('./game-sections').parse(u.searchParams.get('sections')||'dashboard,core,battle,explore,bag,market'),a);return answer(result);}
+      if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length),result=pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op);if(result.status==='committed'&&u.searchParams.get('includePatch')==='1')result.gamePatch=await games.view(group,uid,require('./game-sections').parse(u.searchParams.get('sections')||'dashboard,core,battle,explore,bag,market'),a);return answer(await readableFeedback(result,group,uid,a));}
       if (rest === "/game/preview" && p)
         return answer(
           await games.preview(
@@ -1023,7 +1034,10 @@ function createWeb({
     await database.acquireLease("standalone-web");
     await music.migrateLegacy();
     await worldLibrary.refresh();
-    for (const g of await repo.list("group")) if(!g.deleting) await games.ensure(g.id);
+    await explorationReset.restoreFences();
+    const recoveringReset=(await repo.list('explorationReset')).some(j=>j.status!=='completed');
+    for (const g of await repo.list("group")) if(!g.deleting) await games.ensure(g.id,{maintenance:recoveringReset});
+    await explorationReset.resume();
     server = http.createServer((req, res) => {
       const done=metrics.start(req.url.startsWith('/api/')?'request.api':'request.static');res.once('finish',()=>{done();metrics.gauge('http.lastStatus',res.statusCode);});
       void route(req, res);
@@ -1128,7 +1142,7 @@ function createWeb({
     await library.installSupplies();
     games.start();
     void deletion.resume();
-    deletionTimer=setInterval(()=>void deletion.resume().catch(()=>{}),30000);deletionTimer.unref();
+    deletionTimer=setInterval(()=>{void deletion.resume().catch(()=>{});void explorationReset.resume().catch(()=>{});},30000);deletionTimer.unref();
     heartbeat = setInterval(() => background.run(async () => {
       for (const ws of sockets) {
         if (!ws.alive) {
@@ -1170,6 +1184,7 @@ function createWeb({
     metrics.stop();
     clearInterval(deletionTimer);
     await deletion.drain();
+    await explorationReset.stop();
     await backups?.stop();
     for (const ws of sockets) ws.close(1001, "网站维护");
     await games.stop();
@@ -1193,6 +1208,7 @@ function createWeb({
     chat,
     library,
     deletion,
+    explorationReset,
     games,
     renderer,
     get server() {

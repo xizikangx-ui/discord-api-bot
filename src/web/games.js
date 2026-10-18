@@ -86,6 +86,7 @@ function derive(before, next) {
           battleId: id,
           roomId: b.channelId,
           eventId: e.id,
+          feedbackAt: Date.now(),
           npcId: actor && !actor.userId ? actor.id : null,
           status: "pending",
           desiredRevision: next.revision,
@@ -197,6 +198,7 @@ function createGames({
   broadcast = () => {},
   metrics,
 }) {
+  const resetFences=new Map();
   const store = require("../rpg/store").createStore({
       database,
       systemActorId: "system:web",
@@ -205,6 +207,7 @@ function createGames({
       backgroundPublications: true,
       deriveDelivery: derive,
       metrics,
+      beforeMutation:(group,op,options)=>S.ok(!resetFences.has(group)||op===resetFences.get(group)||options.maintenance,'管理员正在清理旧探索，请稍后再操作。','MAINTENANCE'),
     }),
     loading = new Map(), stamps=new Map(),versionCache=require('./versions').createVersionCache();
   let timer,
@@ -213,7 +216,7 @@ function createGames({
     pumpPromise, wakeAt=Infinity, scheduled=false, worldRefreshAt=0;
   function versions(group){return store.select(group,s=>({revision:s.revision,sectionVersions:stamps.get(group)||Object.fromEntries(Object.keys(Sections.definitions).map(k=>[k,s.revision]))}));}
   function wake(delay=0){if(stopped||!scheduled)return;const at=Date.now()+delay;if(at>=wakeAt)return;clearTimeout(timer);wakeAt=at;timer=setTimeout(()=>{wakeAt=Infinity;pumpPromise=tick();},Math.max(0,delay));timer.unref();}
-  async function ensure(id) {
+  async function ensure(id,{maintenance=false}={}) {
     if (store.guilds().includes(id)) return;
     if (loading.has(id)) return loading.get(id);
     const job = store.initialize(id, async () => {
@@ -242,12 +245,12 @@ function createGames({
     loading.set(id, job);
     try {
       await job;
-      if(store.select(id,s=>s.worldUpgradeVersion!==1))await store.transact(id,'web-world-fields-v1','system:web',s=>{require('./world').init(s);return{initialized:true};},'初始化世界地图字段',{delivery:false});
-      if(store.select(id,s=>s.webMarketVersion!==1))await store.transact(id,'web-markets-v1','system:web',s=>require('../rpg/markets').initialize(s),'初始化关闭的营地市场',{delivery:false});
-      if(store.select(id,s=>s.webNpcAutoVersion!==1))await store.transact(id,'web-npc-auto-v1','system:web',s=>require('../rpg/npc-policy').migrate(s),'NPC默认自动操作：一次性切换现有模式',{delivery:false});
+      if(store.select(id,s=>s.worldUpgradeVersion!==1))await store.transact(id,'web-world-fields-v1','system:web',s=>{require('./world').init(s);return{initialized:true};},'初始化世界地图字段',{delivery:false,maintenance,lifecycle:!maintenance});
+      if(store.select(id,s=>s.webMarketVersion!==1))await store.transact(id,'web-markets-v1','system:web',s=>require('../rpg/markets').initialize(s),'初始化关闭的营地市场',{delivery:false,maintenance,lifecycle:!maintenance});
+      if(store.select(id,s=>s.webNpcAutoVersion!==1))await store.transact(id,'web-npc-auto-v1','system:web',s=>require('../rpg/npc-policy').migrate(s),'NPC默认自动操作：一次性切换现有模式',{delivery:false,maintenance,lifecycle:!maintenance});
       if(!stamps.has(id))stamps.set(id,versions(id).sectionVersions);
-      if(store.select(id,needsLifecycle))await store.transact(id,'web-lifecycle-recover:'+store.select(id,s=>s.revision),'system:web',()=>({recovered:true}),'恢复战斗结束检查');
-      if (store.select(id, Loot.needsBackfill))
+      if(!maintenance&&store.select(id,needsLifecycle))await store.transact(id,'web-lifecycle-recover:'+store.select(id,s=>s.revision),'system:web',()=>({recovered:true}),'恢复战斗结束检查');
+      if (!maintenance&&store.select(id, Loot.needsBackfill))
         await store.transact(id, "web-loot-backfill-v1", "system:web", () => ({ queued: true }), "恢复战后战利品入口");
     } finally {
       loading.delete(id);
@@ -360,6 +363,7 @@ function createGames({
   }
   async function validateReferences(a, command, p, gm, state) {
     const select=read=>state?read(state):store.select(a.group.id,read);
+    S.ok(!select(s=>s.mapTombstones?.[p.mapId]||s.battleTombstones?.[p.battleId]),'这个场景已被管理员清理，请打开最新面板。','NOT_FOUND');
     const rows = G.rowsFor(command, p);
     S.ok(p.users === undefined || Array.isArray(p.users), "参战玩家须为列表。");
     const channelIds = select((s) =>
@@ -441,6 +445,7 @@ function createGames({
   async function commit(group, uid, id) {
     await authorize(group, uid);
     const operationId = "web-action:" + uid + ":" + id;
+    if(store.select(group,s=>!!s.sceneClearOperations?.[operationId]))return{operationId,status:"committed",cleared:true,result:{message:"原操作已保存，关联场景现已清理。"}};
     const saved=await store.transact(
       group,
       operationId,
@@ -472,10 +477,12 @@ function createGames({
       },
       "网站 · " + id,
     );
+    if(store.select(group,s=>!!s.sceneClearOperations?.[operationId]))return{operationId,status:"committed",cleared:true,result:{message:"原操作已保存，关联场景现已清理。"}};
     const f=store.select(group,s=>s.forms[id]);
     return f?.gm?saved:P.playerResult(f?.command,saved);
   }
   async function applyForm(s, uid, f, operationId) {
+        const battle=f.params.battleId&&s.battles[f.params.battleId],known=new Map((battle?.publicEvents||[]).map(e=>[e.id,e.version]));
         let result;
         if (!f.gm && f.command === "battle.action") {
           const p = f.params,
@@ -514,6 +521,7 @@ function createGames({
           status: "committed",
           result: C.clone(result ?? null),
         };
+        if(battle){const changed=(battle.publicEvents||[]).filter(e=>known.get(e.id)!==e.version);if(changed.length)f.result.battleFeedback=changed.map(event=>({battleId:battle.id,channelId:battle.channelId,event:C.clone(event),committedAt:Date.now()}));}
         if (f.command === "loot.open" && result?.batchId) {
           s.deliveryJobs ||= {};
           const key = "web:loot:" + result.batchId;
@@ -560,6 +568,7 @@ function createGames({
     S.ok(gm || P.playerCommands[command],'操作不存在。');
     if(gm)S.ok(!['config.save','publication.repair'].includes(command),'请使用网站配置入口。');
     const id=directId(uid,clientId), operationId='web-direct:'+uid+':'+clientId;
+    if(store.select(group,s=>!!s.sceneClearOperations?.[operationId]))return{operationId,status:'committed',cleared:true,result:{message:'原操作已保存，关联场景现已清理。'}};
     const prior=store.select(group,s=>s.forms[id]);if(prior)S.ok(prior.command===command && G.fingerprint(prior.originalParams)===G.fingerprint(params),"同一操作编号不可用于不同操作。","CONFLICT");
     // A completed map transition no longer has the actor in its source map.
     // Replaying its authoritative receipt is a read, not a new permission grant.
@@ -583,16 +592,18 @@ function createGames({
       s.forms[id]=f;
       return applyForm(s,uid,f,operationId);
     },'网站直接执行 · '+(P.playerCommands[command]||command));
+    if(store.select(group,s=>!!s.sceneClearOperations?.[operationId]))return{operationId,status:'committed',cleared:true,result:{message:'原操作已保存，关联场景现已清理。'}};
     const saved=store.select(group,s=>s.forms[id]);S.ok(saved?.command===command && G.fingerprint(saved.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');
     return gm?result:P.playerResult(command,result);
   }
   async function operationReceipt(group,uid,clientId){
     await authorize(group,uid);operation(clientId);
-    return store.select(group,s=>{const f=s.forms[directId(uid,clientId)];return f?.result?(f.gm?f.result:P.playerResult(f.command,f.result)):{status:store.frozen(group)?'uncertain':inFlight.has(operationKey(group,uid,clientId))?'processing':'uncommitted'};});
+    return store.select(group,s=>{const op='web-direct:'+uid+':'+clientId;if(s.sceneClearOperations?.[op])return{operationId:op,status:'committed',cleared:true,result:{message:'原操作已保存，关联场景现已清理。'}};const f=s.forms[directId(uid,clientId)];return f?.result?(f.gm?f.result:P.playerResult(f.command,f.result)):{status:store.frozen(group)?'uncertain':inFlight.has(operationKey(group,uid,clientId))?'processing':'uncommitted'};});
   }
   async function receipt(group, uid, id) {
     await authorize(group, uid);
     return store.select(group, (s) => {
+      const cleared='web-action:'+uid+':'+id;if(s.sceneClearOperations?.[cleared])return{operationId:cleared,status:'committed',cleared:true,result:{message:'原操作已保存，关联场景现已清理。'}};
       const f = s.forms[id];
       S.ok(f?.owner === uid, "回执不属于你。", "FORBIDDEN");
       return (
@@ -626,6 +637,7 @@ function createGames({
     );
   }
   async function publishJobs(group) {
+    if(resetFences.has(group))return;
     const tasks = store.select(group, (s) =>
         Object.values(s.deliveryJobs || {})
           .filter((j) => j.status === "pending" && j.kind.startsWith("web"))
@@ -636,6 +648,7 @@ function createGames({
       publicRoom = rooms.find((c) => c.kind === "system" && !c.archived),
       gmRoom = rooms.find((c) => c.kind === "gm" && !c.archived);
     for (const j of tasks) {
+      if(resetFences.has(group))return;
       const room = j.roomId
         ? rooms.find((r) => r.id === j.roomId && !r.archived)
           : j.kind === "webNotice"
@@ -694,6 +707,7 @@ function createGames({
         system = {
           battleId: b.id,
           event: e,
+          feedbackAt:j.feedbackAt||e.at,
           effectDeaths: require("./effects").eventDeaths(s,b,e),
           npcId: j.npcId,
           cardKey: j.npcId ? b.id + ":" + j.npcId : undefined,
@@ -798,7 +812,7 @@ function createGames({
       database.assertLease();
       if(worldLibrary&&Date.now()-worldRefreshAt>=86400000){await worldLibrary.refresh();worldRefreshAt=Date.now();}
       for (const group of store.guilds()) {
-        if (store.frozen(group)) continue;
+        if (store.frozen(group)||resetFences.has(group)) continue;
         const s = store.select(group,st=>({
           librarySync:st.librarySync,
           worldSettings:st.worldSettings?.main,
@@ -897,7 +911,7 @@ function createGames({
       );
     } finally {
       pumping = false;
-      if(!stopped&&scheduled){let delay=30000;for(const group of store.guilds())if(!store.frozen(group))delay=Math.min(delay,store.select(group,s=>{
+      if(!stopped&&scheduled){let delay=30000;for(const group of store.guilds())if(!store.frozen(group)&&!resetFences.has(group))delay=Math.min(delay,store.select(group,s=>{
         const now=Date.now(),times=[];
         for(const b of Object.values(s.battles))if(b.status==='active'){if(require('../rpg/npc-auto').due(s,b)||B.terminalOutcome(s,b))return 100;for(const h of require('../rpg/aoe').hits(b))times.push(h.expiresAt);if(b.current&&!b.pending&&b.actors.some(a=>a.id===b.current.actorId&&!a.userId&&require('../rpg/npc-auto').config(a.ai).mode==='auto'))times.push(now+1000);}
         for(const j of Object.values(s.deliveryJobs||{}))if(j.kind.startsWith('web')&&j.status==='pending')times.push(now+1000);
@@ -925,6 +939,8 @@ function createGames({
   });
   return {
     store,
+    setResetFence:(group,operation)=>{if(operation)resetFences.set(group,operation);else{resetFences.delete(group);wake();}},
+    waitForPublications:async()=>{await pumpPromise;},
     ensure,
     authorize,
     preview,

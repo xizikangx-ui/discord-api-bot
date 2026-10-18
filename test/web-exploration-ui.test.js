@@ -40,3 +40,7 @@ test('SSR exploration opens the joined map and current floor, shows resources, a
 test('map artwork contains no runtime network calls or continuous animation',()=>{
  const css=fs.readFileSync(path.join(webRoot,'src/exploration.css'),'utf8'),art=fs.readFileSync(path.join(webRoot,'src/exploration-map.jsx'),'utf8');assert.doesNotMatch(css,/@keyframes|animation\s*:/);assert.doesNotMatch(art,/fetch\(|api\(|Worker\(|setInterval\(/);assert.match(css,/@media\(max-width:760px\)/);
 });
+test('SSR battle rooms keep visible container shells with disabled controls and never expose rewards',()=>{
+ const Panel=component('exploration-panel.jsx','ExplorationPanel'),m=map({participants:{me:{cell:'1,1',name:'执灯人'}}}),r=m.cells['1,1'].room;r.encounter='battle';r.containers=[{id:'locked',box:'医疗包',quantity:1,status:'unopened',locked:true}];let calls=0;
+ const html=renderToStaticMarkup(React.createElement(Panel,{game:{revision:1,player:{userId:'me',inventory:{}},maps:[m]},groupId:'g',userId:'me',prepare:()=>calls++}));assert.match(html,/医疗包/);assert.match(html,/内容尚未揭示/);assert.match(html,/<button disabled="">尚未解锁<\/button>/);assert.doesNotMatch(html,/>开启<\/button>/);assert.doesNotMatch(html,/散落物资/);assert.equal(calls,0);
+});

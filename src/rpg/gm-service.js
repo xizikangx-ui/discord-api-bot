@@ -48,7 +48,7 @@ function apply(s,user,command,p){
   if(command==='templates.publish')return publishBatch(s,p.rows,user);
   if(command==='grant')return grantBatch(s,p.rows);
   if(command==='character.key'){const i=M.player(s,p.uid).inventory[p.itemId];ok(i?.snapshot.kind==='钥匙'&&M.available(s,p.uid,p.itemId)>0,'钥匙不存在或被预留。');i.keyCharges=C.number(p.quantity,'次数',0,100000);return {name:i.snapshot.name,keyCharges:i.keyCharges};}
-  if(command==='death.reward'){const d=s.deaths[p.id];ok(d,'死亡记录不存在。');return require('./mortality').reward(s,s.battles[d.battleId],d,p.uid);}
+  if(command==='death.reward'){const d=s.deaths[p.id];ok(d,'死亡记录不存在。');ok(!d.sceneClearedAt&&s.battles[d.battleId],'关联场景已清理，不能补发该场景的未领取奖励。');return require('./mortality').reward(s,s.battles[d.battleId],d,p.uid);}
   if(command==='npc.portrait'){const t=s.npcTemplates[p.id];ok(t,'NPC模板不存在。');version(t.version,p.baseVersion);ok(['avatar','illustration'].includes(p.slot),'图片位置无效。');t.portraits||={};if(p.clear)delete t.portraits[p.slot];else {const f=s.forms[p.uploadId];ok(f?.kind==='gmWebPortrait'&&f.owner===user&&f.status==='done'&&f.npcId===t.id&&f.slot===p.slot,'请选择本人已完成的图片上传。');t.portraits[p.slot]=C.clone(f.ref);}t.version++;return {id:t.id,name:t.name,version:t.version,slot:p.slot};}
   if(command==='map.cleanup'){const Clean=require('./map-cleanup'),entries=Clean.preview(s).filter(e=>p.ids.includes(e.id));ok(entries.length===p.ids.length,'清理对象已变化。');const r=Clean.remove(s,entries);s.mapCleanupMessages||={};for(const e of r.messages)s.mapCleanupMessages[e.channelId+':'+e.messageId]={...e,done:false};require('./outbox').put(s,'mapCleanup','all',{priority:10});return r;}
   if(command==='character.luck'){const a=M.player(s,p.uid);a.luck=C.number(p.value,'基础时运',-9,11);return {luck:a.luck};}

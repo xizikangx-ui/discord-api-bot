@@ -1,7 +1,7 @@
 'use strict';
 const C=require('./constants'),X=require('./exploration'),{randomInt}=require('node:crypto');
 function shuffled(list,rng){const a=[...list];for(let n=a.length-1;n>0;n--){const k=rng(0,n+1);[a[n],a[k]]=[a[k],a[n]];}return a;}
-function options(raw={}){return {blockedPercent:C.number(raw.blockedPercent??15,'阻挡比例',0,30),stairsMin:C.number(raw.stairsMin??1,'最少楼梯连接',1,3),stairsMax:C.number(raw.stairsMax??3,'最多楼梯连接',raw.stairsMin??1,3),maxRank:C.number(raw.maxRank??3,'怪物等级上限',1,10)};}
+function options(raw={}){return {blockedPercent:C.number(raw.blockedPercent??15,'阻挡比例',0,30),stairsMin:C.number(raw.stairsMin??1,'最少楼梯连接',1,3),stairsMax:C.number(raw.stairsMax??3,'最多楼梯连接',raw.stairsMin??1,3),maxRank:C.number(raw.maxRank??3,'怪物等级上限',1,10),combatPercent:C.number(raw.combatPercent??30,'普通内容房战斗比例',0,100)};}
 function stairLinks(cells,extents,width,rows,o,rng){
  const choices=[];
  for(let y=1;y<rows;y++){

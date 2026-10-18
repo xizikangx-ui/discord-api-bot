@@ -6,7 +6,7 @@ const definitions={
   market:{fields:['markets'],sources:['markets','catalog']},
   core:{fields:['player','draft','roster','skills','historicalDeathIds'],sources:['players','characterDrafts','skillTemplates','deaths']},
   bag:{fields:['offers','coupons'],sources:['offers','couponPools','catalog']},
-  battle:{fields:['battles','corpses'],sources:['battles','corpses','players']},
+  battle:{fields:['battles','corpses','feedbackBaseline'],sources:['battles','corpses','players']},
   explore:{fields:['maps'],sources:['explorations','players','battles']},
   activities:{fields:['checks','sessions','glossary','texts'],sources:['checks','sessions','glossaryTerms','config']},
   history:{fields:['actionDrafts','actionHistory'],sources:['forms']},

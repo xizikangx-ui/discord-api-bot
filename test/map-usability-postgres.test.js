@@ -7,7 +7,7 @@ test('map usability: PostgreSQL entry, automatic start, notification and stair r
  try{
   await db.acquireLease('map-ux-isolation');const s=require('./helpers/rpg-harness').state();s.platform='web';
   const cf=F.create(s,'GM','mapcategory');Object.assign(cf.data,{name:'隔离地图主题',mapTypes:['indoor','region']});const cat=F.publish(s,cf),nf=F.create(s,'GM','npc');Object.assign(nf.data,{name:'隔离守卫',hpMax:20});const npc=F.publish(s,nf),rf=F.create(s,'GM','room');Object.assign(rf.data,{name:'隔离安全冻结房间',categoryIds:[cat.id],npcIds:[npc.id],autoStart:false});F.publish(s,rf);
-  const m=X.create(s,'GM','entry','隔离进入地图',1,3,'random',cat.id);m.autoEncounters=true;X.generate(s,m,min=>min);X.publish(s,m);X.join(s,m,'1');m.participants['1'].cell='1,0';
+  const m=X.create(s,'GM','entry','隔离进入地图',1,3,'random',cat.id);m.autoEncounters=true;m.cells['2,0'].variantId='v1';X.generate(s,m,min=>min);X.publish(s,m);X.join(s,m,'1');m.participants['1'].cell='1,0';
   const repair=X.create(s,'GM','repair','隔离楼梯修复',4,4,'random',cat.id);for(const c of Object.values(repair.cells))c.type='stairs';repair.cells['0,0'].type='entrance';repair.cells['3,0'].type='room';repair.cells['3,0'].room=X.instantiate(s,Object.values(s.roomTemplates)[0],min=>min);repair.cells['3,0'].touched=true;repair.generated=true;repair.status='paused';
   await db.save(s.guildId,null,s);store=require('../src/rpg/store').createStore({database:db,backgroundPublications:true,deriveDelivery:derive});await store.load(s.guildId);
   await t.test('20 then 50 concurrent retries commit one room entry and one encounter',async()=>{

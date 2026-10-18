@@ -52,7 +52,7 @@ test('narrow random maps retain a room and minimum vertical links even when ever
 
 
 test('quick map creation saves content atomically, preserves previews and recovers one result',async t=>{
- const s=seed(),f=F.create(s,gm,'mapcategory');f.data.name='快速主题';f.data.mapTypes=['indoor','region'];const category=F.publish(s,f),r=F.create(s,gm,'room');r.data.name='快速房间';r.data.categoryIds=[category.id];F.publish(s,r);
+ const s=seed(),f=F.create(s,gm,'mapcategory');f.data.name='快速主题';f.data.mapTypes=['indoor','region'];const category=F.publish(s,f),nf=F.create(s,gm,'npc');nf.data.name='快速主题守卫';const npc=F.publish(s,nf),r=F.create(s,gm,'room');r.data.name='快速房间';r.data.categoryIds=[category.id];r.data.npcIds=[npc.id];F.publish(s,r);
  const h=await harness(t,{seed:s});await h.bind();const base={name:'完整地图',channelId:'123456789012345679',categoryId:category.id,mapType:'indoor',mode:'manual',rows:4,width:3,stairsMin:1,stairsMax:3,maxRank:3};
  for(const mapType of ['indoor','region'])for(const mode of ['manual','full','fixed']){
   const before=Object.keys(h.canonical().explorations).length,f=await h.call('/previews',{command:'map.quickCreate',params:{...base,mapType,mode}});assert.equal(f.status,200,JSON.stringify(f.error));assert.equal(Object.keys(h.canonical().explorations).length,before);
@@ -71,7 +71,7 @@ test('map options and GM battle context expose consistent names and action data'
 
 test('editing map labels preserves generated room snapshots; replacing terrain requires regeneration',()=>{
  const s=seed(),f=F.create(s,gm,'mapcategory');f.data.name='编辑主题';const cat=F.publish(s,f),r=F.create(s,gm,'room');r.data.name='冻结房间';r.data.categoryIds=[cat.id];F.publish(s,r);
- const m=G.apply(s,gm,'map.quickCreate',{name:'编辑验收',channelId:'channel',categoryId:cat.id,mapType:'indoor',mode:'manual',rows:4,width:3,stairsMin:1,stairsMax:3,maxRank:3}),map=s.explorations[m.id],ref=Object.keys(map.cells).find(k=>map.cells[k].room),c=map.cells[ref],before=C.clone(c.room),[x,y]=ref.split(',').map(Number);
+ const m=G.apply(s,gm,'map.quickCreate',{name:'编辑验收',channelId:'channel',categoryId:cat.id,mapType:'indoor',mode:'manual',rows:4,width:3,stairsMin:1,stairsMax:3,maxRank:3,combatPercent:0}),map=s.explorations[m.id],ref=Object.keys(map.cells).find(k=>map.cells[k].room),c=map.cells[ref],before=C.clone(c.room),[x,y]=ref.split(',').map(Number);
  const params={mapId:map.id,x,y,type:c.type,categoryId:c.categoryId,templateId:c.templateId,variantId:c.variantId,name:'可读名字',passable:true,hasContents:!!c.hasContents};
  G.apply(s,gm,'map.cell',params);assert.deepEqual(map.cells[ref].room,before);assert.equal(map.generated,true);
  map.cells[ref].touched=true;assert.throws(()=>G.apply(s,gm,'map.cell',{...params,variantId:'changed'}),/交互记录/);assert.deepEqual(map.cells[ref].room,before);

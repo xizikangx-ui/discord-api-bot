@@ -96,10 +96,10 @@ function selectRoom(state, m, c, rng = randomInt) {
   const pool = Object.values(state.roomTemplates).filter(r => r.published && !r.manualOnly && r.categoryIds.includes(c.categoryId));
   ok(pool.length, '该大类尚未录入房间。'); return pool[rng(0, pool.length)];
 }
-function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=null) {
+function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=null, policy=null) {
   if(template.variants?.length){const V=require('./room-variants'),variant=V.choose(template,rng,fixedVariant);const raw=V.merge(template,variant);raw.categoryIds=raw.categoryIds.filter(id=>state.mapCategories[id]?.published);raw.supplyIds=raw.supplyIds.filter(id=>state.catalog[id]?.published);raw.npcIds=raw.npcIds.filter(id=>state.npcTemplates[id]?.published);raw.randomSupplies=(raw.randomSupplies||[]).filter(e=>state.catalog[e.ref]?.published);raw.randomNpcs=(raw.randomNpcs||[]).filter(e=>state.npcTemplates[e.ref]?.published);template=validateRoom(state,raw,true);}
   const r = { id: id('r'), templateId: template.id, snapshot: clone(template), unlocked: !template.keyIds.length,
-    encounter: 'resolved', containers: [], supplies: [], battleId: null, randomResults: [], npcs: clone(template.npcs) };
+    encounter: 'resolved', containers: [], supplies: [], battleId: null, randomResults: [], npcs: policy?.role==='safe'?[]:clone(template.npcs) };
   const random = (list,kind) => (list || []).map(e=>{const quantity=R.draw(e.probabilities,rng);r.randomResults.push({kind,ref:e.ref,quantity,probabilities:clone(e.probabilities)});return {...e,quantity};});
   const containers = [...template.boxes.map(box=>({ref:box,quantity:template.boxCounts[box]})),...random(template.randomContainers,'container')];
   for (const entry of containers.filter(e=>require('./containers').get(state,e.ref)?.enabled!==false)) for (let n = 0; n < entry.quantity; n++)
@@ -109,14 +109,29 @@ function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=nu
     for (let n = 0; n < (stateful ? entry.quantity : 1); n++) r.supplies.push(M.makeItem(entry.template, stateful ? 1 : entry.quantity));
   }
   r.npcs=r.npcs.filter(e=>require('./npc-strength').allowed(e.template,maxRank));
-  r.npcs.push(...random((template.randomNpcs||[]).filter(e=>require('./npc-strength').allowed(e.template,maxRank)),'npc').filter(e=>e.quantity>0).map(e=>({template:clone(e.template),quantity:e.quantity})));
+  if(policy?.role!=='safe')r.npcs.push(...random((template.randomNpcs||[]).filter(e=>require('./npc-strength').allowed(e.template,maxRank)),'npc').filter(e=>e.quantity>0).map(e=>({template:clone(e.template),quantity:e.quantity})));
+  if(policy?.role==='battle'&&!r.npcs.some(e=>e.quantity>0)){
+    ok(policy.npcs?.length,'当前战斗房缺少符合主题与等级上限的NPC。');
+    const npc=clone(policy.npcs[rng(0,policy.npcs.length)]);r.npcs.push({template:npc,quantity:1});r.randomResults.push({kind:'npcGuarantee',ref:npc.id,quantity:1});
+  }
   r.npcs=r.npcs.flatMap(e=>e.template.randomStrength?Array.from({length:e.quantity},()=>({template:require('./npc-strength').freeze(e.template,rng),quantity:1})): [e]);
+  if(!policy?.skipContainer&&r.npcs.some(e=>e.quantity>0)&&!r.containers.length){
+    const fallback=policy?.fallback||require('./room-generation').fallbackFor(state,template);
+    ok(fallback&&require('./containers').get(state,fallback)?.enabled!==false,'当前战斗房没有可用容器，请先启用主题容器。');
+    r.containers.push({id:id('c'),box:fallback,status:'unopened',batch:null,owner:null});r.randomResults.push({kind:'containerGuarantee',ref:fallback,quantity:1});
+  }
   r.remainingNpcs=clone(r.npcs);r.encounter=r.npcs.length ? 'pending' : 'resolved';
   return r;
 }
 function generate(state, m, rng = randomInt) {
   ok(m.status === 'draft', '已发布地图不能重新随机生成。'); validateMap(m);
-  for (const c of Object.values(m.cells)) if ((c.type === 'room'||c.hasContents) && !c.room?.boss && !c.room?.merchant) c.room = instantiate(state, selectRoom(state, m, c, rng), rng,m.maxRank??10,c.variantId);
+  const pending=Object.entries(m.cells).filter(([,c])=>(c.type==='room'||c.hasContents)&&!c.room);
+  if(!pending.length&&m.generated)return m;
+  // Build every new instance before assigning any to the map. A missing theme,
+  // invalid candidate or RNG failure cannot leave a half-generated map behind.
+  const planned=require('./room-generation').generate(state,m,rng)||{},rooms={...planned};
+  for (const [ref,c] of pending)if(!rooms[ref])rooms[ref]=instantiate(state,selectRoom(state,m,c,rng),rng,m.maxRank??10,c.variantId);
+  for(const [ref,room]of Object.entries(rooms))m.cells[ref].room=room;
   m.generated = true; m.version++; return m;
 }
 function publish(state, m) {

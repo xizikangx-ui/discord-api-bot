@@ -10,7 +10,7 @@ function fixture(){
  return {s,cat,npc,room};
 }
 function mapFixture({auto=true,two=false}={}){
- const f=fixture(),m=X.create(f.s,'GM','channel','互动地图',1,3,'random',f.cat.id);m.autoEncounters=auto;X.generate(f.s,m,min=>min);X.publish(f.s,m);for(const uid of two?['1','2']:['1'])X.join(f.s,m,uid);
+ const f=fixture(),m=X.create(f.s,'GM','channel','互动地图',1,3,'random',f.cat.id);m.autoEncounters=auto;for(const c of Object.values(m.cells))if(c.type==='room')c.variantId='v1';X.generate(f.s,m,min=>min);X.publish(f.s,m);for(const uid of two?['1','2']:['1'])X.join(f.s,m,uid);
  return {...f,m};
 }
 test('default narrow indoor layouts keep a room on every floor instead of almost all stairs',()=>{

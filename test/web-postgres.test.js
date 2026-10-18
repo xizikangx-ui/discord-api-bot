@@ -212,6 +212,7 @@ test(
               stairsMin: 1,
               stairsMax: 3,
               maxRank: 3,
+              combatPercent: 0,
             };
           for (const mapType of ["indoor", "region"])
             for (const mode of ["manual", "fixed", "full"]) {
