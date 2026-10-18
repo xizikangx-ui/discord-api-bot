@@ -1,6 +1,6 @@
 'use strict';
 const C=require('./constants'),U=require('./ui');
-function definitions(){const F=require('./factions');return [...Object.entries(require('./rules').chapters).map(([name,value])=>({key:'rule/'+name,label:'规则 · '+name,value})),...Object.entries(F.FACTIONS).map(([key,f])=>({key:'faction/'+key,label:'势力 · '+f.name,value:f.description})),...Object.entries(F.DEPARTMENTS).map(([key,d])=>({key:'department/'+key,label:'部门 · '+d.name,value:d.description}))];}
+function definitions(){const F=require('./factions');return [...Object.entries(require('./rules').chapters).map(([name,value])=>({key:'rule/'+name,label:'规则 · '+name,value})),...require('./player-rules').definitions().map(d=>({...d,label:'玩家规则 · '+d.label})),...Object.entries(F.FACTIONS).map(([key,f])=>({key:'faction/'+key,label:'势力 · '+f.name,value:f.description})),...Object.entries(F.DEPARTMENTS).map(([key,d])=>({key:'department/'+key,label:'部门 · '+d.name,value:d.description}))];}
 function definition(key){const d=definitions().find(d=>d.key===key);C.requireThat(d,'文本章节已不存在。');return d;}
 function get(s,key){const saved=s.config.textOverrides?.[key];return saved?.text ?? definition(key).value;}
 function read(s,key,page=0){const d=definition(key),text=get(s,key),pages=Math.max(1,Math.ceil(text.length/3500));page=Math.max(0,Math.min(Number(page)||0,pages-1));return U.payload(d.label,text.slice(page*3500,(page+1)*3500),[U.row(U.button('text:read:'+key+':'+(page-1),'上一页',undefined,!page),U.button('text:read:'+key+':'+(page+1),'下一页',undefined,page>=pages-1))]);}

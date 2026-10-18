@@ -99,7 +99,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     const c=m.cells[part.cell],r=c?.room,stats=M.stats(p),tabs={move:'全队移动',room:'房间交互',team:'探索队伍',map:'地图楼层'};
     ok(tabs[tab],'探索分页无效。');const components=[row(select('map:personaltab:'+m.id,'探索操作分页',Object.entries(tabs).map(([value,label])=>({value,label,default:tab===value}))))];
     let body='**'+m.name+'** · '+labels[m.status]+'\n📍 '+place(m,part.cell)+'\n'+(r?'**'+r.snapshot.name+'**\n'+(r.publicDescription||r.snapshot.description).slice(0,1800):(c?.description||X.cellTypes(m)[c?.type]))+'\n'+
-      (r?'遭遇 '+({pending:(r.autoStart??r.snapshot.autoStart)?'等待自动开战':'等待GM确认',battle:'战斗中',resolved:'可探索物资'}[r.encounter])+'\n':'')+'负重 '+C.kg(stats.carried)+' / '+C.kg(stats.limit)+' '+U.bar(stats.carried,stats.limit);
+      (r?'遭遇 '+({pending:require('./team-movement').automatic(m,r)?'等待自动开战':'等待GM确认',battle:'战斗中',resolved:'可探索物资'}[r.encounter])+'\n':'')+'负重 '+C.kg(stats.carried)+' / '+C.kg(stats.limit)+' '+U.bar(stats.carried,stats.limit);
     if(tab==='move'){
       const directions=X.neighbors(m,part.cell).map(to=>{const [x,y]=X.xy(to),[ox,oy]=X.xy(part.cell);return button('map:move:'+m.id+':'+to,x<ox?'← 向左':x>ox?'向右 →':y>oy?(m.mapType==='region'?'↓ 向下':'↑ 上楼'):(m.mapType==='region'?'↑ 向上':'↓ 下楼'),D.ButtonStyle.Primary,m.status!=='active'||!!M.battleFor(s,uid));});
       if(directions.length)components.push(row(...directions));body+='\n全队必须在同一格，全部同意后才移动。';
@@ -350,7 +350,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
     if (action === 'gmroom') { if (arg === 'pick') return roomGM(s, m, i.values[0]);
       return picker('房间详情', Object.entries(m.cells).filter(([, c]) => c.room).map(([cell, c]) => ({ label: location(cell) + ' · ' + c.room.snapshot.name, value: cell })), 'gmroom:' + ref, arg, [button('map:manage:' + ref, '返回')]); }
     if (action === 'room') return roomGM(s, m, arg);
-    if(action==='roomauto'){await tx(i,st=>{const live=map(st,ref),r=live.cells[arg]?.room;ok(r,'房间不存在。');ok(['draft','paused'].includes(live.status),'先暂停地图再切换遭遇方式。');r.autoStart=!(r.autoStart??r.snapshot.autoStart);live.version++;},'切换自动遭遇');return roomGM(snapshot(i.guildId),map(snapshot(i.guildId),ref),arg);}
+    if(action==='roomauto'){await tx(i,st=>{const live=map(st,ref),r=live.cells[arg]?.room;ok(r,'房间不存在。');ok(['draft','paused'].includes(live.status),'先暂停地图再切换遭遇方式。');r.autoStart=!require('./team-movement').automatic(live,r);live.version++;},'切换自动遭遇');return roomGM(snapshot(i.guildId),map(snapshot(i.guildId),ref),arg);}
     if (action === 'roster') {
       const r = m.cells[arg]?.room; ok(r?.encounter === 'pending', '遭遇已变化。');
       const players = Object.entries(m.participants).filter(([, p]) => p.cell === arg).map(([uid]) => ({ label: s.players[uid]?.name || uid, value: uid }));
@@ -398,7 +398,7 @@ function createExploration({ snapshot, store, tx: transact, textChannel, client,
       '\n随机生成记录：'+((r.randomResults || []).map(e=>(e.kind==='container' ? e.ref : [...(r.snapshot.randomSupplies || []),...(r.snapshot.randomNpcs || [])].find(t=>t.ref===e.ref)?.template?.name || e.ref)+' ×'+e.quantity).join('、') || '旧实例或未配置'), [
       row(button('map:roster:' + m.id + ':' + cell, '确认玩家 / 开战', D.ButtonStyle.Primary, r.encounter !== 'pending'),
         button('map:resolve:' + m.id + ':' + cell, r.remainingNpcs?.length && r.battleId ? '结束本轮 / 继续遭遇' : 'GM解除遭遇', undefined, r.encounter === 'resolved'), button('map:transferpick:' + m.id + ':' + cell + ':0', '转交待领取容器')),
-      row(...(r.merchant?[button('merchant:restock:'+m.id+':_:0','行商补货'),button('merchant:clear:'+m.id+':'+cell,'移除未进入行商',undefined,!['draft','paused'].includes(m.status)||X.touched(m,cell))]:[]),button('map:roomauto:'+m.id+':'+cell,(r.autoStart??r.snapshot.autoStart)?'自动开战：开启（切换）':'自动开战：关闭（切换）'),button('map:manage:' + m.id, '返回地图'))
+      row(...(r.merchant?[button('merchant:restock:'+m.id+':_:0','行商补货'),button('merchant:clear:'+m.id+':'+cell,'移除未进入行商',undefined,!['draft','paused'].includes(m.status)||X.touched(m,cell))]:[]),button('map:roomauto:'+m.id+':'+cell,require('./team-movement').automatic(m,r)?'自动开战：开启（切换）':'自动开战：关闭（切换）'),button('map:manage:' + m.id, '返回地图'))
     ]);
   }
   async function recover(guild) {

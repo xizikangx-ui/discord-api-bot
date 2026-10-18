@@ -297,7 +297,7 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
               attachments: [],
             }),
             text: p.text,
-            system: system ? p.system : undefined,
+            system: p.system,
             sequence: ++room.sequence,
             at: Date.now(),
           };

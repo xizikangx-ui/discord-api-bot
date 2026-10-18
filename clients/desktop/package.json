@@ -1,1 +1,20 @@
-{"name":"yichang-book-desktop","productName":"异常之书","version":"1.0.0","private":true,"main":"main.cjs","scripts":{"start":"electron .","package":"node package.cjs","test":"node --test test.cjs"},"devDependencies":{"electron":"44.9.0","@electron/packager":"20.3.0"}}
+{
+  "name": "yichang-book-desktop",
+  "productName": "异常之书",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "package": "node package.cjs",
+    "test": "node --test test.cjs",
+    "installer": "electron-builder --config electron-builder.cjs --prepackaged release/YichangBook-win32-x64 --win nsis --x64"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.9.0",
+    "electron-builder": "26.15.3"
+  },
+  "description": "异常之书在线跑团桌面客户端",
+  "author": "异常之书"
+}

@@ -16,6 +16,8 @@ function commandSchema(){const commonMap=[ref('mapId','地图','explorations')],
   add('map.layout','重抽草稿布局',commonMap);
   add('map.link','绑定建筑内部地图',[...commonMap,fd('cell','建筑格'),ref('buildingMapId','内部地图','explorations')]);
   add('map.auto','自动遭遇设置',[...commonMap,fd('cell','格子'),fd('enabled','自动开战','bool')]);
+  add('map.autoAll','全图普通遭遇自动开战',[...commonMap,fd('enabled','全队进入后自动开战','bool')]);
+  add('map.repairStairs','修复多余楼梯（保留已进入格与现有内容）',commonMap);
   add('map.transfer','转交未领取容器',[...commonMap,fd('cell','格子'),fd('containerId','容器编号'),ref('uid','接收者','players')]);
   add('map.playerPosition','调整队员探索位置',[...commonMap,ref('uid','队员','players'),fd('cell','目标格')]);
   add('map.playerRemove','移出探索队员',[...commonMap,ref('uid','队员','players')]);
@@ -26,7 +28,7 @@ function commandSchema(){const commonMap=[ref('mapId','地图','explorations')],
   add('character.checkXP','鉴定技能经验',[ref('uid','角色','players'),ref('ref','技能','checkSkillTemplates'),num('quantity','经验')]);
   add('buyback','GM收购报价',[ref('uid','角色','players'),fd('itemId','背包物品','inventory'),num('quantity','数量'),num('price','总价'),fd('channelId','操作频道','channel')],'character');
   add('map.create','创建地图',[fd('name','名称'),fd('channelId','公开频道','channel'),enumf('mapType','类型',['indoor','region']),enumf('mode','生成方式',['full','manual','fixed']),ref('categoryId','大类','mapCategories'),num('rows','层／行数'),num('width','列数'),num('blockedPercent','阻挡百分比'),num('stairsMin','最少楼梯'),num('stairsMax','最多楼梯'),num('maxRank','等级上限')]);
-  add('map.quickCreate','快速创建地图草稿',[fd('name','名称'),fd('channelId','公开频道','channel'),enumf('mapType','类型',['indoor','region']),enumf('mode','生成方式',['full','manual','fixed']),ref('categoryId','大类','mapCategories'),num('rows','层／行数'),num('width','列数'),num('blockedPercent','阻挡百分比'),num('stairsMin','最少楼梯'),num('stairsMax','最多楼梯'),num('maxRank','等级上限')]);
+  add('map.quickCreate','快速创建地图草稿',[fd('name','名称'),fd('channelId','公开频道','channel'),enumf('mapType','类型',['indoor','region']),enumf('mode','生成方式',['full','manual','fixed']),ref('categoryId','大类','mapCategories'),num('rows','层／行数'),num('width','列数'),num('blockedPercent','阻挡百分比'),num('stairsMin','最少楼梯'),num('stairsMax','最多楼梯'),num('maxRank','等级上限'),fd('autoEncounters','全队进入后自动开战','bool')]);
   for(const [action,label]of Object.entries({generate:'生成房间',publish:'发布地图',pause:'暂停地图',resume:'恢复地图',end:'结束地图'}))add('map.'+action,label,commonMap);
   add('map.cell','编辑地图格子',[...commonMap,num('x','列（从0开始）'),num('y','行（从0开始）'),fd('type','格子类型'),ref('categoryId','大类','mapCategories'),ref('templateId','房间','roomTemplates'),fd('variantId','变种编号'),fd('name','地点名称'),fd('description','地点说明','long'),fd('passable','允许通行','bool'),fd('hasContents','生成内容','bool'),ref('buildingMapId','内部地图','explorations')]);
   add('map.encounter','确认普通遭遇',[...commonMap,fd('cell','格子 x,y'),fd('users','参战玩家','playerList')]);add('map.resolve','解除／结束本批遭遇',[...commonMap,fd('cell','格子 x,y')]);

@@ -392,6 +392,85 @@ function actionRestrictions(b,p,uid){
   result.attack=reasons.length&&reasons.every(Boolean)?reasons[0]:Z.reason(p,'attack',null,'quick');
   return result;
 }
+function mapAutoStatus(s,m,uid){
+  if(m.status==='paused')return '地图已暂停，请等待GM恢复。';
+  if(require('../rpg/rp').waiting(m))return '等待GM发布环境描述。';
+  const part=m.participants[uid];if(!part)return '加入探索后选择相邻格进入。';
+  const r=m.cells[part.cell]?.room;if(!r)return '当前格没有遭遇，可继续探索相邻格。';
+  if(r.encounter==='resolved')return '当前格已安全，可查看物资或继续探索。';
+  if(r.encounter==='battle'){
+    const b=s.battles[r.battleId];
+    if(b?.status==='recruiting')return '遭遇招募已建立，等待GM正式开战。';
+    if(b?.status==='paused')return '关联战斗已暂停，请等待GM恢复。';
+    if(b?.status==='ended')return '关联战斗已结束，等待GM处理后续遭遇。';
+    return '遭遇战斗已开始，请打开战斗面板。';
+  }
+  if(r.boss)return 'BOSS遭遇等待GM确认。';
+  if(!require('../rpg/team-movement').automatic(m,r))return '当前遭遇设为手动开战，等待GM确认。';
+  if(!Object.values(m.participants).every(p=>p.cell===part.cell))return '等待全队进入同一格后自动开战。';
+  return '全队已进入，正在准备自动遭遇。';
+}
+function mapMoveBlockedReason(s,m,uid){
+  const p=s.players[uid],part=m.participants?.[uid];
+  if(!p)return '请先创建并采用角色。';
+  if(!part)return '请先加入这张探索地图。';
+  if(part.characterId!==p.id)return '参加探索的角色已变化，请GM移除原报名后重新加入。';
+  if(m.status!=='active')return m.status==='paused'?'地图已暂停，请等待GM恢复。':'地图当前未开放移动。';
+  if(require('../rpg/rp').waiting(m))return '等待GM发布环境描述，暂不能移动。';
+  if(M.battleFor(s,uid))return '当前正在参战，请先完成战斗。';
+  if(!H.canAct(p))return '角色已倒地，暂不能移动，请等待救援。';
+  const restriction=require('../rpg/conditions').reason(p,'move');if(restriction)return restriction;
+  if(M.stats(p).overloaded)return '角色超重，暂不能移动。';
+  const T=require('../rpg/team-movement'),request=m.moves?.[m.moveRequestId];
+  if(request?.status==='pending'&&T.valid(s,m,request))return '已有全队移动申请，请先处理队员确认。';
+  const origin=m.cells[part.cell]?.room;
+  if(origin&&origin.encounter!=='resolved')return '请先完成当前格的遭遇，再继续移动。';
+  for(const [id,member]of Object.entries(m.participants)){
+    const teammate=s.players[id];
+    if(!teammate||teammate.id!==member.characterId)return '有队员的角色已变化，请GM处理探索报名。';
+    if(member.cell!==part.cell)return '全队需要在同一格集合后才能移动。';
+    if(M.battleFor(s,id))return '有队员仍在参战，请先完成战斗。';
+    if(!H.canAct(teammate))return '有队员已倒地，请先完成救援。';
+    if(require('../rpg/conditions').reason(teammate,'move'))return '有队员受到异常限制，当前不能移动。';
+    if(M.stats(teammate).overloaded)return '有队员超重，暂不能全队移动。';
+  }
+  return '';
+}
+function safeMapMove(r){
+  if(!r||typeof r!=='object')return r;
+  return Object.fromEntries(['id','kind','owner','from','to','members','yes','status','createdAt','expiresAt','completedAt','reason','rejectedBy','resultMapId'].filter(key=>Object.hasOwn(r,key)).map(key=>[key,r[key]]));
+}
+function playerResult(command,result){
+  if(!['map.move','map.link','map.vote'].includes(command))return result;
+  return result?.status==='committed'?{...result,result:safeMapMove(result.result)}:safeMapMove(result);
+}
+function mapMoveView(s,m,maps){
+  const accessible=new Set(maps.map(x=>x.id));
+  return Object.fromEntries(Object.entries(m.moves||{}).map(([id,r])=>[id,{
+    ...safeMapMove(r),
+    valid:r.status==='pending'&&require('../rpg/team-movement').valid(s,m,r),
+    ...(accessible.has(r.destination)?{destination:r.destination,destinationName:r.destinationName}:{}),
+    resultMapId:accessible.has(r.resultMapId)?r.resultMapId:undefined,
+  }]));
+}
+function mapBuildingView(s,m,uid,maps,moveBlockedReason){
+  const part=m.participants[uid],current=m.cells[part?.cell],accessible=new Map(maps.map(x=>[x.id,x]));
+  function reason(kind){
+    if(kind==='enter'&&(m.mapType!=='region'||current?.type!=='building'))return '请先到达区域地图的建筑入口。';
+    if(kind==='exit'&&(!m.parentContext||part?.cell!==m.entrance))return '请先回到内部地图入口。';
+    if(moveBlockedReason)return moveBlockedReason;
+    const targetId=kind==='enter'?current.buildingMapId:m.parentContext.mapId;
+    if(!targetId)return '这处建筑尚未绑定内部地图。';
+    const target=accessible.get(targetId);
+    if(!target)return '目标地图当前不可访问，请联系GM检查权限。';
+    if(target.status!=='active')return '目标地图尚未开放，请等待GM恢复。';
+    if(kind==='enter'&&(target.parentContext||target.excursion||Object.keys(target.participants).length))return '建筑内部正被队伍使用，请等待GM处理。';
+    if(kind==='enter'&&m.excursion)return '队伍已在进入建筑途中，请先处理当前移动。';
+    return '';
+  }
+  const enterBuildingBlockedReason=reason('enter'),exitBuildingBlockedReason=reason('exit');
+  return {canEnterBuilding:!enterBuildingBlockedReason,enterBuildingBlockedReason,canExitBuilding:!exitBuildingBlockedReason,exitBuildingBlockedReason};
+}
 function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
   const visible = (o) => !roomIds || !o.channelId || roomIds.has(o.channelId);
   const p = s.players[uid],
@@ -407,7 +486,11 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
         const tasks=[];
         for(const j of Object.values(s.worldJourneys||{}))if(j.members.includes(uid)&&j.characters[uid]===p?.id&&['confirming','approval','travelling'].includes(j.status))tasks.push({key:j.id,text:j.status==='confirming'?'跨城旅行待确认':j.status==='approval'?'远征等待GM特批':'旅行途中 · 处理事件',system:{worldJourneyId:j.id}});
         if(b){for(const h of require('../rpg/aoe').hits(b).filter(h=>h.targetId===a.id))tasks.push({key:h.id,text:'待防守 · '+b.name,system:{battleId:b.id,hitId:h.id,kind:'webDefense'}});if(b.status==='active'&&b.current?.actorId===a.id)tasks.push({key:b.id,text:'轮到你行动 · '+b.name,system:{battleId:b.id}});}
-        for(const map of maps){for(const r of Object.values(map.moves||{}))if(r.status==='pending'&&r.members.includes(uid))tasks.push({key:r.id,text:'全队移动待确认 · '+map.name,system:{mapId:map.id}});if(map.participants?.[uid]&&require('../rpg/rp').waiting(map))tasks.push({key:map.id,text:'等待环境描述 · '+map.name,system:{mapId:map.id}});}
+        for(const map of maps){
+          for(const r of Object.values(map.moves||{}))if(r.status==='pending'&&r.members.includes(uid))tasks.push({key:r.id,text:'全队移动待确认 · '+map.name,system:{mapId:map.id}});
+          if(map.participants?.[uid]&&require('../rpg/rp').waiting(map))tasks.push({key:map.id,text:'等待环境描述 · '+map.name,system:{mapId:map.id}});
+          if(map.status==='active'&&!require('../rpg/rp').waiting(map))for(const [cell,c]of Object.entries(map.cells))if(c.room?.encounter==='pending'&&!require('../rpg/team-movement').automatic(map,c.room)&&(map.participants[uid]?.cell===cell||gm&&Object.values(map.participants).some(p=>p.cell===cell)))tasks.push({key:map.id+':encounter:'+cell,text:(gm?'遭遇待GM开战 · ':'遭遇等待GM开战 · ')+map.name,system:{mapId:map.id,cell,kind:'webEncounterWait'}});
+        }
         return {tasks,player:p?{id:p.id,name:p.name,hp:p.hp,ap:p.ap,balance:p.balance,level:p.level,stats:M.stats(p),health:H.snapshot(p),tickets:p.tickets,conditions:p.conditions.map(c=>({name:c.template?.name,severity:c.severity})),inventoryCount:Object.keys(p.inventory).length}:null,
           battle:b?{id:b.id,name:b.name,status:b.status,actorId:a.id,turnId:b.current?.id,isTurn:b.current?.actorId===a.id,quick:b.current?.actorId===a.id?b.current.quick:0,formal:b.current?.actorId===a.id?b.current.formal:0,actionRound:b.actionRound,nextCost:B.opportunityCost(b,a.id),pending:require('../rpg/aoe').hits(b).filter(h=>h.targetId===a.id).map(h=>({id:h.id,expiresAt:h.expiresAt})),restrictions:actionRestrictions(b,p,uid)}:null,
           map:m?{id:m.id,name:m.name,status:m.status,cell:m.participants[uid].cell}:null,
@@ -435,7 +518,7 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
           command: f.command,
           label: playerCommands[f.command] || 'GM操作',
           at: f.at,
-          result: f.result,
+          result: f.gm?f.result:playerResult(f.command,f.result),
         })); },
       get historicalDeathIds() { return Object.values(s.deaths).filter(d=>s.battles[d.battleId]&&visible(s.battles[d.battleId])).map(d=>d.id); },
       get skills() { return p?B.abilities(p,true).filter(a=>a.attack.kind==="技能"):[]; },
@@ -452,17 +535,32 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
         portraits: p.portraits,
         showcase: require("../rpg/showcase").entries(s, p.userId),
       })); },
-      get maps() { return maps.map((m) => ({
+      get maps() { const mapNames=new Map(maps.map(m=>[m.id,m.name]));return maps.map((m) => {
+        const moveBlockedReason=mapMoveBlockedReason(s,m,uid),waiting=require('../rpg/rp').waiting(m),types=require('../rpg/exploration').cellTypes(m);
+        return {
         id: m.id,
         name: m.name,
         status: m.status,
         mapType: m.mapType,
         rows: m.floors,
         width: m.width,
-        participants: m.participants,
+        entrance: m.entrance,
+        lastEvent: m.lastEvent,
+        autoEncounters: m.autoEncounters ?? null,
+        autoStatus: mapAutoStatus(s,m,uid),
+        moveBlockedReason,
+        canMove: !moveBlockedReason,
+        ...mapBuildingView(s,m,uid,maps,moveBlockedReason),
+        neighbors: m.participants[uid] && !M.battleFor(s,uid) ? require('../rpg/exploration').neighbors(m,m.participants[uid].cell) : [],
+        canExit: !!m.parentContext && m.participants[uid]?.cell===m.entrance,
+        parentContext: m.parentContext ? {mapId:m.parentContext.mapId} : null,
+        participants: Object.fromEntries(Object.entries(m.participants).map(([id,member])=>{
+          const teammate=s.players[id],valid=!!teammate&&teammate.id===member.characterId;
+          return [id,{...member,name:valid?teammate.name:'角色已变化',validCharacter:valid}];
+        })),
         revealed: m.revealed,
-        moves: m.moves,
-        rpWaiting: require("../rpg/rp").waiting(m),
+        moves: mapMoveView(s,m,maps),
+        rpWaiting: waiting,
         cells: Object.fromEntries(
           Object.entries(m.cells).map(([id, c]) => [
             id,
@@ -472,13 +570,22 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
                   type: c.type,
                   passable: c.passable,
                   name: c.name,
+                  displayName: c.name || (!waiting&&c.room?.snapshot.name) || types[c.type] || '区域',
+                  typeName: types[c.type] || '区域',
+                  column: Number(id.split(',')[0])+1,
+                  floor: Number(id.split(',')[1])+1,
                   description: c.description,
+                  buildingMapId: c.buildingMapId || null,
+                  buildingName: mapNames.get(c.buildingMapId),
                   room:
-                    c.room && !require("../rpg/rp").waiting(m)
+                    c.room && !waiting
                       ? {
                           id: c.room.id,
                           name: c.room.snapshot.name,
+                          description: c.room.publicDescription ?? c.room.snapshot.description ?? '',
                           encounter: c.room.encounter,
+                          battleId: c.room.battleId,
+                          autoStart: require('../rpg/team-movement').automatic(m,c.room),
                           unlocked: c.room.unlocked,
                           containers:
                             c.room.encounter === "resolved"
@@ -499,7 +606,7 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
               : { id, hidden: true },
           ]),
         ),
-      })); },
+      };}); },
       get battles() { return battles.map((b) => ({
         id: b.id,
         name: b.name,
@@ -547,9 +654,7 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
         (x) => visible(x) && !["cancelled"].includes(x.status),
       ); },
       get glossary() { return Object.values(s.glossaryTerms).filter((t) => t.published); },
-      get texts() { return require("../rpg/texts")
-        .definitions()
-        .map((d) => ({ ...d, text: require("../rpg/texts").get(s, d.key) })); },
+      get texts() { return require("../rpg/player-rules").view(s); },
       get corpses() { return Object.values(s.corpses)
         .filter((c) =>
           s.battles[c.battleId]?.actors.some((a) => a.userId === uid) && visible(s.battles[c.battleId]),
@@ -565,4 +670,5 @@ module.exports = {
   playerView,
   ownActor,
   normalizeAction,
+  playerResult,
 };

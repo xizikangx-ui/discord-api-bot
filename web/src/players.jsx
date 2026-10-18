@@ -1,4 +1,5 @@
-import {gridCells} from '../../gm-web/src/ui-state';
+import {ExplorationPanel} from './exploration-panel';
+import {PlayerRulebook} from './rulebook';
 import React, { useState, useEffect, useRef } from "react";
 import { api, id, mediaUrl } from "./api";
 import { Result } from "../../gm-web/src/result";
@@ -899,246 +900,7 @@ function AdvancedInventory({ item, selected, p, form, set, prepare }) {
     </details>
   );
 }
-export function ExplorePanel({ game, groupId, prepare, run, refresh, navigation, compact=false, active=true }) {
-  const [mid, Map] = useState(""),
-    [cell, Cell] = useState(""),
-    [key, Key] = useState(""),
-    [image, Image] = useState(""),
-    [merchant, Merchant] = useState(null),
-    [choice, Choice] = useState({ quantity: 1 });
-  const mapRef=useRef(null);
-  const m = game.maps.find((m) => m.id === mid) || game.maps[0],
-    part = m?.participants[game.player?.userId],
-    room = m?.cells[part?.cell]?.room;
-  mapRef.current=m?.id;
-  useEffect(()=>{if(navigation?.type==='map')Map(navigation.id);},[navigation?.key]);
-  useEffect(()=>{Cell("");Image("");Merchant(null);},[m?.id]);
-  useEffect(()=>{if(active&&image&&m)Image("/api/web/v1/groups/"+groupId+"/map-image/"+m.id+"?v="+game.revision);},[active,game.revision,m?.id]);
-  return (
-    <>
-      <section className="panel">
-        <span className="eyebrow">探索未知，共享视野</span>
-        <h3>探索地图</h3>
-        <Select
-          label="地图"
-          value={m?.id}
-          onChange={(v) => {
-            Map(v);
-            Image("");
-          }}
-          items={game.maps}
-        />
-        {m && (
-          <>
-            <div className="toolbar">
-              <button onClick={() => prepare("map.join", { mapId: m.id })}>
-                加入探索
-              </button>
-              {part && (
-                <button onClick={() => prepare("map.leave", { mapId: m.id })}>
-                  退出探索
-                </button>
-              )}
-              <button
-                onClick={() =>
-                  Image(
-                    "/api/web/v1/groups/" +
-                      groupId +
-                      "/map-image/" +
-                      m.id +
-                      "?v=" +
-                      game.revision,
-                  )
-                }
-              >
-                静态大图
-              </button>
-              {part && <span className="badge">当前位置 {part.cell}</span>}
-            </div>
-            {image && (
-              <img
-                className="map-image"
-                src={image}
-                alt="当前已揭示的探索地图"
-              />
-            )}
-            <div
-              className="exploration-grid"
-              style={{
-                gridTemplateColumns: "repeat(" + m.width + ",minmax(65px,1fr))",
-              }}
-            >
-              {gridCells(m.width,m.rows,m.cells).map(({ref,cell:raw}) => {const c=raw||{type:"empty",passable:false};return (
-                <button
-                  key={ref}
-                  className={
-                    (c.hidden ? "fog " : "") +
-                    (cell === ref ? "selected " : "") +
-                    (ref === part?.cell ? "current-cell" : "")
-                  }
-                  disabled={!raw}
-                  onClick={() => Cell(ref)}
-                >
-                  <small>
-                    {String.fromCharCode(65 + Number(ref.split(",")[0]))}
-                    {Number(ref.split(",")[1]) + 1}
-                  </small>
-                  <b>
-                    {c.hidden
-                      ? "未知区域"
-                      : c.room?.merchant?.name ||
-                        c.room?.name ||
-                        c.name ||
-                        ({ entrance: "入口", exit: "出口", corridor: "通道", road: "道路", stairs: "楼梯", room: "房间", forest: "森林", water: "水域", building: "建筑", empty: "空地", wall: "墙体" }[c.type] || "区域")}
-                  </b>
-                  {ref === part?.cell && <span>◆ 队伍</span>}
-                </button>
-              );})}
-            </div>
-            {cell && (
-              <div className="toolbar">
-                <span>已选 {cell}</span>
-                <Items
-                  label="开门钥匙（可选）"
-                  value={key}
-                  onChange={Key}
-                  player={game.player}
-                  filter={(i) => i.snapshot.kind === "钥匙"}
-                />
-                <button
-                  className="primary"
-                  disabled={m.rpWaiting}
-                  onClick={() =>
-                    prepare("map.move", { mapId: m.id, cell, keyId: key })
-                  }
-                >
-                  发起全队移动
-                </button>
-              </div>
-            )}
-            {m.rpWaiting && (
-              <div className="banner">等待 GM 完成环境描述。</div>
-            )}
-            {Object.values(m.moves || {})
-              .filter((r) => r.status === "pending")
-              .map((r) => (
-                <div className="move-request" key={r.id}>
-                  <p>
-                    全队移动 {r.from} → {r.to} · {r.yes.length}/
-                    {r.members.length} 已同意
-                  </p>
-                  <div className="toolbar">
-                    <button
-                      onClick={() =>
-                        prepare("map.vote", {
-                          mapId: m.id,
-                          requestId: r.id,
-                          yes: true,
-                        })
-                      }
-                    >
-                      同意
-                    </button>
-                    <button
-                      onClick={() =>
-                        prepare("map.vote", {
-                          mapId: m.id,
-                          requestId: r.id,
-                          yes: false,
-                        })
-                      }
-                    >
-                      拒绝
-                    </button>
-                  </div>
-                </div>
-              ))}
-            <div className="toolbar">
-              <button
-                onClick={() =>
-                  prepare("map.link", { mapId: m.id, kind: "enter" })
-                }
-              >
-                进入建筑
-              </button>
-              <button
-                onClick={() =>
-                  prepare("map.link", { mapId: m.id, kind: "exit" })
-                }
-              >
-                返回区域
-              </button>
-            </div>
-          </>
-        )}
-      </section>
-      {room && (
-        <section className="panel">
-          <h3>{room.name}</h3>
-          <p>遭遇：{room.encounter}</p>
-          {room.containers?.map((c) => (
-            <article key={c.id}>
-              <h4>
-                  {c.name || c.box || "容器"} · {statuses[c.status]||'待处理'}
-              </h4>
-              <button
-                onClick={() => prepare("map.open", { mapId: m.id, ref: c.id })}
-              >
-                开启／领取
-              </button>
-            </article>
-          ))}
-          {room.supplies?.map((i) => (
-            <article key={i.id}>
-              <h4>{i.snapshot?.name || i.name || i.templateId}</h4>
-              <button
-                onClick={() => prepare("map.take", { mapId: m.id, ref: i.id })}
-              >
-                领取物资
-              </button>
-            </article>
-          ))}
-          {room.merchant && (
-            <>
-              <h3>行商 · {room.merchant.name}</h3>
-              <NumberField
-                label="交易数量"
-                value={choice.quantity}
-                min={1}
-                max={100}
-                onChange={(v) => Choice({ ...choice, quantity: v })}
-              />
-              {room.merchant.stock.map((i) => (
-                <div className="result-row" key={i.id}>
-                  <b>{i.template.name}</b>
-                  <span>
-                    库存 {i.remaining} · 标价 {i.template.value}
-                  </span>
-                  <button
-                    onClick={()=>prepare('merchant.trade',{mapId:m.id,cell:part.cell,mode:'purchase',itemId:i.id,quantity:choice.quantity})}
-                  >
-                    购买
-                  </button>
-                </div>
-              ))}
-              <Items
-                label="出售本人背包物品"
-                player={game.player}
-                value={choice.itemId}
-                onChange={(v) => Choice({ ...choice, itemId: v })}
-              />
-              <button
-                onClick={()=>prepare('merchant.trade',{mapId:m.id,cell:part.cell,mode:'sell',itemId:choice.itemId,quantity:choice.quantity})}
-              >
-                按标价110%出售
-              </button>
-            </>
-          )}
-        </section>
-      )}
-    </>
-  );
-}
+export function ExplorePanel(props) { return <ExplorationPanel {...props}/>; }
 export function BattlePanel({ game, groupId, userId, prepare, run, refresh, navigation, compact=false, active=true }) {
   const [bid, Battle] = useState(""),
     [action, Action] = useState("attack"),
@@ -1663,7 +1425,7 @@ export function ActivitiesPanel({ game, prepare }) {
   const [q, Q] = useState("");
   return (
     <>
-      <section className="panel">
+      {(game.sessions.length>0||game.checks.length>0)&&<section className="panel">
         <h3>开团与鉴定</h3>
         {game.sessions.map((s) => (
           <article key={s.id}>
@@ -1696,15 +1458,16 @@ export function ActivitiesPanel({ game, prepare }) {
             </button>
           </article>
         ))}
-      </section>
+      </section>}
+      <PlayerRulebook texts={game.texts||[]}/>
       <section className="panel">
-        <h3>名词与规则</h3>
+        <h3>世界名词库</h3>
         <input
-          placeholder="搜索名称、解释或章节"
+          placeholder="搜索名词名称或解释"
           value={q}
           onChange={(e) => Q(e.target.value)}
         />
-        {[...game.glossary, ...game.texts]
+        {(game.glossary||[])
           .filter((t) =>
             (
               (t.name || t.label || "") + (t.description || t.text || "")

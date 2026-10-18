@@ -84,7 +84,7 @@ async function restoreImages(storage, crypt, archive, repo, prefix) {
     );
     keys.push(key);
     record.key = key;
-    await repo.put("media", record, { scope: record.kind==='avatar'?record.owner:record.groupId });
+    await repo.put("media", record, { scope: record.kind==='avatar'?record.owner:record.kind==='music'&&record.shared?require('./music').MUSIC_SCOPE:record.groupId });
   }
   return keys;
 }

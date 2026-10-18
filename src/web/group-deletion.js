@@ -21,6 +21,7 @@ function createDeletion({ repo, content, accounts, games, database, storage, dis
       S.ok(g.version === p.baseVersion, '团资料已变化，请刷新后再删除。', 'CONFLICT');
       g.deleting = true;
       await repo.put('group', g, {}, r);
+      await require('./music').preserveGroupMusic(repo,group,r);
       const j = { id: group, actorId: user.id, operationId: p.operationId, groupVersion: g.version, status: 'deleting', startedAt: Date.now(), keys: (await repo.list('media', group, r)).map(f => f.key), rooms: (await repo.list('room', group, r)).map(c => c.id) };
       await repo.put('groupDeletion', j, {}, r);
       return j;
@@ -35,8 +36,13 @@ function createDeletion({ repo, content, accounts, games, database, storage, dis
       let j = await repo.get('groupDeletion', group);
       if (!j || j.status === 'deleted') return;
       try {
+        // A pre-upgrade cleanup job may already contain a shared song's key.
+        // Its upload survives the source group's deletion just like new music.
+        const musicKeys=new Set((await repo.list('media')).filter(f=>f.kind==='music').map(f=>f.key));
+        if((j.keys||[]).some(key=>musicKeys.has(key))){j={...j,keys:j.keys.filter(key=>!musicKeys.has(key))};await repo.put('groupDeletion',j);}
         await games.store.removeGuild(group, async () => {
           await repo.tx('group-purge:' + group, async r => {
+            await require('./music').preserveGroupMusic(repo,group,r);
             await database.deleteGuild(group, r);
             await repo.purgeGroup(group, j.rooms || [], r);
             if(content)await content.purgeGroup(group,[],r);
@@ -57,7 +63,19 @@ function createDeletion({ repo, content, accounts, games, database, storage, dis
     running.set(group, task);
     try { await task; } finally { running.delete(group); }
   }
-  async function resume() { for(const f of await repo.list('mediaCleanup')){try{await storage.client.send(new storage.commands.DeleteObjectCommand({Bucket:storage.bucket,Key:f.key}));await repo.remove('mediaCleanup',f.id);}catch{/* resume later */}}for (const j of await repo.list('groupDeletion')) if (j.status !== 'deleted') await run(j.id); }
+  async function resume() {
+    for(const f of await repo.list('mediaCleanup')){
+      try{
+        const media=await repo.get('media',f.id);
+        // A pre-upgrade group cleanup may refer to an audio upload which is now
+        // a shared asset. Clear that obsolete task without removing its object.
+        if(media?.kind==='music'&&media.shared&&media.key===f.key){await repo.remove('mediaCleanup',f.id);continue;}
+        await storage.client.send(new storage.commands.DeleteObjectCommand({Bucket:storage.bucket,Key:f.key}));
+        await repo.remove('mediaCleanup',f.id);
+      }catch{/* resume later */}
+    }
+    for (const j of await repo.list('groupDeletion')) if (j.status !== 'deleted') await run(j.id);
+  }
   return { start, status, resume, drain: () => Promise.allSettled([...running.values()]) };
 }
 module.exports = { createDeletion };

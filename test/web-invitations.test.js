@@ -25,7 +25,7 @@ test('invitation management rejects players, other groups and deleted groups; pr
 });
 test('whole console preferences are isolated by account, group and responsive layout',async()=>{
  const {consoleKey,readConsole,saveConsole}=await import('../web/src/console-state.js'),storage=new Map(),mock={getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)};
- const key=consoleKey('a','one',false);assert.deepEqual(readConsole(mock,key,false),{open:true,pane:'console'});assert.equal(readConsole(mock,consoleKey('a','one',true),true).open,false);saveConsole(mock,key,{open:false,pane:'skills'});assert.deepEqual(readConsole(mock,key,false),{open:false,pane:'skills'});assert.equal(readConsole(mock,consoleKey('a','two',false),false).open,true);assert.equal(readConsole(mock,consoleKey('b','one',false),false).pane,'console');mock.setItem(key,'invalid');assert.equal(readConsole(mock,key,false).open,true);
+ const key=consoleKey('a','one',false);assert.deepEqual(readConsole(mock,key,false),{open:false,pane:'console'});assert.equal(readConsole(mock,consoleKey('a','one',true),true).open,false);saveConsole(mock,key,{open:false,pane:'skills'});assert.deepEqual(readConsole(mock,key,false),{open:false,pane:'skills'});assert.equal(readConsole(mock,consoleKey('a','two',false),false).open,false);assert.equal(readConsole(mock,consoleKey('b','one',false),false).pane,'console');mock.setItem(key,'invalid');assert.equal(readConsole(mock,key,false).open,false);
  const {visibleSections}=await import('../web/src/refresh-state.js');assert.deepEqual(visibleSections('skills',{},false),['dashboard']);assert.ok(visibleSections('gm',{},false).includes('management'));
 });
 test('collapsed console uses current dashboard tasks instead of stale loaded panels',async()=>{

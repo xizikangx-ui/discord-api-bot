@@ -151,7 +151,7 @@ function createRpg(deps) {
     }
     const scan = store.select(guild,before => {
     const autoDue=Object.values(before.battles).some(b=>AI.due(before,b) || (b.status==='active'&&b.actors.some(a=>AI.config(a.ai).mode==='auto')&&b.actors.some(a=>a.team==='enemy')&&(!B.liveActors(before,b).some(a=>a.team==='enemy')||!B.liveActors(before,b).some(a=>a.team==='ally'))));
-    const mapDue=Object.values(before.explorations).some(m=>!require('./rp').waiting(m)&&((m.moves?.[m.moveRequestId]?.status==='pending'&&!Team.valid(before,m,m.moves[m.moveRequestId],now)) || (m.status==='active'&&Object.entries(m.cells).some(([cell,c])=>{const r=c.room;return r&&(r.boss||(r.autoStart??r.snapshot.autoStart))&&((!r.boss&&r.encounter==='pending'&&Object.values(m.participants).length&&Object.entries(m.participants).every(([uid,p])=>p.cell===cell&&before.players[uid]?.id===p.characterId&&before.players[uid].hp>0&&!M.battleFor(before,uid)))||(r.encounter==='battle'&&before.battles[r.battleId]?.status==='ended'&&before.battles[r.battleId]?.outcome==='victory'));}))));
+    const mapDue=Object.values(before.explorations).some(m=>!require('./rp').waiting(m)&&((m.moves?.[m.moveRequestId]?.status==='pending'&&!Team.valid(before,m,m.moves[m.moveRequestId],now))||Team.pendingAuto(before,m)||(m.status==='active'&&Object.values(m.cells).some(c=>{const r=c.room;return r&&(r.boss||Team.automatic(m,r))&&r.encounter==='battle'&&before.battles[r.battleId]?.status==='ended'&&before.battles[r.battleId]?.outcome==='victory';}))));
     return autoDue||mapDue||require('./boss').needsScan(before);
     });
     if(scan){

@@ -96,7 +96,7 @@ function reconcile(state, before) {
     for(const b of Object.values(state.battles))require('./combat').autoEnd(state,b);
     for(const m of Object.values(state.explorations).filter(m=>m.status==='active'))for(const [cell,c] of Object.entries(m.cells)){
       const r=c.room;
-      if(r?.encounter==='battle'&&!r.boss&&!(r.autoStart??r.snapshot.autoStart)&&state.battles[r.battleId]?.status==='ended'&&state.battles[r.battleId].outcome==='victory')require('./exploration').resolve(state,m,cell);
+      if(r?.encounter==='battle'&&!r.boss&&!require('./team-movement').automatic(m,r)&&state.battles[r.battleId]?.status==='ended'&&state.battles[r.battleId].outcome==='victory')require('./exploration').resolve(state,m,cell);
     }
     require('./team-movement').autoEncounters(state);
   }

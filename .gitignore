@@ -16,6 +16,7 @@ gm-web/runtime/
 gm-web/release/
 gm-web-demo/
 clients/desktop/release/
+clients/desktop/installers/
 clients/android/.gradle/
 clients/android/.runtime/
 clients/android/local.properties

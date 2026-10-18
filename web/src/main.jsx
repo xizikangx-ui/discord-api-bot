@@ -22,6 +22,7 @@ const playerComponent=name=>React.lazy(()=>import("./players").then(m=>({default
 const PlayerPanel=playerComponent('PlayerPanel'),ExplorePanel=playerComponent('ExplorePanel'),BattlePanel=playerComponent('BattlePanel'),ActivitiesPanel=playerComponent('ActivitiesPanel');
 import {allSections,visibleSections,mergeGame,refreshQueue,unreadEvent,markRead} from './refresh-state';
 import {chatTasks} from './chat-tasks';
+import {taskCounts,contextPosition} from './chat-shell';
 import {consoleKey,readConsole,saveConsole} from './console-state';
 import {Invitations} from './invites';
 import {roomMessages,mergeMessages} from "./chat-state";
@@ -244,7 +245,7 @@ function Keep({ show, children, resetKey = '' }) {
   }, [show]);
   return seen || show ? <div hidden={!show}><PanelErrorBoundary resetKey={resetKey+':'+show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></PanelErrorBoundary></div> : null;
 }
-function PendingTasks({game,userId,onNavigate,onOpen}){const tasks=chatTasks(game,userId);return tasks.length?<div className="chat-tasks" aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}>{t.text}</button>)}</div>:null;}
+function PendingTasks({game,userId,onNavigate,onOpen,expanded=false}){const tasks=chatTasks(game,userId);return tasks.length?<div className={'chat-tasks'+(expanded?' expanded':'')} aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}><i className="notification-dot" aria-hidden="true"/>{t.text} →</button>)}</div>:expanded?<div className="chat-tasks" role="status">当前没有待处理事项。</div>:null;}
 function ConsoleStatus({data}){const p=data?.player,b=data?.battle;if(!p)return null;return <div className="console-status" aria-label="常驻角色状态"><b>{p.name}</b><span>HP {p.health.hp}/{p.health.maxHP}</span><span className={p.health.downed?'danger':''}>倒地 {p.health.reserveHP}/{p.health.maxHP}</span><span>AP {p.ap}</span>{b&&<><span>轮 {b.actionRound?.number||1} · {b.actionRound?.counts?.[b.actorId]||0} 次</span><span>下次 {b.nextCost} AP</span><span>快 {b.quick} / 正 {b.formal}</span></>}</div>;}
 function App() {
   const [me, Me] = useState(null),
@@ -290,10 +291,17 @@ function App() {
     memberRead=useRef(null),memberReadVersion=useRef(0),
     [foreground,Foreground]=useState(document.visibilityState==='visible'),
     [mobileSide, MobileSide] = useState(false);
+  const [quickMenu,QuickMenu]=useState(null),[taskList,TaskList]=useState(false);
+  const menuRef=useRef(null);
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
   const receiveSound=useMessageSound(me?.user.id,me?.user.preferences?.messageSound);
+  const tasks=chatTasks(game,me?.user.id),taskBadges=taskCounts(tasks,gm),unread=rooms.reduce((sum,r)=>sum+(r.unread||0),0);
+  const shortcuts=[["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]];
+  function openQuickMenu(e){if(e.type==='contextmenu'&&e.target.closest('input,textarea,select,a,[contenteditable="true"]'))return;e.preventDefault();QuickMenu({...contextPosition(e.clientX||e.currentTarget.getBoundingClientRect().left,e.clientY||e.currentTarget.getBoundingClientRect().bottom,innerWidth,innerHeight),groupId});}
+  useEffect(()=>{if(!quickMenu)return;const close=e=>{if(!menuRef.current?.contains(e.target))QuickMenu(null);},escape=e=>{if(e.key==='Escape')QuickMenu(null);};document.addEventListener('pointerdown',close);document.addEventListener('keydown',escape);return()=>{document.removeEventListener('pointerdown',close);document.removeEventListener('keydown',escape);};},[quickMenu]);
+  useEffect(()=>{QuickMenu(null);TaskList(false);},[groupId]);
   async function savePreferences(patch){const target=me?.user.id;try{const value=await api('/preferences',patch);Me(old=>old?.user.id===target?{...old,user:{...old.user,preferences:value}}:old);}catch(e){E(e.message);}}
   const panelKey=consoleKey(me?.user.id,groupId,mobileConsole),panelPref=consolePrefs[panelKey]||readConsole(localStorage,panelKey,mobileConsole),panelOpen=panelPref.open;
   function setConsole(change){const next={...panelPref,...change};ConsolePrefs(old=>({...old,[panelKey]:next}));saveConsole(localStorage,panelKey,next);}
@@ -624,7 +632,8 @@ function App() {
   if (booting) return <div className="loading">◈ 正在翻开书页…</div>;
   if (!me) return <Auth done={boot} />;
   return (
-    <div className="site integrated-site book-theme">
+    <div className="site integrated-site immersive-site book-theme">
+      {mobileSide&&<button className="channel-scrim" aria-label="关闭频道导航" onClick={()=>MobileSide(false)}/>}
       <aside className={"site-sidebar " + (mobileSide ? "shown" : "")}>
         <div className="brand">
           <img className="book-emblem" src="/brand/book-icon-v1.svg" alt=""/>
@@ -717,21 +726,16 @@ function App() {
           </small>
         </footer>
       </aside>
-      <main className="site-main">
+      <main className="site-main" onContextMenu={openQuickMenu}>
         <header className="site-header">
           <button
-            className="mobile-menu"
+            className="mobile-menu channel-menu-button"
             aria-label="打开导航"
             onClick={() => MobileSide(!mobileSide)}
           >
-            ☰
+            ☰{unread>0&&<i className="notification-dot" aria-label={unread+' 条未读消息'}/>}
           </button>
           <div>
-            <span className="eyebrow">
-              {tab === "chat"
-                ? "故事正在发生"
-                : "书页与档案"}
-            </span>
             <h2>
               {tab !== "gm"
                 ? rooms.find((r) => r.id === roomId)?.name || "营地通讯"
@@ -739,8 +743,10 @@ function App() {
             </h2>
           </div>
           <div className="header-tags">
-            <span className="badge">{group?.name || "尚未入团"}</span>
-            <small>存档 v{game?.revision || 0}</small>
+            <span className="header-group">{group?.name || "尚未入团"}</span>
+            <button className="notifications-button" aria-label={'待办提醒'+(tasks.length?'，'+tasks.length+' 项':'')} aria-expanded={taskList} onClick={()=>TaskList(!taskList)}>提醒{tasks.length>0&&<b className="red-count">{tasks.length}</b>}</button>
+            <button className="quick-menu-button" aria-haspopup="menu" aria-expanded={!!quickMenu} onClick={openQuickMenu}>功能 ⋮</button>
+            {gm&&<button className="gm-quick-button" onClick={()=>Tab(tab==='gm'?'chat':'gm')}>{tab==='gm'?'返回聊天':'GM'}</button>}
           </div>
         </header>
         {me.siteNotice&&<div className="banner domain-notice" role="status">{me.siteNotice}</div>}
@@ -796,9 +802,9 @@ function App() {
         ) : (
           <>
             <div className={"chat-workspace "+(panelOpen||tab==="gm"?"with-panel":"console-collapsed")+(tab==="gm"?" gm-workspace":"")}><div hidden={tab==="gm"} className="chat-page">
-              <div className="player-toolbar" aria-label="玩家工具栏"><button aria-expanded={panelOpen} aria-controls="player-operation-panel" onClick={()=>setConsole({open:!panelOpen})}>{panelOpen?"收起操作台":"展开操作台"}</button>{[["console","总览"],["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]].map(([k,name])=><button key={k} className={tab===k||k==="console"&&tab==="chat"?"active":""} onClick={()=>Tab(k)}>{name}</button>)}</div>
+              <div className="player-toolbar" aria-label="玩家工具栏"><button aria-expanded={panelOpen} aria-controls="player-operation-panel" onClick={()=>{if(!panelOpen)Tab('console');else setConsole({open:false});}}>{panelOpen?"收起":"操作台"}</button>{shortcuts.map(([k,name])=><button key={k} className={panelOpen&&tab===k?"active":""} onClick={()=>Tab(k)}>{name}{taskBadges[k]>0&&<i className="notification-dot" aria-label={taskBadges[k]+' 项待处理'}/>}</button>)}</div>
               {game?.dashboard?.player&&<ConsoleStatus data={game.dashboard}/>}
-              <PendingTasks game={game} userId={me.user.id} onNavigate={navigateNotice} onOpen={Tab}/>
+              <PendingTasks game={game} userId={me.user.id} onNavigate={system=>{navigateNotice(system);TaskList(false);}} onOpen={target=>{Tab(target);TaskList(false);}} expanded={taskList}/>
               {result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看个人结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}
               <Chat
                 {...{
@@ -860,7 +866,7 @@ function App() {
               </Keep>
               <Keep show={panelOpen&&tab === "skills"}>{game&&<SkillBook {...{game,groupId,prepare}} userId={me.user.id} active={panelOpen&&tab==="skills"} artStyle={me.user.preferences?.artStyle||"magic"}/>}</Keep>
               <Keep show={panelOpen&&tab === "activities"}>
-                {game && <ActivitiesPanel {...{ game, prepare }} />}
+                {game && <ActivitiesPanel key={groupId} {...{ game, prepare }} />}
               </Keep>
               <Keep show={tab === "gm"}>
                 {gm && schema && (
@@ -945,6 +951,7 @@ function App() {
           </>
         )}
       </main>
+      {quickMenu?.groupId===groupId&&<div ref={menuRef} className="chat-context-menu" role="menu" aria-label="快捷功能" style={{left:quickMenu.left,top:quickMenu.top}}><small>快捷功能 · 也可右键打开</small>{shortcuts.map(([key,label])=><button role="menuitem" key={key} onClick={()=>{Tab(key);QuickMenu(null);}}>{label}{taskBadges[key]>0&&<b className="red-count">{taskBadges[key]}</b>}</button>)}<button role="menuitem" onClick={()=>{Tab('settings');QuickMenu(null);}}>账号与成员</button><button role="menuitem" onClick={()=>{MobileSide(true);QuickMenu(null);}}>切团与频道{unread>0&&<b className="red-count">{unread}</b>}</button>{gm&&<button role="menuitem" onClick={()=>{Tab('gm');QuickMenu(null);}}>GM 工作台</button>}</div>}
       <aside className="character-sidebar" hidden>
         <span className="eyebrow">你的角色</span>
         {game?.player ? (

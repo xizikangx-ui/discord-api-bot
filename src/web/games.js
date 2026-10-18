@@ -9,12 +9,22 @@ const crypto = require("node:crypto"),
   Loot = require("./battle-loot"),
   L = require("./library");
 const Sections=require('./game-sections');
-function needsLifecycle(s){return Object.values(s.battles).some(b=>B.terminalOutcome(s,b))||Object.values(s.explorations).some(m=>m.status==='active'&&Object.values(m.cells).some(c=>c.room?.encounter==='battle'&&s.battles[c.room.battleId]?.status==='ended'&&s.battles[c.room.battleId]?.outcome==='victory'));}
+function needsLifecycle(s){return Object.values(s.battles).some(b=>B.terminalOutcome(s,b))||Object.values(s.explorations).some(m=>require('../rpg/team-movement').pendingAuto(s,m)||m.status==='active'&&Object.values(m.cells).some(c=>c.room?.encounter==='battle'&&s.battles[c.room.battleId]?.status==='ended'&&s.battles[c.room.battleId]?.outcome==='victory'));}
 function derive(before, next) {
   next.deliveryJobs ||= {};
   for (const [id, b] of Object.entries(next.battles)) {
     const old = before.battles[id],
       known = new Set((old?.publicEvents || []).map((e) => e.id));
+    if(b.status==='active'&&['recruiting',undefined].includes(old?.status)){
+      const key='web:start:'+id;
+      next.deliveryJobs[key]={key,kind:'webBattleStart',battleId:id,roomId:b.channelId,status:'pending',desiredRevision:next.revision,priority:0};
+    }
+    if(b.status==='active'&&b.current?.id&&b.current.id!==old?.current?.id){
+      const actor=b.actors.find(a=>a.id===b.current.actorId);
+      if(actor?.userId){const key='web:turn:'+id+':'+b.current.id;
+        next.deliveryJobs[key]={key,kind:'webTurn',battleId:id,roomId:b.channelId,turnId:b.current.id,targetId:actor.id,status:'pending',desiredRevision:next.revision,priority:1};
+      }
+    }
     if(b.status==='ended'&&(old?.status!=='ended'||Loot.rewardSummary(next,id)!==Loot.rewardSummary(before,id)))next.deliveryJobs['web:end:'+id]={key:'web:end:'+id,kind:'webBattleEnd',battleId:id,roomId:b.channelId,status:'pending',desiredRevision:next.revision,priority:1};
     const corpses = Object.values(next.corpses || {}).filter(c => c.battleId === id),
       previousCorpses = Object.values(before.corpses || {}).filter(c => c.battleId === id),
@@ -234,6 +244,7 @@ function createGames({
       await job;
       if(store.select(id,s=>s.worldUpgradeVersion!==1))await store.transact(id,'web-world-fields-v1','system:web',s=>{require('./world').init(s);return{initialized:true};},'初始化世界地图字段',{delivery:false});
       if(store.select(id,s=>s.webMarketVersion!==1))await store.transact(id,'web-markets-v1','system:web',s=>require('../rpg/markets').initialize(s),'初始化关闭的营地市场',{delivery:false});
+      if(store.select(id,s=>s.webNpcAutoVersion!==1))await store.transact(id,'web-npc-auto-v1','system:web',s=>require('../rpg/npc-policy').migrate(s),'NPC默认自动操作：一次性切换现有模式',{delivery:false});
       if(!stamps.has(id))stamps.set(id,versions(id).sectionVersions);
       if(store.select(id,needsLifecycle))await store.transact(id,'web-lifecycle-recover:'+store.select(id,s=>s.revision),'system:web',()=>({recovered:true}),'恢复战斗结束检查');
       if (store.select(id, Loot.needsBackfill))
@@ -268,7 +279,8 @@ function createGames({
       "web-preview:" + uid + ":" + operation(clientId),
       uid,
       async (s) => {
-        await authorize(group, uid, gm);
+        const current=await authorize(group, uid, gm);
+        if(!gm&&['map.link','map.vote'].includes(command))await validateReferences(current,command,params,gm,s);
         let expiresAt = C.confirmationDeadline(300000),
           normalized = C.clone(params),
           display;
@@ -346,10 +358,11 @@ function createGames({
       { delivery: false },
     );
   }
-  async function validateReferences(a, command, p, gm) {
+  async function validateReferences(a, command, p, gm, state) {
+    const select=read=>state?read(state):store.select(a.group.id,read);
     const rows = G.rowsFor(command, p);
     S.ok(p.users === undefined || Array.isArray(p.users), "参战玩家须为列表。");
-    const channelIds = store.select(a.group.id, (s) =>
+    const channelIds = select((s) =>
       [
         p.mapId && s.explorations[p.mapId]?.channelId,
         p.battleId && s.battles[p.battleId]?.channelId,
@@ -360,6 +373,30 @@ function createGames({
       ].filter(Boolean),
     );
     for (const id of new Set(channelIds)) await chat.access(a.user.id, id);
+    if(!gm&&['map.link','map.vote'].includes(command)){
+      const link=select(s=>{
+        const m=s.explorations[p.mapId];if(!m)return null;
+        const request=command==='map.vote'?m.moves?.[p.requestId]:null;
+        if(command==='map.vote'&&!request?.destination)return null;
+        const kind=request?.kind||p.kind,from=request?.from||m.participants?.[a.user.id]?.cell;
+        if(command==='map.vote')S.ok(['enter','exit'].includes(kind),'建筑移动申请已变化，请重新打开地图。','CONFLICT');
+        if(!['enter','exit'].includes(kind))return null;
+        const destination=kind==='enter'?m.cells[from]?.buildingMapId:m.parentContext?.mapId;
+        const target=s.explorations[destination];
+        S.ok(target&&(!request||request.destination===target.id),'建筑连接已变化，请重新打开地图。','CONFLICT');
+        return {channelId:target.channelId,members:request?.members||Object.keys(m.participants)};
+      });
+      if(link){
+        const denied='队伍中有成员无法访问目标地图，请联系GM检查权限。';
+        S.ok(Array.isArray(link.members), '建筑移动申请已变化，请重新打开地图。', 'CONFLICT');
+        const room=link.channelId&&await repo.get('room',link.channelId);
+        S.ok(room?.groupId===a.group.id&&!room.archived,denied,'FORBIDDEN');
+        for(const id of new Set([...link.members,a.user.id])){
+          try{const member=await accounts.member(a.group.id,id);await chat.access(id,room.id,undefined,member,room);}
+          catch{S.fail(denied,'FORBIDDEN');}
+        }
+      }
+    }
     if (p.channelId) {
       const room = await repo.get("room", p.channelId);
       S.ok(
@@ -370,7 +407,7 @@ function createGames({
     for (const id of [
       p.targetUid,
       ...(command === "world.assign" ? [p.uid] : []),
-      ...(["world.vote","world.permit","world.arrive"].includes(command) && p.journeyId ? store.select(a.group.id,s=>s.worldJourneys[p.journeyId]?.members||[]) : []),
+      ...(["world.vote","world.permit","world.arrive"].includes(command) && p.journeyId ? select(s=>s.worldJourneys[p.journeyId]?.members||[]) : []),
       ...(p.users || []),
       ...rows.filter((r) => r.uid).map((r) => r.uid),
     ].filter(Boolean))
@@ -395,10 +432,16 @@ function createGames({
         "网站身份请使用成员管理。",
       );
   }
+  function conflictDetails(s,refs,gm){
+    return refs.map(ref=>{
+      const value=ref.id?s[ref.source]?.[ref.id]:s[ref.source];
+      return {source:ref.source,name:value?.name||'相关设置',current:gm?value:value&&{version:value.version,status:value.status}};
+    });
+  }
   async function commit(group, uid, id) {
     await authorize(group, uid);
     const operationId = "web-action:" + uid + ":" + id;
-    return store.transact(
+    const saved=await store.transact(
       group,
       operationId,
       uid,
@@ -417,17 +460,20 @@ function createGames({
             f.canCommit !== false,
           "确认已失效，请重新选择。",
         );
-        G.verifyGuards(s, f.guards);
+        try{G.verifyGuards(s, f.guards);}catch(e){if(!f.gm&&e.code==='CONFLICT')e.details=conflictDetails(s,e.details||[],false);throw e;}
         await validateReferences(
           await accounts.member(group, uid),
           f.command,
           f.params,
           f.gm,
+          s,
         );
         return applyForm(s, uid, f, operationId);
       },
       "网站 · " + id,
     );
+    const f=store.select(group,s=>s.forms[id]);
+    return f?.gm?saved:P.playerResult(f?.command,saved);
   }
   async function applyForm(s, uid, f, operationId) {
         let result;
@@ -460,6 +506,7 @@ function createGames({
           result = f.gm
             ? G.apply(s, uid, f.command, f.params)
             : P.applyPlayer(s, uid, f.command, f.params);
+        if(!f.gm)result=P.playerResult(f.command,result);
         f.status = "done";
         f.done = true;
         f.result = {
@@ -512,9 +559,12 @@ function createGames({
     const a=await authorize(group,uid,gm);
     S.ok(gm || P.playerCommands[command],'操作不存在。');
     if(gm)S.ok(!['config.save','publication.repair'].includes(command),'请使用网站配置入口。');
-    await validateReferences(a,command,params,gm);
     const id=directId(uid,clientId), operationId='web-direct:'+uid+':'+clientId;
     const prior=store.select(group,s=>s.forms[id]);if(prior)S.ok(prior.command===command && G.fingerprint(prior.originalParams)===G.fingerprint(params),"同一操作编号不可用于不同操作。","CONFLICT");
+    // A completed map transition no longer has the actor in its source map.
+    // Replaying its authoritative receipt is a read, not a new permission grant.
+    if(!gm&&['map.link','map.vote'].includes(command)&&prior?.status==='done')return P.playerResult(command,C.clone(prior.result));
+    await validateReferences(a,command,params,gm);
     const result=await store.transact(group,operationId,uid,async s=>{
       await authorize(group,uid,gm);
       const previous=s.forms[id];
@@ -522,8 +572,8 @@ function createGames({
       const guards=gm?G.guards(s,command,params):P.playerGuards(s,uid,command,params);
       S.ok(expected && typeof expected==='object','页面版本缺失，请刷新后重新操作。','CONFLICT');
       const conflicts=guards.filter(g=>(expected[g.source+':'+(g.id||'')]??(g.source.startsWith('world')?G.fingerprint(undefined):undefined))!==g.hash);
-      if(conflicts.length){const e=Error('相关内容已变化，已保留输入。请核对最新状态后再次提交。');e.code='CONFLICT';e.details=conflicts.map(g=>({source:g.source,name:(g.id?s[g.source]?.[g.id]:null)?.name||'相关设置',current:g.id?s[g.source]?.[g.id]:undefined}));throw e;}
-      await validateReferences(await accounts.member(group,uid),command,params,gm);
+      if(conflicts.length){const e=Error('相关内容已变化，已保留输入。请核对最新状态后再次提交。');e.code='CONFLICT';e.details=conflictDetails(s,conflicts,gm);throw e;}
+      await validateReferences(await accounts.member(group,uid),command,params,gm,s);
       const normalized=C.clone(params);let expiresAt=C.confirmationDeadline(300000);
       if(!gm && command==='battle.action'){
         normalized.params=P.normalizeAction(s,uid,params);
@@ -534,11 +584,11 @@ function createGames({
       return applyForm(s,uid,f,operationId);
     },'网站直接执行 · '+(P.playerCommands[command]||command));
     const saved=store.select(group,s=>s.forms[id]);S.ok(saved?.command===command && G.fingerprint(saved.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');
-    return result;
+    return gm?result:P.playerResult(command,result);
   }
   async function operationReceipt(group,uid,clientId){
     await authorize(group,uid);operation(clientId);
-    return store.select(group,s=>s.forms[directId(uid,clientId)]?.result||{status:store.frozen(group)?'uncertain':inFlight.has(operationKey(group,uid,clientId))?'processing':'uncommitted'});
+    return store.select(group,s=>{const f=s.forms[directId(uid,clientId)];return f?.result?(f.gm?f.result:P.playerResult(f.command,f.result)):{status:store.frozen(group)?'uncertain':inFlight.has(operationKey(group,uid,clientId))?'processing':'uncommitted'};});
   }
   async function receipt(group, uid, id) {
     await authorize(group, uid);
@@ -546,7 +596,7 @@ function createGames({
       const f = s.forms[id];
       S.ok(f?.owner === uid, "回执不属于你。", "FORBIDDEN");
       return (
-        f.result || {
+        (f.gm?f.result:P.playerResult(f.command,f.result)) || {
           operationId: "web-action:" + uid + ":" + id,
           status: store.frozen(group)
             ? "uncertain"
@@ -648,6 +698,17 @@ function createGames({
           npcId: j.npcId,
           cardKey: j.npcId ? b.id + ":" + j.npcId : undefined,
         };
+      } else if (j.kind === "webBattleStart") {
+        const b=s.battles[j.battleId];
+        if(!b||b.status==='recruiting')continue;
+        text='战斗开始 · '+b.name+'\n参战玩家请在聊天操作台打开战斗；轮到你行动或需要防守时会显示待办提醒。';
+        system={battleId:b.id,kind:j.kind,started:true};
+      } else if (j.kind === "webTurn") {
+        const b=s.battles[j.battleId],actor=b?.actors.find(a=>a.id===j.targetId);
+        if(b?.status==='active'&&b.current?.id===j.turnId&&actor?.userId){
+          text='轮到 '+actor.name+' 行动 · '+b.name+'\n打开战斗面板即可行动。';
+          system={battleId:b.id,kind:j.kind,turnId:j.turnId,targetUserId:actor.userId};
+        }
       } else if (j.kind === "webBattleEnd") {
         const b=s.battles[j.battleId];if(b?.status!=='ended')continue;
         text='战斗结束 · '+b.name+'\n'+({victory:'战斗胜利',defeat:'战斗失败'}[b.outcome]||'GM已结束战斗')+'\n'+Loot.rewardSummary(s,b.id);
@@ -666,6 +727,7 @@ function createGames({
         system = { mapId: j.mapId, rpId: j.rpId };
       } else if (j.kind === "webMap") {
         const m = s.explorations[j.mapId];
+        const move=m.moves?.[m.moveRequestId];
         text =
           "探索 · " +
           m.name +
@@ -673,7 +735,10 @@ function createGames({
           (require("../rpg/rp").waiting(m)
             ? "等待GM描述环境。"
             : m.lastEvent || "地图状态已更新。");
-        system = { mapId: m.id };
+        if(move?.status==='pending')text+='\n全队移动待确认：'+move.yes.length+'/'+move.members.length+' 人已同意。';
+        const waiting=Object.entries(m.cells).find(([cell,c])=>c.room?.encounter==='pending'&&!require('../rpg/team-movement').automatic(m,c.room)&&Object.values(m.participants).some(p=>p.cell===cell));
+        if(waiting&&!require('../rpg/rp').waiting(m))text+='\n当前遭遇等待GM确认开战。';
+        system = { mapId: m.id, ...(move?.status==='pending'?{requestId:move.id,kind:'webMove',targetUserIds:move.members.filter(id=>!move.yes.includes(id))}:{}) };
       } else {
         text = j.text;
         system = {
@@ -686,7 +751,7 @@ function createGames({
         };
       }
       const clientId = S.hash(j.key + ":" + j.desiredRevision);
-      if (["webEvent", "webActivity", "webLoot", "webCorpses", "webBattleEnd"].includes(j.kind))
+      if(text!==undefined){if (["webEvent", "webActivity", "webLoot", "webCorpses", "webBattleEnd", "webBattleStart", "webTurn"].includes(j.kind))
         await chat.upsertSystem(room.id, j.key, j.desiredRevision, {
           text,
           system,
@@ -697,7 +762,7 @@ function createGames({
           room.id,
           { clientId, text, system },
           { system: true },
-        );
+        );}
       await store.transact(
         group,
         "web-job:" + j.key + ":" + j.desiredRevision,
@@ -739,7 +804,7 @@ function createGames({
           worldSettings:st.worldSettings?.main,
           battles:Object.fromEntries(Object.entries(st.battles).map(([id,b])=>[id,{id,status:b.status,pending:{hits:require('../rpg/aoe').hits(b).map(h=>({expiresAt:h.expiresAt}))},due:require('../rpg/npc-auto').due(st,b),terminal:!!B.terminalOutcome(st,b)}])),
           offers:Object.values(st.offers).map(o=>({status:o.status,expiresAt:o.expiresAt})),sessions:Object.values(st.sessions).map(x=>({startsAt:x.startsAt,reminder:x.reminder})),
-          explorations:Object.values(st.explorations).map(m=>({status:m.status,moves:Object.values(m.moves||{}).map(r=>({status:r.status,expiresAt:r.expiresAt})),pending:Object.values(m.cells).some(c=>c.room?.encounter==='pending'&&(c.room.autoStart??c.room.snapshot.autoStart))})),
+          explorations:Object.values(st.explorations).map(m=>({status:m.status,moves:Object.values(m.moves||{}).map(r=>({status:r.status,expiresAt:r.expiresAt})),pending:require('../rpg/team-movement').pendingAuto(st,m)})),
           players:Object.values(st.players).map(p=>({temporaryEffects:(p.temporaryEffects||[]).map(e=>({expiresAt:e.expiresAt}))})),lifecycle:needsLifecycle(st),
         })),
           now = Date.now(),

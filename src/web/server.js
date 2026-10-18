@@ -89,7 +89,10 @@ function createWeb({
       broadcast: (group, event) => background.run(() => emit(group, event)),
       metrics,
     });
-  const music=require('./music').createMusic({repo,accounts,crypt,storage,changed:group=>background.run(()=>emit(group,{type:'music',data:{groupId:group}}))});
+  const music=require('./music').createMusic({repo,accounts,crypt,storage,changed:group=>background.run(async()=>{
+    const groups=group?[group]:[...new Set([...sockets].map(ws=>ws.groupId).filter(Boolean))];
+    await Promise.allSettled(groups.map(id=>emit(id,{type:'music',data:{groupId:id,library:!group}})));
+  })});
   async function notifyUnread(roomId, sequence, authorId) {
     const room = await repo.get("room", roomId);
     if (!room) return;
@@ -512,7 +515,11 @@ function createWeb({
       if(rest==='/music/control'&&p)return answer(await music.command(a,p));
       if(rest.startsWith('/music/files/')&&!p){
         const audio=await music.bytes(uid,group,rest.slice('/music/files/'.length));
-        res.writeHead(200,{'content-type':audio.mime,'content-length':audio.bytes.length,'cache-control':'private,no-store','x-content-type-options':'nosniff'});return res.end(audio.bytes);
+        const range=require('./music').audioRange(audio.bytes,req.headers.range),headers={'content-type':audio.mime,'accept-ranges':'bytes','cache-control':'private,no-store','x-content-type-options':'nosniff'};
+        if(range.status===416){res.writeHead(416,{...headers,'content-range':'bytes */'+audio.bytes.length});return res.end();}
+        const body=audio.bytes.subarray(range.start,range.end+1);
+        if(range.status===206)headers['content-range']='bytes '+range.start+'-'+range.end+'/'+audio.bytes.length;
+        res.writeHead(range.status,{...headers,'content-length':body.length});return res.end(body);
       }
       if (rest === "/members" && !p) {
         const members = await repo.list("member", group),
@@ -1014,6 +1021,7 @@ function createWeb({
     await repo.init();
     await content.init();
     await database.acquireLease("standalone-web");
+    await music.migrateLegacy();
     await worldLibrary.refresh();
     for (const g of await repo.list("group")) if(!g.deleting) await games.ensure(g.id);
     server = http.createServer((req, res) => {

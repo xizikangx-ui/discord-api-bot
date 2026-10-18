@@ -3,6 +3,22 @@ android {
     namespace 'app.yichang.book'
     compileSdk 35
     defaultConfig { applicationId 'app.yichang.book'; minSdk 26; targetSdk 35; versionCode 1; versionName '1.0.0' }
-    buildTypes { release { minifyEnabled false } }
+    signingConfigs {
+        release {
+            if (System.getenv('YICHANG_ANDROID_STORE_PATH')) {
+                storeFile file(System.getenv('YICHANG_ANDROID_STORE_PATH'))
+                storePassword System.getenv('YICHANG_ANDROID_STORE_PASSWORD')
+                keyAlias 'yichangbook'
+                keyPassword System.getenv('YICHANG_ANDROID_STORE_PASSWORD')
+            }
+        }
+    }
+    buildTypes { release { minifyEnabled false; signingConfig signingConfigs.release } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach {
+    doFirst {
+        if (!System.getenv('YICHANG_ANDROID_STORE_PATH') || !System.getenv('YICHANG_ANDROID_STORE_PASSWORD'))
+            throw new GradleException('Release builds require the operator signing key in YICHANG_ANDROID_STORE_PATH and YICHANG_ANDROID_STORE_PASSWORD.')
+    }
 }

@@ -10,7 +10,7 @@ function check(state,m,r){const dest=destination(state,m,r.kind,r.from);ok(dest&
 }
 function propose(state,m,uid,kind,now=Date.now()){const Team=require('./team-movement');Team.expire(state,m,now);ok(m.moves?.[m.moveRequestId]?.status!=='pending','已有全队移动或切换申请。');const {part}=X.participant(state,m,uid),dest=destination(state,m,kind,part.cell);ok(dest,'未绑定内部地图。');const members=Object.keys(m.participants);
  const r={id:C.id('v'),kind,owner:uid,from:part.cell,to:kind==='enter'?dest.entrance:m.parentContext.returnCell,destination:dest.id,destinationName:dest.name,destinationVersion:dest.version,members,characters:Object.fromEntries(members.map(id=>[id,m.participants[id].characterId])),roster:Team.roster(m),layout:Team.layout(m),yes:[uid],status:'pending',createdAt:now,expiresAt:C.confirmationDeadline(180000,now),publication:{status:'pending'}};
- Team.checks(state,m,r);m.moves||={};m.moves[r.id]=r;m.moveRequestId=r.id;if(members.length===1)Team.complete(state,m,r);return clone(r);
+ Team.checks(state,m,r);m.moves||={};m.moves[r.id]=r;m.moveRequestId=r.id;m.version++;m.lastEvent='全队'+(kind==='enter'?'进入建筑':'返回区域')+'待确认：'+dest.name;if(members.length===1)Team.complete(state,m,r);return clone(r);
 }
 function complete(state,m,r){check(state,m,r);const target=state.explorations[r.destination];
  if(r.kind==='enter'){m.excursion={childId:target.id,returnCell:r.from,characters:clone(r.characters)};target.parentContext={mapId:m.id,returnCell:r.from,characters:clone(r.characters)};}

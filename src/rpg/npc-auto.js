@@ -3,8 +3,9 @@ const { randomInt } = require('node:crypto');
 const C = require('./constants'), M = require('./model'), B = require('./combat'), W = require('./weapons'), AM=require('./ammunition');
 const { requireThat: ok, clone } = C;
 const DEFAULTS = { quick: { reload: 35, extract: 15, fill: 15, heal: 20, switch: 5, cast: 10 }, formal: { 'attack:*': 100 }, defense: { defend: 100, dodge: 0, both: 0, none: 0 } };
-function config(raw = {}) { return { strategy:raw.strategy==='probability'?'probability':'smart', mode: raw.mode === 'auto' ? 'auto' : 'manual', target: ['random','nearest','lowest'].includes(raw.target) ? raw.target : 'nearest', weights: clone(raw.weights || DEFAULTS) }; }
+function config(raw = {}) { raw ||= {};return { strategy:raw.strategy==='probability'?'probability':'smart', mode: raw.mode === 'manual' ? 'manual' : 'auto', target: ['random','nearest','lowest'].includes(raw.target) ? raw.target : 'nearest', weights: clone(raw.weights || DEFAULTS) }; }
 function validate(raw) {
+  ok(raw?.mode==null||['auto','manual'].includes(raw.mode),'NPC操作模式请选择自动或GM手动。');
   const v = config(raw);
   for (const group of ['quick','formal','defense']) {
     const entries = Object.entries(v.weights[group] || {});
