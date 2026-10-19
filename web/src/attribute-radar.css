@@ -1,0 +1,271 @@
+/* 角色档案：七轴雷达 + 属性列表 + 加点区
+   只作用于 .character-sheet，避免影响其它面板。 */
+
+.character-sheet {
+  --sheet-line: rgba(255, 255, 255, 0.07);
+  --sheet-ink: #e7eaf6;
+  --sheet-dim: #aeb7d3;
+  --sheet-faint: #7d88a8;
+  --sheet-accent: #b9a6f4;
+  --sheet-accent-2: #8e7bd6;
+  display: grid;
+  gap: 18px;
+}
+
+/* 顶部：头像 + 名字 + 自由点 */
+.character-sheet .sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--sheet-line);
+}
+.character-sheet .sheet-head .portrait {
+  width: 56px;
+  height: 56px;
+  margin: 0;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.character-sheet .sheet-head .eyebrow {
+  display: block;
+  margin-bottom: 4px;
+}
+.character-sheet .sheet-head h2 {
+  margin: 0;
+  font-family: BookXiaoWei, "Microsoft YaHei", sans-serif;
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  color: var(--sheet-ink);
+}
+.character-sheet .sheet-points {
+  margin-left: auto;
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+.character-sheet .sheet-points span {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--sheet-faint);
+}
+.character-sheet .sheet-points b {
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--sheet-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 主体：左雷达，右列表 */
+.character-sheet .sheet-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+}
+
+.attr-radar-figure {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+.attr-radar {
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  overflow: visible;
+}
+.radar-grid polygon,
+.radar-grid line {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.07);
+  stroke-width: 1;
+}
+.radar-grid line {
+  stroke: rgba(255, 255, 255, 0.05);
+}
+.radar-tick {
+  fill: #5f6885;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.radar-shape {
+  fill: url(#radarFill);
+  stroke: var(--sheet-accent);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  transform-origin: 50% 50%;
+  animation: radar-in 0.42s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+@keyframes radar-in {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.radar-dot {
+  fill: #d8ccff;
+  stroke: #171e34;
+  stroke-width: 1.5;
+  transition: r 0.12s ease, fill 0.12s ease;
+  cursor: pointer;
+}
+.radar-dot.is-active {
+  fill: #fff;
+}
+.radar-label {
+  fill: var(--sheet-dim);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  transition: fill 0.12s ease;
+}
+.radar-value {
+  fill: #6f7896;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  transition: fill 0.12s ease;
+}
+.radar-axis {
+  cursor: default;
+}
+.radar-axis.is-active .radar-label {
+  fill: #efe9ff;
+}
+.radar-axis.is-active .radar-value {
+  fill: #c9bcf2;
+}
+.attr-radar-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--sheet-faint);
+  font-variant-numeric: tabular-nums;
+}
+.attr-radar-caption b {
+  color: #efe9ff;
+  font-weight: 600;
+}
+
+/* 属性条列表 */
+.character-sheet .attr-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.character-sheet .attr-list li {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 30px 26px;
+  align-items: center;
+  gap: 10px;
+}
+.character-sheet .attr-name {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--sheet-dim);
+}
+.character-sheet .attr-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.character-sheet .attr-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--sheet-accent-2), var(--sheet-accent));
+  transition: width 0.28s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.character-sheet .attr-value {
+  text-align: right;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--sheet-ink);
+  font-variant-numeric: tabular-nums;
+}
+.character-sheet .attr-max {
+  font-style: normal;
+  font-size: 11px;
+  color: #5f6885;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 加点区：一行放完，不再上下堆 */
+.character-sheet .sheet-allocate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px auto;
+  align-items: end;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--sheet-line);
+}
+.character-sheet .sheet-allocate button {
+  height: 38px;
+  padding: 0 18px;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .character-sheet .sheet-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .attr-radar {
+    max-width: 240px;
+  }
+  .character-sheet .sheet-allocate {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .character-sheet .sheet-head h2 {
+    font-size: 22px;
+  }
+}
+
+/* 建角预览仍在用的方块网格：统一到同一套靛紫，避免橄榄绿回潮 */
+.attribute-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 8px;
+}
+.attribute-grid > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: #1b2237;
+}
+.attribute-grid span {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #aeb7d3;
+}
+.attribute-grid b {
+  font-size: 20px;
+  font-weight: 600;
+  color: #e7eaf6;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-shape {
+    animation: none;
+  }
+  .character-sheet .attr-bar i {
+    transition: none;
+  }
+}

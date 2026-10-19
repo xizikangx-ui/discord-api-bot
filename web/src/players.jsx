@@ -7,6 +7,8 @@ import {ItemArt,Art} from "./item-art";
 import { BattleLoot } from "./battle-loot";
 import {BattleStage,DefenseClock} from './battle-presentation';
 import {useRestartDraft} from './use-restart-draft';
+import { AttributeRadar } from './attribute-radar';
+import './attribute-radar.css';
 const statuses={active:'进行中',paused:'已暂停',ended:'已结束',recruiting:'招募中',draft:'草稿',editing:'协商中',ready:'待双方同意',completed:'已完成',cancelled:'已取消',expired:'已过期',locked:'未开启',opened:'已开启',claimed:'已领取'};
 const attrs = {
     strength: "力量",
@@ -192,27 +194,52 @@ export function PlayerPanel({
   if (tab === "character")
     return (
       <>
-        <section className="panel">
-          <span className="eyebrow">角色档案</span>
-          <h2>
-            {p.name} <span className="badge">等级 {p.level}</span>
-          </h2>
-          {p.portraits?.avatar?.webMediaId && (
-            <img
-              className="portrait"
-              src={mediaUrl(p.portraits.avatar.webMediaId)+'?groupId='+encodeURIComponent(groupId)}
-              alt="角色头像"
+        <section className="panel character-sheet">
+          <header className="sheet-head">
+            {p.portraits?.avatar?.webMediaId && (
+              <img
+                className="portrait"
+                src={mediaUrl(p.portraits.avatar.webMediaId)+'?groupId='+encodeURIComponent(groupId)}
+                alt="角色头像"
+              />
+            )}
+            <div>
+              <span className="eyebrow">角色档案</span>
+              <h2>
+                {p.name} <span className="badge">等级 {p.level}</span>
+              </h2>
+            </div>
+            <div className="sheet-points">
+              <span>自由点</span>
+              <b>{p.points}</b>
+            </div>
+          </header>
+          <div className="sheet-body">
+            <AttributeRadar
+              values={p.attributes}
+              labels={attrs}
+              max={30}
+              caption="属性总览"
             />
-          )}
-          <div className="attribute-grid">
-            {Object.entries(p.attributes).map(([k, v]) => (
-              <div key={k}>
-                <span>{attrs[k]}</span>
-                <b>{v}</b>
-              </div>
-            ))}
+            <ul className="attr-list">
+              {Object.entries(p.attributes).map(([k, v]) => (
+                <li key={k}>
+                  <span className="attr-name">{attrs[k]}</span>
+                  <span className="attr-bar">
+                    <i
+                      style={{
+                        width:
+                          Math.min(100, ((Number(v) || 0) / 30) * 100) + "%",
+                      }}
+                    />
+                  </span>
+                  <b className="attr-value">{v}</b>
+                  <em className="attr-max">/30</em>
+                </li>
+              ))}
+            </ul>
           </div>
-          <div className="form-grid">
+          <div className="sheet-allocate">
             <Select
               label="分配属性"
               value={form.attribute}
@@ -226,17 +253,17 @@ export function PlayerPanel({
               max={Math.max(1, p.points)}
               onChange={(v) => set("amount", v)}
             />
+            <button
+              onClick={() =>
+                prepare("character.allocate", {
+                  attribute: form.attribute,
+                  amount: form.amount,
+                })
+              }
+            >
+              分配属性点
+            </button>
           </div>
-          <button
-            onClick={() =>
-              prepare("character.allocate", {
-                attribute: form.attribute,
-                amount: form.amount,
-              })
-            }
-          >
-            分配属性点
-          </button>
         </section>
         <section className="panel">
           <h3>角色叙述</h3>
