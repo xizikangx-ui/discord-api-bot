@@ -43,6 +43,7 @@ function create(state, owner, channelId, name, floors, width, mode, categoryId,m
   const m = { mapType,id: id('m'), owner, channelId, name: C.text(name, '地图名称', 80),
     floors: num(floors, '楼层', 1, 20), width: num(width, '每层格数', 1, 20), mode, categoryId,
     cells: {}, revealed: {}, participants: {}, status: 'draft', version: 1, createdAt: Date.now(), messageId: null };
+  if(mode==='random')m.generation={combatPercent:30,roomPolicyVersion:2};
   for (let y = 0; y < m.floors; y++) for (let x = 0; x < m.width; x++)
     m.cells[key(x, y)] = { type:mapType==='region'?(x===0&&y===0?'entrance':x===0||y===0?'road':'wild'):x === 0 ? (y === 0 ? 'entrance' : 'stairs') : x % 2 ? 'corridor' : 'room', categoryId };
   state.explorations[m.id] = m; return m;
@@ -52,7 +53,7 @@ function touched(m, ref) {
   const c = m.cells[ref];
   return !!(c?.touched || Object.values(m.participants).some(p => p.cell === ref));
 }
-function editCell(state, m, x, y, type, categoryId, templateId, variantId = null) {
+function editCell(state, m, x, y, type, categoryId, templateId, variantId = null, cellOptions = null) {
   editable(m); x = num(x, '列', 1, 20) - 1; y = num(y, '楼层', 1, 20) - 1;
   ok(cellTypes(m)[type] || type === 'empty', '格子类型无效。'); const ref = key(x, y), old = m.cells[ref];
   ok(!old?.room?.merchant,'请通过行商入口移除尚未进入的节点。');
@@ -61,12 +62,13 @@ function editCell(state, m, x, y, type, categoryId, templateId, variantId = null
   if (type === 'empty') delete m.cells[ref];
   else {
     const c = { type, categoryId: categoryId || m.categoryId, templateId: templateId || null, variantId:variantId||null };
+    if(cellOptions){c.passable=cellOptions.passable!==false;c.hasContents=!!cellOptions.hasContents;}
     if (type === 'room') {
       ok(state.mapCategories[c.categoryId]?.published, '房间大类不存在。');
       if (c.templateId) ok(state.roomTemplates[c.templateId]?.categoryIds.includes(c.categoryId), '房间模板与大类不匹配。');
     }
     m.cells[ref] = c;
-    if (m.status !== 'draft' && type === 'room') c.room = instantiate(state, selectRoom(state, m, c), randomInt,m.maxRank??10,c.variantId);
+    if (m.status !== 'draft' && passable(c) && (type === 'room'||c.hasContents)) populateRooms(state,m);
   }
   m.width = Math.max(m.width, x + 1); m.floors = Math.max(m.floors, y + 1); m.version++;
   if (old && m.status === 'draft') delete m.revealed[ref];
@@ -100,6 +102,8 @@ function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=nu
   if(template.variants?.length){const V=require('./room-variants'),variant=V.choose(template,rng,fixedVariant);const raw=V.merge(template,variant);raw.categoryIds=raw.categoryIds.filter(id=>state.mapCategories[id]?.published);raw.supplyIds=raw.supplyIds.filter(id=>state.catalog[id]?.published);raw.npcIds=raw.npcIds.filter(id=>state.npcTemplates[id]?.published);raw.randomSupplies=(raw.randomSupplies||[]).filter(e=>state.catalog[e.ref]?.published);raw.randomNpcs=(raw.randomNpcs||[]).filter(e=>state.npcTemplates[e.ref]?.published);template=validateRoom(state,raw,true);}
   const r = { id: id('r'), templateId: template.id, snapshot: clone(template), unlocked: !template.keyIds.length,
     encounter: 'resolved', containers: [], supplies: [], battleId: null, randomResults: [], npcs: policy?.role==='safe'?[]:clone(template.npcs) };
+  if(policy?.role==='safe')for(const field of ['npcIds','npcs','randomNpcs'])r.snapshot[field]=[];
+  if(policy?.role==='safe'){r.snapshot.npcCounts={};r.snapshot.npcQuantities={};}
   const random = (list,kind) => (list || []).map(e=>{const quantity=R.draw(e.probabilities,rng);r.randomResults.push({kind,ref:e.ref,quantity,probabilities:clone(e.probabilities)});return {...e,quantity};});
   const containers = [...template.boxes.map(box=>({ref:box,quantity:template.boxCounts[box]})),...random(template.randomContainers,'container')];
   for (const entry of containers.filter(e=>require('./containers').get(state,e.ref)?.enabled!==false)) for (let n = 0; n < entry.quantity; n++)
@@ -108,7 +112,7 @@ function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=nu
     const stateful = ['武器', '防具', '饰品', '卡牌', '配件', '弹夹', '技能', '钥匙'].includes(entry.template.kind);
     for (let n = 0; n < (stateful ? entry.quantity : 1); n++) r.supplies.push(M.makeItem(entry.template, stateful ? 1 : entry.quantity));
   }
-  r.npcs=r.npcs.filter(e=>require('./npc-strength').allowed(e.template,maxRank));
+  r.npcs=r.npcs.filter(e=>e.quantity>0&&require('./npc-strength').allowed(e.template,maxRank));
   if(policy?.role!=='safe')r.npcs.push(...random((template.randomNpcs||[]).filter(e=>require('./npc-strength').allowed(e.template,maxRank)),'npc').filter(e=>e.quantity>0).map(e=>({template:clone(e.template),quantity:e.quantity})));
   if(policy?.role==='battle'&&!r.npcs.some(e=>e.quantity>0)){
     ok(policy.npcs?.length,'当前战斗房缺少符合主题与等级上限的NPC。');
@@ -123,21 +127,26 @@ function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=nu
   r.remainingNpcs=clone(r.npcs);r.encounter=r.npcs.length ? 'pending' : 'resolved';
   return r;
 }
-function generate(state, m, rng = randomInt) {
-  ok(m.status === 'draft', '已发布地图不能重新随机生成。'); validateMap(m);
-  const pending=Object.entries(m.cells).filter(([,c])=>(c.type==='room'||c.hasContents)&&!c.room);
-  if(!pending.length&&m.generated)return m;
+function populateRooms(state,m,rng=randomInt){
+  const pending=Object.entries(m.cells).filter(([,c])=>passable(c)&&(c.type==='room'||c.hasContents)&&!c.room);
+  if(!pending.length)return m;
   // Build every new instance before assigning any to the map. A missing theme,
   // invalid candidate or RNG failure cannot leave a half-generated map behind.
   const planned=require('./room-generation').generate(state,m,rng)||{},rooms={...planned};
   for (const [ref,c] of pending)if(!rooms[ref])rooms[ref]=instantiate(state,selectRoom(state,m,c,rng),rng,m.maxRank??10,c.variantId);
   for(const [ref,room]of Object.entries(rooms))m.cells[ref].room=room;
+  return m;
+}
+function generate(state, m, rng = randomInt) {
+  ok(m.status === 'draft', '已发布地图不能重新随机生成。'); validateMap(m);
+  if(m.generated&&!Object.values(m.cells).some(c=>passable(c)&&(c.type==='room'||c.hasContents)&&!c.room))return m;
+  populateRooms(state,m,rng);
   m.generated = true; m.version++; return m;
 }
 function publish(state, m) {
   ok(m.status === 'draft', '地图已经发布。');
   ok(!Object.values(state.explorations).some(x => x.id !== m.id && x.channelId === m.channelId && !['draft', 'ended'].includes(x.status)), '当前频道已有探索地图。');
-  const entrance = validateMap(m); ok(m.generated && Object.values(m.cells).filter(c => c.type === 'room'||c.hasContents).every(c => c.room), '先生成并预览全部房间。');
+  const entrance = validateMap(m); ok(m.generated && Object.values(m.cells).filter(c => passable(c)&&(c.type === 'room'||c.hasContents)).every(c => c.room), '先生成并预览全部房间。');
   m.entrance = entrance; m.revealed[entrance] = true; m.status = 'active'; m.version++;
 }
 function join(state, m, uid) {
@@ -223,5 +232,5 @@ function resolve(state, m, ref) {
   if(r.battleId && r.remainingNpcs?.length) {r.encounter='pending';r.battleId=null;} else r.encounter = 'resolved';
   m.cells[ref].touched = true; m.version++;
 }
-module.exports = { TYPES, REGIONAL,passable,cellTypes,key, xy, quantities, validateRoom, create, editCell, neighbors, validateMap,selectRoom,instantiate,generate, publish,
+module.exports = { TYPES, REGIONAL,passable,cellTypes,key, xy, quantities, validateRoom, create, editCell, neighbors, validateMap,selectRoom,instantiate,populateRooms,generate, publish,
   join, participant, move, currentRoom, open, take, transfer, encounter, resolve, touched };

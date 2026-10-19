@@ -3,10 +3,10 @@
 // instances are immutable here: editing or reading a map never rerolls them.
 const C=require('./constants'),K=require('./containers'),Strength=require('./npc-strength');
 const GRADES=['white','green','blue','purple','gold','red'];
-function ordinary(m,c){return m.mode==='random'&&!['entrance','stairs','corridor','road'].includes(c.type)&&c.passable!==false&&!c.templateId&&!c.variantId&&!c.room?.boss&&!c.room?.merchant;}
+function ordinary(m,c){return m.mode==='random'&&!['entrance','stairs','corridor','road','wall'].includes(c.type)&&c.passable!==false&&!c.templateId&&!c.variantId&&!c.room?.boss&&!c.room?.merchant;}
 function count(total,percent){const n=Math.round(total*percent/100);return percent<100?Math.min(n,Math.max(0,total-1)):n;}
 function legalNpcs(state,t,maxRank){
- const entries=[...(t.npcs||[]),...(t.randomNpcs||[]).filter(e=>e.probabilities?.slice(1).some(p=>p>0))],seen=new Set();
+ const entries=[...(t.npcs||[]).filter(e=>e.quantity>0),...(t.randomNpcs||[]).filter(e=>e.probabilities?.slice(1).some(p=>p>0))],seen=new Set();
  return entries.filter(e=>e.template?.published!==false&&state.npcTemplates[e.template?.id]?.published&&Strength.allowed(e.template,maxRank)&&!seen.has(e.template.id)&&seen.add(e.template.id)).map(e=>C.clone(e.template));
 }
 function candidates(state,categoryId){

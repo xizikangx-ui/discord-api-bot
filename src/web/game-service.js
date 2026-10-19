@@ -585,6 +585,7 @@ function playerView(s, uid, { roomIds, fields, gm=false } = {}) {
                           name: c.room.snapshot.name,
                           description: c.room.publicDescription ?? c.room.snapshot.description ?? '',
                           encounter: c.room.encounter,
+                          encounterKind: c.room.generation?.role==='battle'||c.room.battleId||['pending','battle'].includes(c.room.encounter)||(c.room.npcs||[]).some(e=>e.quantity>0)?'battle':'safe',
                           battleId: c.room.battleId,
                           autoStart: require('../rpg/team-movement').automatic(m,c.room),
                           unlocked: c.room.unlocked,

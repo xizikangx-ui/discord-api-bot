@@ -52,7 +52,7 @@ function build(m,raw={},rng=randomInt){C.requireThat(m.status==='draft','只能�
   }
   C.requireThat(placed,'当前尺寸和楼梯设置没有可用房间，请增加列数或减少最少楼梯连接。');
  }
- X.validateMap(m);m.generation={mode:raw.mode||'manual',...o,extents,blocked,at:Date.now()};m.generated=false;m.maxRank=o.maxRank;m.version++;return m;
+ X.validateMap(m);m.generation={mode:raw.mode||'manual',...o,roomPolicyVersion:2,extents,blocked,at:Date.now()};m.generated=false;m.maxRank=o.maxRank;m.version++;return m;
 }
 function repairStairs(state,m,rng=randomInt){
  C.requireThat(['draft','paused'].includes(m.status),'请先暂停地图，再修复多余楼梯。');C.requireThat(m.mapType!=='region','区域地图没有室内楼梯可修复。');
@@ -66,10 +66,10 @@ function repairStairs(state,m,rng=randomInt){
   try{C.requireThat(enough,'必要楼梯');X.validateMap(staged);}catch{staged.cells[ref]=old;continue;}
   // Only the newly created room is rolled. Existing rooms, enemies and loot
   // are frozen, including a room that another player has already revealed.
-  if(m.generated)c.room=X.instantiate(state,X.selectRoom(state,staged,c,rng),rng,m.maxRank??10,c.variantId);
   changed.push(ref);
  }
  C.requireThat(changed.length,'没有可安全替换的多余楼梯；已进入格、已有内容和必要连接会保留。');
+ if(m.generated)X.populateRooms(state,staged,rng);
  staged.version++;staged.lastEvent='已修复 '+changed.length+' 处多余楼梯，原房间、物资和NPC保持原结果。';Object.assign(m,staged);
  return {id:m.id,changed,count:changed.length,version:m.version};
 }

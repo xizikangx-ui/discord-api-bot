@@ -9,14 +9,77 @@ function fixture(){
  const form=F.create(s,'GM','room');Object.assign(form.data,{name:'医疗值班室',categoryIds:[cat.id],randomNpcs:[{ref:npc.id,probabilities:[65,25,8,2,0,0,0,0,0,0,0]}],randomContainers:[{ref:'药品柜',probabilities:[100,0,0,0,0,0,0]},{ref:'医疗包',probabilities:[100,0,0,0,0,0,0]}]});const room=F.publish(s,form);
  return{s,cat,npc,room};
 }
+function occupiedFixture(){
+ const f=fixture();delete f.s.roomTemplates[f.room.id];
+ const form=F.create(f.s,'GM','room');Object.assign(form.data,{name:'驻守医疗室',categoryIds:[f.cat.id],npcIds:[f.npc.id],npcQuantities:{[f.npc.id]:1},randomNpcs:[{ref:f.npc.id,probabilities:[0,100,0,0,0,0,0,0,0,0,0]}],variants:[{id:'occupied',name:'驻守医疗室',description:'医疗室由守卫驻守。',weight:1,enabled:true,overrides:{}}]});
+ f.room=F.publish(f.s,form);return f;
+}
 function map(f,n=10,percent=30){const m=X.create(f.s,'GM','public','配额地图',1,n+1,'random',f.cat.id);m.cells={'0,0':{type:'entrance',categoryId:f.cat.id}};for(let i=1;i<=n;i++)m.cells[i+',0']={type:'room',categoryId:f.cat.id};m.generation={combatPercent:percent};m.maxRank=3;return m;}
 function counts(m){const rooms=Object.values(m.cells).filter(c=>c.room).map(c=>c.room);return{safe:rooms.filter(r=>r.encounter==='resolved').length,battle:rooms.filter(r=>r.encounter==='pending').length};}
 test('new layout options default to a 30% quota, validate 0—100, round room counts and leave safety unless 100 is explicit',()=>{
  assert.equal(Layout.options().combatPercent,30);assert.throws(()=>Layout.options({combatPercent:-1}),/战斗比例/);assert.throws(()=>Layout.options({combatPercent:101}),/战斗比例/);
  for(const n of [1,2,3,5,10,19])for(const rate of [0,1,30,50,99,100]){const f=fixture(),m=map(f,n,rate);X.generate(f.s,m,min);assert.equal(counts(m).battle,Policy.count(n,rate),n+'/'+rate);assert.equal(counts(m).safe,n-Policy.count(n,rate));if(rate<100)assert.ok(counts(m).safe>=1);}
 });
+
+test('the basic random-map creation entry enforces the default quota even when every room template always contains enemies',()=>{
+ const f=occupiedFixture(),m=X.create(f.s,'GM','public','基础创建入口',1,20,'random',f.cat.id);
+ assert.equal(m.generation.combatPercent,30);X.generate(f.s,m,min);
+ assert.deepEqual(counts(m),{safe:6,battle:3});
+ assert.ok(Object.values(m.cells).filter(c=>c.room).every(c=>c.room.generation&&c.room.generation.combatPercent===30));
+});
+
+test('paused GM cell edits cannot turn all safe rooms into battles by replacing them with corridors and rooms',()=>{
+ const f=occupiedFixture(),m=X.create(f.s,'GM','public','暂停编辑入口',1,20,'random',f.cat.id),G=require('../src/rpg/gm-service');X.generate(f.s,m,min);m.status='paused';
+ const before=counts(m),templates=C.clone(f.s.roomTemplates),battleCells=Object.fromEntries(Object.entries(m.cells).filter(([,c])=>c.room?.encounter==='pending').map(([ref,c])=>[ref,C.clone(c)]));
+ const safeRefs=Object.entries(m.cells).filter(([,c])=>c.room?.encounter==='resolved').map(([ref])=>ref);assert.ok(safeRefs.length>1);
+ for(const ref of safeRefs){const [x,y]=ref.split(',').map(Number),params={mapId:m.id,x,y,categoryId:f.cat.id,passable:true,hasContents:false};
+  G.apply(f.s,'GM','map.cell',{...params,type:'corridor'});G.apply(f.s,'GM','map.cell',{...params,type:'room'});
+  assert.equal(m.cells[ref].room.encounter,'resolved',ref);assert.deepEqual(m.cells[ref].room.npcs,[]);assert.equal(m.cells[ref].room.generation.role,'safe');
+ }
+ assert.deepEqual(counts(m),before);for(const [ref,c]of Object.entries(battleCells))assert.deepEqual(m.cells[ref],c);assert.deepEqual(f.s.roomTemplates,templates);
+});
+
+test('blocked paused-room additions stay unrolled until reopened and cannot reserve extra combat slots',()=>{
+ const f=occupiedFixture(),m=X.create(f.s,'GM','public','阻挡编辑顺序',1,2,'random',f.cat.id),G=require('../src/rpg/gm-service');
+ m.cells={'0,0':{type:'entrance',categoryId:f.cat.id},'1,0':{type:'room',categoryId:f.cat.id}};X.generate(f.s,m,min);m.status='paused';const original=C.clone(m.cells['1,0'].room);
+ const edit=(x,passable)=>G.apply(f.s,'GM','map.cell',{mapId:m.id,x,y:0,type:'room',categoryId:f.cat.id,passable,hasContents:false});
+ edit(2,false);assert.equal(m.cells['2,0'].passable,false);assert.equal(m.cells['2,0'].room,undefined);
+ edit(3,true);assert.equal(m.cells['3,0'].room.encounter,'pending');const otherBattle=C.clone(m.cells['3,0'].room);
+ edit(2,true);assert.equal(m.cells['2,0'].room.encounter,'resolved');assert.equal(m.cells['2,0'].room.generation.role,'safe');assert.deepEqual(counts(m),{safe:2,battle:1});assert.deepEqual(m.cells['1,0'].room,original);assert.deepEqual(m.cells['3,0'].room,otherBattle);
+});
+
+test('blocked content cells do not require room generation or prevent publication and reopen through the shared quota',()=>{
+ for(const region of [false,true]){
+  const f=occupiedFixture(),m=X.create(f.s,'GM','public','阻挡内容发布',region?2:1,3,'random',f.cat.id,region?'region':'indoor'),G=require('../src/rpg/gm-service'),type=region?'forest':'room';
+  m.cells={'0,0':{type:'entrance',categoryId:f.cat.id},'1,0':{type:region?'wild':'room',hasContents:region,categoryId:f.cat.id},'2,0':{type,hasContents:region,passable:false,categoryId:f.cat.id}};
+  if(region)for(let x=0;x<3;x++)m.cells[x+',1']={type:'road',categoryId:f.cat.id};
+  X.generate(f.s,m,min);assert.equal(m.cells['2,0'].room,undefined);assert.deepEqual(counts(m),{safe:1,battle:0});assert.doesNotThrow(()=>X.publish(f.s,m));const original=C.clone(m.cells['1,0'].room);m.status='paused';
+  G.apply(f.s,'GM','map.cell',{mapId:m.id,x:2,y:0,type,categoryId:f.cat.id,passable:true,hasContents:region});assert.equal(m.cells['2,0'].room.encounter,'pending');assert.equal(m.cells['2,0'].room.generation.role,'battle');assert.deepEqual(counts(m),{safe:1,battle:1});assert.deepEqual(m.cells['1,0'].room,original);
+ }
+});
+
+test('repairing redundant stairs applies the quota to new ordinary rooms and preserves every existing room snapshot',()=>{
+ const f=occupiedFixture(),m=X.create(f.s,'GM','public','楼梯修复入口',2,4,'random',f.cat.id);
+ m.cells=Object.fromEntries([['0,0','entrance'],['1,0','stairs'],['2,0','room'],['3,0','corridor'],['0,1','stairs'],['1,1','stairs'],['2,1','room'],['3,1','corridor']].map(([ref,type])=>[ref,{type,categoryId:f.cat.id}]));
+ X.generate(f.s,m,min);assert.deepEqual(counts(m),{safe:1,battle:1});m.status='paused';
+ const original=Object.fromEntries(Object.entries(m.cells).filter(([,c])=>c.room).map(([ref,c])=>[ref,C.clone(c)])),r=Layout.repairStairs(f.s,m,min);
+ assert.equal(r.count,2);assert.deepEqual(counts(m),{safe:3,battle:1});
+ for(const ref of r.changed){assert.equal(m.cells[ref].room.encounter,'resolved');assert.equal(m.cells[ref].room.generation.role,'safe');assert.deepEqual(m.cells[ref].room.remainingNpcs,[]);}
+ for(const [ref,c]of Object.entries(original))assert.deepEqual(m.cells[ref],c);assert.doesNotThrow(()=>X.validateMap(m));
+});
+
+test('a zero-quantity frozen NPC entry cannot create an empty encounter or qualify as a combat candidate',()=>{
+ const f=occupiedFixture(),template=X.validateRoom(f.s,f.room);template.variants=[];template.npcs=[{template:C.clone(f.npc),quantity:0}];template.randomNpcs=[];
+ const r=X.instantiate(f.s,template,min,3);assert.equal(r.encounter,'resolved');assert.deepEqual(r.npcs,[]);assert.deepEqual(r.remainingNpcs,[]);assert.deepEqual(Policy.legalNpcs(f.s,template,3),[]);assert.equal(r.randomResults.some(e=>e.kind==='containerGuarantee'),false);
+});
+
+test('safe room snapshots contain no fixed or random enemy configuration while published source templates remain intact',()=>{
+ const f=occupiedFixture(),source=C.clone(f.room),m=map(f);X.generate(f.s,m,min);const safe=Object.values(m.cells).filter(c=>c.room?.generation.role==='safe');assert.equal(safe.length,7);
+ for(const {room:r}of safe){for(const field of ['npcIds','npcs','randomNpcs'])assert.deepEqual(r.snapshot[field],[],field);for(const field of ['npcCounts','npcQuantities'])assert.deepEqual(r.snapshot[field],{},field);assert.deepEqual(r.npcs,[]);assert.deepEqual(r.remainingNpcs,[]);assert.equal(r.encounter,'resolved');assert.equal(r.snapshot.name,'驻守医疗室');assert.equal(r.snapshot.description,'医疗室由守卫驻守。');}
+ assert.deepEqual(f.room,source);assert.deepEqual(f.s.roomTemplates[f.room.id],source);
+});
 test('stairs, corridors, roads and entrances never enter the ordinary-room quota, even if a GM enables contents',()=>{
- const f=fixture(),m=map(f,10,30);for(const type of ['stairs','corridor','road','entrance'])assert.equal(Policy.ordinary(m,{type,hasContents:true}),false);
+ const f=fixture(),m=map(f,10,30);for(const type of ['stairs','corridor','road','entrance','wall'])assert.equal(Policy.ordinary(m,{type,hasContents:true}),false);
  assert.equal(Policy.ordinary(m,{type:'forest',hasContents:true}),true);assert.equal(Policy.ordinary(m,{type:'room',passable:false}),false);
  m.cells['0,0'].hasContents=true;const p=Policy.plan(f.s,m);assert.equal(p.missing.length,10);assert.equal(p.target,3);
 });

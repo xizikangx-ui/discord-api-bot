@@ -13,6 +13,8 @@ function fixture(s = state(), extra = {}) {
   const t = npc(s), cf = F.create(s, 'GM', 'mapcategory'); cf.data.name = '测试建筑'; const cat = F.publish(s, cf);
   const rf = F.create(s, 'GM', 'room'); Object.assign(rf.data, { name: '测试办公室', categoryIds: [cat.id], npcIds: [t.id], ...extra });
   const room = F.publish(s, rf), m = X.create(s, 'GM', 'channel', '测试探索', 1, 3, 'random', cat.id);
+  // These cases require a saved combat room rather than a random safe room.
+  m.cells['2,0'].templateId=room.id;m.cells['2,0'].variantId='v1';
   X.generate(s, m, seeded(5)); X.publish(s, m); X.join(s, m, '1'); m.participants['1'].cell = '2,0'; m.revealed['2,0'] = true;
   return { s, m, room, t, r: m.cells['2,0'].room };
 }

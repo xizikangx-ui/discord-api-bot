@@ -22,8 +22,8 @@ test('automatic room waves reuse saved layout; BOSS subsequent wave waits for a 
   for(const boss of [false,true]){
     const s=state();s.platform='web';let seq=0;const rng=(lo,hi)=>lo+(seq++%(hi-lo));
     const cf=F.create(s,'GM','mapcategory');cf.data.name='验收';const cat=F.publish(s,cf),t=B.validateNPC(s,{...F.defaults('npc'),name:'守卫',hpMax:1});t.id='guard';t.published=true;t.version=1;s.npcTemplates[t.id]=t;
-    const rf=F.create(s,'GM','room');Object.assign(rf.data,{name:'机房',categoryIds:[cat.id],npcIds:[t.id],autoStart:true});F.publish(s,rf);
-    s.config.rpChannelId='hidden';const m=X.create(s,'GM','channel','分批',1,3,'random',cat.id);X.generate(s,m,rng);
+    const rf=F.create(s,'GM','room');Object.assign(rf.data,{name:'机房',categoryIds:[cat.id],npcIds:[t.id],autoStart:true});const roomTemplate=F.publish(s,rf);
+    s.config.rpChannelId='hidden';const m=X.create(s,'GM','channel','分批',1,3,'random',cat.id);m.cells['2,0'].templateId=roomTemplate.id;m.cells['2,0'].variantId='v1';X.generate(s,m,rng);
     if(boss){const pool=Boss.publish(s,{name:'BOSS',entries:[{ref:t.id,quantity:19}]});Boss.assign(s,m,'2,0',pool.id,rng);}
     X.publish(s,m);for(const uid of ['1','2']){X.join(s,m,uid);m.participants[uid].cell='2,0';}m.revealed['2,0']=true;
     const r=m.cells['2,0'].room;if(!boss)r.remainingNpcs[0].quantity=19;

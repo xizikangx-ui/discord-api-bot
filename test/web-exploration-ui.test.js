@@ -44,3 +44,31 @@ test('SSR battle rooms keep visible container shells with disabled controls and 
  const Panel=component('exploration-panel.jsx','ExplorationPanel'),m=map({participants:{me:{cell:'1,1',name:'执灯人'}}}),r=m.cells['1,1'].room;r.encounter='battle';r.containers=[{id:'locked',box:'医疗包',quantity:1,status:'unopened',locked:true}];let calls=0;
  const html=renderToStaticMarkup(React.createElement(Panel,{game:{revision:1,player:{userId:'me',inventory:{}},maps:[m]},groupId:'g',userId:'me',prepare:()=>calls++}));assert.match(html,/医疗包/);assert.match(html,/内容尚未揭示/);assert.match(html,/<button disabled="">尚未解锁<\/button>/);assert.doesNotMatch(html,/>开启<\/button>/);assert.doesNotMatch(html,/散落物资/);assert.equal(calls,0);
 });
+test('saved encounter labels ignore template enemy pools and distinguish cleared fights from peaceful rooms',async()=>{
+ const {roomEncounterView}=await state,snapshot={npcs:[{quantity:19}],npcIds:['possible-enemy']};
+ assert.deepEqual(roomEncounterView({encounter:'resolved',npcs:[],snapshot}),{kind:'safe',label:'平静探索'});
+ assert.deepEqual(roomEncounterView({encounter:'resolved',npcs:[{quantity:0}],snapshot}),{kind:'safe',label:'平静探索'});
+ assert.equal(roomEncounterView({encounter:'pending',snapshot}).label,'战斗遭遇');
+ assert.equal(roomEncounterView({encounter:'battle'}).label,'战斗中');
+ for(const room of [{encounter:'resolved',battleId:'old-fight'},{encounter:'resolved',encounterKind:'battle'},{encounter:'resolved',npcs:[{quantity:1}]}])assert.deepEqual(roomEncounterView(room),{kind:'battle',label:'遭遇已解除'});
+});
+test('GM summaries count saved random rooms separately from manual rooms and structural cells',async()=>{
+ const {mapRoomSummary}=await state,m={cells:{
+  entrance:{type:'entrance',room:{encounter:'pending'}},stairs:{type:'stairs',room:{encounter:'pending'}},corridor:{type:'corridor',room:{encounter:'pending'}},road:{type:'road',hasContents:true,room:{encounter:'pending'}},
+  peaceful:{type:'room',room:{encounter:'resolved',npcs:[],containers:[{}],snapshot:{npcs:[{quantity:20}]}}},
+  enemy:{type:'forest',hasContents:true,room:{encounter:'pending',npcs:[{quantity:3}],containers:[{},{}]}},
+  manual:{type:'room',templateId:'gm-room',room:{encounter:'pending',npcs:[{quantity:2}]}},
+  ungenerated:{type:'room'},boss:{type:'room',room:{boss:{},encounter:'pending'}},merchant:{type:'room',room:{merchant:{},encounter:'resolved'}}
+ },revealed:{peaceful:true,enemy:true}};
+ assert.deepEqual(mapRoomSummary(m),{ordinary:3,combat:1,safe:1,ungenerated:1,explicit:1,explicitCombat:1,explicitSafe:0,boss:1,merchant:1,containers:3});
+ assert.deepEqual(mapRoomSummary(m,{revealedOnly:true}),{ordinary:2,combat:1,safe:1,ungenerated:0,explicit:0,explicitCombat:0,explicitSafe:0,boss:0,merchant:0,containers:3});
+ const hidden={hidden:true};Object.defineProperty(hidden,'room',{get(){throw Error('must not inspect hidden room');}});m.cells.hidden=hidden;assert.equal(mapRoomSummary(m).ordinary,3);
+});
+test('SSR map marks actual peaceful and combat rooms while fog reveals neither their label nor history',()=>{
+ const Board=component('exploration-map.jsx','ExplorationBoard'),m=map({rows:1,width:3,cells:{
+  '0,0':{type:'room',room:{name:'旧医疗室',encounter:'resolved',snapshot:{npcs:[{quantity:19}]}}},
+  '1,0':{type:'room',room:{name:'敌人哨所',encounter:'pending'}},
+  '2,0':{hidden:true,room:{name:'secret battlefield',encounter:'battle'}}
+ }}),html=renderToStaticMarkup(React.createElement(Board,{map:m,userId:'me',onSelect:()=>{}}));
+ assert.match(html,/explore-room-tag safe/);assert.match(html,/平静探索/);assert.match(html,/explore-room-tag battle/);assert.match(html,/战斗遭遇/);assert.doesNotMatch(html,/secret battlefield|战斗中/);
+});

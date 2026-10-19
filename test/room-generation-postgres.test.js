@@ -11,6 +11,20 @@ test('quota rooms and container guarantees survive encrypted PostgreSQL recovery
   await store.recover(s.guildId);assert.deepEqual(store.snapshot(s.guildId),before);await store.transact(s.guildId,'generate-quota-once','GM',()=>{throw Error('receipt must prevent a reroll');});assert.deepEqual(store.snapshot(s.guildId),before);
   await store.transact(s.guildId,'idempotent-generate','GM',st=>{X.generate(st,st.explorations[m.id],()=>{throw Error('stored rooms must never reroll');});return true;});assert.deepEqual(store.snapshot(s.guildId).explorations[m.id],before.explorations[m.id]);
   const beforeFailure=store.snapshot(s.guildId);let draws=0;await assert.rejects(store.transact(s.guildId,'injected-quota-failure','GM',st=>{const staged=C.clone(st.explorations[m.id]);staged.id='failed-quota-map';staged.generated=false;for(const c of Object.values(staged.cells))delete c.room;st.explorations[staged.id]=staged;X.generate(st,staged,lo=>{if(++draws===20)throw Error('injected quota RNG interruption');return lo;});}),/injected quota RNG interruption/);assert.equal(draws,20);assert.deepEqual(store.snapshot(s.guildId),beforeFailure);await store.recover(s.guildId);assert.deepEqual(store.snapshot(s.guildId),beforeFailure);
+  const originalCombat=Object.fromEntries(Object.entries(before.explorations[m.id].cells).filter(([,c])=>c.room?.generation?.role==='battle').map(([ref,c])=>[ref,C.clone(c.room)]));
+  for(const requests of [20,50]){
+   const results=await Promise.all(Array.from({length:requests},()=>store.transact(s.guildId,'rebuild-paused-safe-rooms','GM',st=>{
+    const live=st.explorations[m.id];live.status='paused';const G=require('../src/rpg/gm-service');
+    for(const[ref,c]of Object.entries(live.cells).filter(([,c])=>c.room?.generation?.role==='safe')){const[x,y]=ref.split(',').map(Number);for(const type of ['corridor','room'])G.apply(st,'GM','map.cell',{mapId:m.id,x,y,type,categoryId:cat.id});}
+    return{rooms:Object.values(live.cells).filter(c=>c.room).map(c=>c.room.id)};
+   })));
+   assert.ok(results.every(r=>JSON.stringify(r)===JSON.stringify(results[0])));
+  }
+  await store.recover(s.guildId);const rebuilt=store.snapshot(s.guildId),saved=rebuilt.explorations[m.id];
+  assert.equal(Object.values(saved.cells).filter(c=>c.room?.encounter==='pending').length,3);
+  assert.equal(Object.values(saved.cells).filter(c=>c.room?.generation?.role==='safe').length,7);
+  for(const[ref,room]of Object.entries(originalCombat))assert.deepEqual(saved.cells[ref].room,room);
+  assert.deepEqual(rebuilt.players,playersBefore);
   const bytes=(await pool.query('SELECT payload FROM "'+schema+'".objects WHERE collection=$1',['explorations'])).rows;assert.ok(bytes.length);assert.ok(bytes.every(r=>!r.payload.includes(Buffer.from('配额隔离医疗室'))));
  }finally{await store?.drain();assert.match(schema,/^rpg_test_room_quota_[a-f0-9]{12}$/);await pool.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');await db.close();}
 });

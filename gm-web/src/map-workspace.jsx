@@ -3,6 +3,7 @@ import {api} from './data';
 import {Commands,Field} from './main';
 import {mapStage,gridCells,mapCommandAllowed} from './ui-state';
 import {useQuery} from './use-query';
+import {mapRoomSummary,roomEncounterView} from '../../web/src/exploration-state';
 const defaults={name:'',mapType:'indoor',mode:'manual',rows:4,width:3,blockedPercent:15,stairsMin:1,stairsMax:3,maxRank:3,combatPercent:30};
 const labels={draft:'草稿',active:'进行中',paused:'已暂停',ended:'已结束'};
 export function MapWorkspace(props){
@@ -19,7 +20,7 @@ export function MapWorkspace(props){
   useEffect(()=>{const timer=setTimeout(()=>saveLocal?.('mapCreate',form),600);return()=>clearTimeout(timer);},[form]);
   useEffect(()=>{if(imageRef.current)URL.revokeObjectURL(imageRef.current);imageRef.current='';Image('');},[id,item?.version,full]);
   useEffect(()=>()=>{active.current='closed';if(imageRef.current)URL.revokeObjectURL(imageRef.current);},[]);
-  const set=(k,v)=>Form(f=>({...f,[k]:v})),current=item?.cells?.[cell],types=options?.cellTypes[item?.mapType||'indoor']||{},roomOptions=options?.rooms.filter(r=>r.categoryIds?.includes(current?.categoryId||item?.categoryId))||[];
+  const set=(k,v)=>Form(f=>({...f,[k]:v})),current=item?.cells?.[cell],types=options?.cellTypes[item?.mapType||'indoor']||{},roomOptions=options?.rooms.filter(r=>r.categoryIds?.includes(current?.categoryId||item?.categoryId))||[],summary=mapRoomSummary(item,{revealedOnly:!full});
   const initial={mapId:id,cell,x:Number(cell.split(',')[0]||0),y:Number(cell.split(',')[1]||0),type:current?.type||'empty',categoryId:current?.categoryId||item?.categoryId||'',templateId:current?.templateId||'',variantId:current?.variantId||'',name:current?.name||'',description:current?.description||'',passable:current?.passable!==false,hasContents:!!current?.hasContents,buildingMapId:current?.buildingMapId||'',rpId:item?.rpPendingId||'',rpVersion:item?.rps?.[item?.rpPendingId]?.version,requestId:current?.room?.bossRequest?.id||'',requestVersion:current?.room?.bossRequest?.version,selection};
   const commands=props.schema.commands.filter(c=>c.group==='map'&&!['map.create','map.quickCreate','map.cleanup'].includes(c.id));
   const allowed=commands.filter(c=>mapCommandAllowed(c.id,item,cell));
@@ -31,10 +32,14 @@ export function MapWorkspace(props){
       {!id&&!creating&&<p className="empty-note">点击“新建地图”，填写名称和主题即可生成草稿。发布后玩家才能加入。</p>}
       {item&&!creating&&<>
         <div className="map-status toolbar"><strong>{item.name}</strong><span className="badge">{mapStage(item)}</span><span>{item.floors}行 × {item.width}列 · v{item.version}</span>{['map.generate','map.publish','map.pause','map.resume'].filter(c=>mapCommandAllowed(c,item,cell)).map(c=><button key={c} className={c==='map.publish'?'primary':''} disabled={props.busy} onClick={()=>prepare(c,{mapId:id})}>{({'map.generate':'生成房间内容','map.publish':window.gmDirect?'发布地图':'预览并发布','map.pause':'暂停地图','map.resume':'恢复探索'})[c]}</button>)}</div>
+        <div className="map-generation-summary" role="status"><strong>{full?'已保存地图内容':'已发现地图内容'}</strong><span>随机普通房 {summary.ordinary}：战斗 {summary.combat} · 平静 {summary.safe}{summary.ungenerated>0?' · 待生成 '+summary.ungenerated:''}</span>{summary.explicit>0&&<span>手动指定 {summary.explicit}：战斗 {summary.explicitCombat} · 平静 {summary.explicitSafe}</span>}<span>BOSS {summary.boss} · 行商 {summary.merchant} · 容器 {summary.containers}</span><small>{item.mode==='fixed'?'固定布局按手动配置生成。':item.generation?.combatPercent!==undefined?'随机普通房战斗比例设置：'+item.generation.combatPercent+'%；楼梯、通道、入口、BOSS、行商及手动指定房不计入。':'这张地图未保存随机战斗配额。已生成内容沿用原结果。'}</small></div>
         {mapStage(item)==='待布置'&&<p>固定布局：点击房间格选择房间模板，布置完成后生成内容。</p>}
         <div className="toolbar"><button onClick={loadImage}>查看最新静态大图</button><label><input type="checkbox" checked={full} onChange={e=>Full(e.target.checked)}/>GM 全图</label></div>
         {image&&<img className="map-image" src={image} alt="当前保存的地图"/>}
-        <div className="map-edit-layout"><div className="map-scroll"><div className="map-grid" style={{gridTemplateColumns:'repeat('+item.width+',minmax(64px,1fr))'}}>{gridCells(item.width,item.floors,item.cells).map(({ref,cell:c})=><button key={ref} className={(ref===cell?'selected ':'')+(!c?'empty-cell ':c.passable===false||c.type==='wall'?'blocked':'')} onClick={()=>{Cell(ref);Command('map.cell');Selection(n=>n+1);}}><small>{String.fromCharCode(65+Number(ref.split(',')[0]))}{Number(ref.split(',')[1])+1}</small><b>{!c?'空格':!full&&!item.revealed?.[ref]?'迷雾':c.room?.merchant?.name||c.room?.snapshot?.name||c.name||types[c.type]||c.type}</b>{full&&c?.room?.boss&&<span>BOSS</span>}</button>)}</div></div>
+        <div className="map-edit-layout"><div className="map-scroll"><div className="map-grid" style={{gridTemplateColumns:'repeat('+item.width+',minmax(64px,1fr))'}}>{gridCells(item.width,item.floors,item.cells).map(({ref,cell:c})=>{
+          const visible=full||!!item.revealed?.[ref],encounter=visible&&c?.room?roomEncounterView(c.room):null;
+          return <button key={ref} className={(ref===cell?'selected ':'')+(!c?'empty-cell ':c.passable===false||c.type==='wall'?'blocked':'')} onClick={()=>{Cell(ref);Command('map.cell');Selection(n=>n+1);}}><small>{String.fromCharCode(65+Number(ref.split(',')[0]))}{Number(ref.split(',')[1])+1}</small><b>{!c?'空格':!visible?'迷雾':c.room?.merchant?.name||c.room?.snapshot?.name||c.name||types[c.type]||c.type}</b>{encounter&&<span className={'map-room-tag '+encounter.kind}>{encounter.label}{c.templateId||c.variantId?' · 手动指定':''}</span>}</button>;
+        })}</div></div>
         <aside className="map-inspector"><h4>{cell?'格子 '+String.fromCharCode(65+Number(cell.split(',')[0]))+(Number(cell.split(',')[1])+1):'选择格子编辑'}</h4>{cell&&<><p>{types[current?.type]||'空格'} · {current?.touched?'已有交互记录，替换受保护':'尚无交互记录'}</p><p>{current?.room?.snapshot?.name||current?.name||''}</p></>}<p>选择下方操作。不可用操作会说明所需状态；服务端提交时再次校验。</p><div className="map-actions">{commands.map(c=><button key={c.id} disabled={!mapCommandAllowed(c.id,item,cell)} title={!mapCommandAllowed(c.id,item,cell)?'请先选择格子，或暂停地图；生成和发布仅适用于草稿。':''} onClick={()=>Command(c.id)}>{c.label}</button>)}</div></aside></div>
       </>}
     </section>
