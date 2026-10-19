@@ -52,7 +52,7 @@ function build(m,raw={},rng=randomInt){C.requireThat(m.status==='draft','只能�
   }
   C.requireThat(placed,'当前尺寸和楼梯设置没有可用房间，请增加列数或减少最少楼梯连接。');
  }
- X.validateMap(m);m.generation={mode:raw.mode||'manual',...o,roomPolicyVersion:2,extents,blocked,at:Date.now()};m.generated=false;m.maxRank=o.maxRank;m.version++;return m;
+ X.validateMap(m);m.generation={mode:raw.mode||'manual',...o,roomPolicyVersion:2,...(m.generation?.containerPolicyVersion===2?{containerPolicyVersion:2}:{}),extents,blocked,at:Date.now()};m.generated=false;m.maxRank=o.maxRank;m.version++;return m;
 }
 function repairStairs(state,m,rng=randomInt){
  C.requireThat(['draft','paused'].includes(m.status),'请先暂停地图，再修复多余楼梯。');C.requireThat(m.mapType!=='region','区域地图没有室内楼梯可修复。');

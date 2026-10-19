@@ -8,6 +8,7 @@ const crypto = require("node:crypto"),
   P = require("./game-service"),
   Loot = require("./battle-loot"),
   L = require("./library");
+const Rare=require('./rare-loot');
 const Sections=require('./game-sections');
 function needsLifecycle(s){return Object.values(s.battles).some(b=>B.terminalOutcome(s,b))||Object.values(s.explorations).some(m=>require('../rpg/team-movement').pendingAuto(s,m)||m.status==='active'&&Object.values(m.cells).some(c=>c.room?.encounter==='battle'&&s.battles[c.room.battleId]?.status==='ended'&&s.battles[c.room.battleId]?.outcome==='victory'));}
 function derive(before, next) {
@@ -182,6 +183,8 @@ function derive(before, next) {
     }
   }
   // Rules may enqueue a platform-neutral intent. Website workers never send it to Discord.
+  Rare.derive(before,next);
+  Rare.attachReceipt(before,next);
   for (const job of Object.values(next.deliveryJobs))
     if (!job.kind.startsWith("web") && job.status !== "done")
       job.status = "done";
@@ -227,9 +230,9 @@ function createGames({
         s = C.newState(id);
         const rooms = await repo.list("room", id);
         s.config.rpChannelId = rooms.find((r) => r.kind === "gm")?.id;
-        s.config.announcementChannelId = rooms.find(
-          (r) => r.kind === "system",
-        )?.id;
+        s.config.announcementChannelId = (rooms.find(r=>r.groupChat&&!r.archived)||rooms.find(
+          (r) => r.kind === "system"&&!r.archived,
+        ))?.id;
         s.platform = "web";
         require('../rpg/markets').initialize(s);
         require("../rpg/skills").migrate(s);
@@ -479,10 +482,11 @@ function createGames({
     );
     if(store.select(group,s=>!!s.sceneClearOperations?.[operationId]))return{operationId,status:"committed",cleared:true,result:{message:"原操作已保存，关联场景现已清理。"}};
     const f=store.select(group,s=>s.forms[id]);
-    return f?.gm?saved:P.playerResult(f?.command,saved);
+    return f?.gm?(f.result||saved):P.playerResult(f?.command,f?.result||saved);
   }
   async function applyForm(s, uid, f, operationId) {
         const battle=f.params.battleId&&s.battles[f.params.battleId],known=new Map((battle?.publicEvents||[]).map(e=>[e.id,e.version]));
+        const pendingBefore=f.command==='loot.open'?s.players[uid]?.pendingLoot?.[f.params.box||'card']?.id:null;
         let result;
         if (!f.gm && f.command === "battle.action") {
           const p = f.params,
@@ -523,26 +527,8 @@ function createGames({
         };
         if(battle){const changed=(battle.publicEvents||[]).filter(e=>known.get(e.id)!==e.version);if(changed.length)f.result.battleFeedback=changed.map(event=>({battleId:battle.id,channelId:battle.channelId,event:C.clone(event),committedAt:Date.now()}));}
         if (f.command === "loot.open" && result?.batchId) {
-          s.deliveryJobs ||= {};
-          const key = "web:loot:" + result.batchId;
-          s.deliveryJobs[key] = {
-            key,
-            kind: "webLoot",
-            uid,
-            status: "pending",
-            desiredRevision: s.revision + 1,
-            priority: 4,
-            text:
-              (s.players[uid]?.name || "角色") +
-              "开启" +
-              (result.box === "card" ? "抽卡" : result.box) +
-              "：\n" +
-              result.items
-                .map((i) => i.snapshot.name + " ×" + i.quantity)
-                .join("\n") +
-              (result.pending ? "\n超重，整批等待领取。" : ""),
-            items: C.clone(result.items),
-          };
+          const rare=Rare.openJob(s,uid,result,{channelId:s.config.announcementChannelId,first:pendingBefore!==result.batchId});
+          if(rare)f.result.rareLoot=[rare];
         }
         if (f.gm && f.command === "session.retry") {
           const x = s.sessions[f.params.id];
@@ -594,7 +580,7 @@ function createGames({
     },'网站直接执行 · '+(P.playerCommands[command]||command));
     if(store.select(group,s=>!!s.sceneClearOperations?.[operationId]))return{operationId,status:'committed',cleared:true,result:{message:'原操作已保存，关联场景现已清理。'}};
     const saved=store.select(group,s=>s.forms[id]);S.ok(saved?.command===command && G.fingerprint(saved.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');
-    return gm?result:P.playerResult(command,result);
+    return gm?saved.result:P.playerResult(command,saved.result);
   }
   async function operationReceipt(group,uid,clientId){
     await authorize(group,uid);operation(clientId);
@@ -645,12 +631,18 @@ function createGames({
           .slice(0, 10),
       ),
       rooms = tasks.length ? await repo.list("room", group) : [],
-      publicRoom = rooms.find((c) => c.kind === "system" && !c.archived),
+      publicRoom = rooms.find((c) => c.groupChat && !c.archived)||rooms.find((c) => c.kind === "system" && !c.archived),
       gmRoom = rooms.find((c) => c.kind === "gm" && !c.archived);
     for (const j of tasks) {
       if(resetFences.has(group))return;
+      if(j.kind==='webRarePrivate'){
+        if(!j.suppressCelebration&&j.rareLoot?.length)await broadcast(group,{type:'rare-loot',data:{groupId:group,rareLoot:j.rareLoot,recipientIds:j.members||[],gm:!!j.gm}});
+        await store.transact(group,'web-job:'+j.key+':'+j.desiredRevision,'system:web',st=>{const live=st.deliveryJobs[j.key];if(live?.desiredRevision===j.desiredRevision)live.status='done';return{done:j.key};},'网站私密稀有提示送达',{delivery:false});
+        continue;
+      }
+      const oldRoom=j.roomId&&rooms.find(r=>r.id===j.roomId);
       const room = j.roomId
-        ? rooms.find((r) => r.id === j.roomId && !r.archived)
+        ? rooms.find((r) => r.id === (oldRoom?.supersededBy||j.roomId) && !r.archived)
           : j.kind === "webNotice"
           ? gmRoom
           : publicRoom;
@@ -764,6 +756,7 @@ function createGames({
           hitId: j.hitId,
         };
       }
+      if(j.rareLoot?.length&&!j.suppressCelebration)system={...system,rareLoot:j.rareLoot.map(e=>({...e,groupId:group,channelId:room.id}))};
       const clientId = S.hash(j.key + ":" + j.desiredRevision);
       if(text!==undefined){if (["webEvent", "webActivity", "webLoot", "webCorpses", "webBattleEnd", "webBattleStart", "webTurn"].includes(j.kind))
         await chat.upsertSystem(room.id, j.key, j.desiredRevision, {

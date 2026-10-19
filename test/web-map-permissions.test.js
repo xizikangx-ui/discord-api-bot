@@ -4,7 +4,9 @@ const op=()=>crypto.randomUUID();
 function privateFieldsAbsent(value){const json=JSON.stringify(value);for(const token of ['"layout"','"roster"','"characters"','hidden-room-marker','private_map_layout_marker','不应公开的怪物模板'])assert.ok(!json.includes(token),token);}
 async function cases(t,h){
  const group=h.group.id,prefix='/groups/'+group,owner=h.admin,other=h.player,source='acl-region',child='acl-inside';
- const privateRoom=await h.app.chat.create(await h.app.accounts.member(group,h.user.id),{name:'秘密目标频道名不得进入错误提示',kind:'chat',members:[owner.user.id]});
+ // Existing restricted bindings still need permission tests after new groups
+ // stopped offering channel creation. Seed a legacy record, not a new UI path.
+ const privateRoom={id:op(),groupId:group,name:'秘密目标频道名不得进入错误提示',kind:'chat',members:[owner.user.id],sequence:0,version:1};await h.repo.put('room',privateRoom,{scope:group});
  async function reset(targetChannel=h.room.id){
   await h.app.games.store.transact(group,op(),h.user.id,s=>{
    if(!s.players[owner.user.id]){const p=M.newCharacter('领队',{strength:5,constitution:5,mind:5,appearance:5,intelligence:5,agility:5,knowledge:5});p.userId=owner.user.id;s.players[p.userId]=p;}

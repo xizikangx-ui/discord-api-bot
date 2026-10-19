@@ -5,12 +5,12 @@ import {musicCategories as categories, playbackSignature, playbackPosition, trac
 import './music.css';
 const fileData = f => new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1]); r.onerror = () => reject(Error('音频文件读取失败。')); r.readAsDataURL(f); });
 
-export function GroupMusic({ groupId, userId, gm, event, preferences, onPreferences }) {
+export function GroupMusic({ active=true, groupId, userId, gm, event, preferences, onPreferences }) {
   const [library, Library] = useState(null), [enabled, Enabled] = useState(false), [volume, Volume] = useState(() => Number(localStorage.getItem('book-music-volume:' + userId) ?? .35)),
     [category, Category] = useState('battle'), [name, Name] = useState(''), [loop, Loop] = useState(true), [busy, Busy] = useState(false), [error, ErrorText] = useState(''), [info, Info] = useState(''), [retry, Retry] = useState(null),
     [selected, Selected] = useState(''), [filter, Filter] = useState('all'), [search, Search] = useState(''), [progress, Progress] = useState({position:0,duration:0});
   const player = useRef(null), latest = useRef(null), generation = useRef(0), request = useRef(0), uploadLock = useRef(false), scope = useRef(groupId), listening = useRef(false), source = useRef(''), applied = useRef('');
-  scope.current = groupId; latest.current = library; listening.current = enabled;
+  scope.current = groupId; latest.current = library; listening.current = enabled&&active;
   const state = library?.playback, tracks = library?.tracks || [], track = tracks.find(t => t.id === state?.trackId), chosen = tracks.find(t => t.id === selected && !t.retired);
   async function load() {
     const target = groupId, sequence = ++request.current;
@@ -39,12 +39,12 @@ export function GroupMusic({ groupId, userId, gm, event, preferences, onPreferen
   }
   useEffect(() => {
     generation.current++; request.current++; Library(null); Enabled(false); Selected(''); ErrorText(''); Info(''); Retry(null); Busy(false); uploadLock.current = false; source.current='';applied.current='';Progress({position:0,duration:0});
-    void load().catch(e => ErrorText(e.message));
     return () => { generation.current++; request.current++; listening.current=false; if (player.current) { player.current.pause(); player.current.removeAttribute('src'); player.current.load(); } };
   }, [groupId]);
-  useEffect(() => { if (event?.type === 'reconnect' || event?.type === 'music' && (!event.data?.groupId || event.data.groupId === groupId || event.data.library)) void load().catch(e => ErrorText(e.message)); }, [event]);
+  useEffect(()=>{if(active)void load().catch(e=>ErrorText(e.message));else player.current?.pause();},[active,groupId]);
+  useEffect(() => { if (!active)return;if (event?.type === 'reconnect' || event?.type === 'music' && (!event.data?.groupId || event.data.groupId === groupId || event.data.library)) void load().catch(e => ErrorText(e.message)); }, [event,active]);
   useEffect(() => { if (player.current) player.current.volume = Math.max(0, Math.min(1, volume)); }, [volume]);
-  useEffect(() => { sync(); }, [enabled, playbackSignature(state), track?.id]);
+  useEffect(() => { sync(); }, [active,enabled, playbackSignature(state), track?.id]);
   async function listen() {
     if (enabled) { listening.current=false; Enabled(false); player.current?.pause(); return; }
     listening.current=true; Enabled(true); ErrorText(''); void unlockSound().catch(()=>false); sync(true);

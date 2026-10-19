@@ -29,11 +29,31 @@ function memoryRepository() {
       return v;
     },
     remove: async (k, id) => records.delete(key(k, id)),
+    markRead(userId,roomId,requested){const run=tail.catch(()=>{}).then(async()=>{const id=userId+':'+roomId,old=await repo.get('read',id),sequence=Math.max(old?.sequence||0,requested);await repo.put('read',{id,userId,sequence},{scope:userId});return sequence;});tail=run;return run;},
     message: async (room, v) => {
       messages.set(v.id, C.clone(v));
       return v;
     },
     findMessage: async (id) => C.clone(messages.get(id) || null),
+    hasMediaReference:async id=>{
+      const has=v=>typeof v==='string'?v===id:v&&typeof v==='object'?Object.values(v).some(has):false;
+      return [...records.values()].some(r=>!['media','mediaCleanup','receipt'].includes(r.kind)&&has(r.value))||[...messages.values()].some(has);
+    },
+    clearChatHistory:async(group,cutoffs,resetId)=>{
+      let removed=0;const roomIds=new Set(cutoffs.map(x=>x.roomId));
+      for(const cutoff of cutoffs){
+        for(const [id,m]of messages)if(m.roomId===cutoff.roomId&&m.sequence<=cutoff.sequence){
+          if(m.kind==='dice'&&m.dice)await repo.put('chatDiceAudit',{id:m.id,roomId:m.roomId,authorId:m.authorId,at:m.at,dice:m.dice,resetId},{scope:group});
+          await repo.put('chatTombstone',{id:S.hash(m.roomId+':'+m.authorId+':'+m.clientId),roomId:m.roomId,messageId:m.id,sequence:m.sequence,resetId},{scope:group});
+          const room=await repo.get('room',m.roomId);if(room?.kind!=='dm'){const destination=require('../../src/web/group-chat').roomIds(group)[room?.kind==='gm'||room?.members?.length?'gmRoomId':'publicRoomId'];await repo.put('chatTombstone',{id:S.hash(destination+':'+m.authorId+':'+m.clientId),roomId:destination,messageId:m.id,sequence:m.sequence,resetId},{scope:group});}
+          messages.delete(id);removed++;
+        }
+        await repo.put('chatHistoryCutoff',{id:cutoff.roomId,sequence:cutoff.sequence,version:cutoff.sequence+1,resetId},{scope:group});
+      }
+      for(const card of await repo.list('card',group))if([...roomIds].some(id=>card.id.startsWith(id+':'))){await repo.put('chatCardTombstone',{id:card.id,revision:card.revision,resetId},{scope:group});await repo.remove('card',card.id);}
+      for(const receipt of await repo.list('receipt'))if(['chat:','card:','delete:'].some(p=>receipt.id.startsWith(p))&&roomIds.has(receipt.result?.roomId))await repo.put('receipt',{id:receipt.id,at:receipt.at,result:{cleared:true,resetId,roomId:receipt.result.roomId,status:'cleared'}});
+      return{messages:removed};
+    },
     updateMessage: async (v) => messages.set(v.id, C.clone(v)),
     duplicate: async (room, author, client) =>
       C.clone(

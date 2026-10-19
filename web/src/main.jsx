@@ -6,13 +6,15 @@ import { BattleLoot } from "./battle-loot";
 import {workbenchArt} from "./item-art";
 window.workbenchArt=workbenchArt;
 import { notificationTarget } from "./notification-target";
-import { GroupHome, MemberDirectory, ChannelManager } from "./community";
+import { GroupHome, MemberDirectory } from "./community";
 import { Avatar, AccountAvatar } from "./avatar";
 import { avatarSource, mergeAvatarMembers } from "./avatar-state";
 import React, { useState, useEffect, useRef, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { api, id, setCsrf, mediaUrl } from "./api";
-import { setTransport, labels } from "../../gm-web/src/data";
+import { labels,bindGroupTransport } from "../../gm-web/src/data";
+import {GMContextProvider,GMActivity} from "../../gm-web/src/context";
+import {canonicalChat,groupUnread,subscribePayload,purgeGroupDrafts,mergeGroupList} from "./group-chat-state";
 import {Result} from "../../gm-web/src/result";
 import {Field,SearchSelect} from "../../gm-web/src/controls";
 const gmComponent=name=>React.lazy(()=>import("../../gm-web/src/main").then(m=>({default:m[name]})));
@@ -34,6 +36,8 @@ import {shouldSend} from './chat-audio-state';
 import {GroupMusic} from './music';
 import "./style.css";
 import "./book-theme.css";
+import "./group-chat.css";
+import {RareLootProvider,useRareLoot,RareLootToast} from "./rare-loot";
 const date = (v) =>
   new Date(v).toLocaleTimeString("zh-CN", {
     hour: "2-digit",
@@ -247,15 +251,33 @@ function Keep({ show, children, resetKey = '' }) {
   }, [show]);
   return seen || show ? <div hidden={!show}><PanelErrorBoundary resetKey={resetKey+':'+show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></PanelErrorBoundary></div> : null;
 }
-function PendingTasks({game,userId,onNavigate,onOpen,expanded=false}){const tasks=chatTasks(game,userId);return tasks.length?<div className={'chat-tasks'+(expanded?' expanded':'')} aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}><i className="notification-dot" aria-hidden="true"/>{t.text} →</button>)}</div>:expanded?<div className="chat-tasks" role="status">当前没有待处理事项。</div>:null;}
+function PendingTasks({game,userId,onNavigate,onOpen,expanded=false}){const all=chatTasks(game,userId),tasks=expanded?all:all.filter(t=>t.system?.hitId);return tasks.length?<div className={'chat-tasks'+(expanded?' expanded':'')} aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}><i className="notification-dot" aria-hidden="true"/>{t.text} →</button>)}</div>:expanded?<div className="chat-tasks" role="status">当前没有待处理事项。</div>:null;}
 function ConsoleStatus({data}){const p=data?.player,b=data?.battle;if(!p)return null;return <div className="console-status" aria-label="常驻角色状态"><b>{p.name}</b><span>HP {p.health.hp}/{p.health.maxHP}</span><span className={p.health.downed?'danger':''}>倒地 {p.health.reserveHP}/{p.health.maxHP}</span><span>AP {p.ap}</span>{b&&<><span>轮 {b.actionRound?.number||1} · {b.actionRound?.counts?.[b.actorId]||0} 次</span><span>下次 {b.nextCost} AP</span><span>快 {b.quick} / 正 {b.formal}</span></>}</div>;}
 function App() {
-  const battleFeedback=useBattleFeedback();
-  const [me, Me] = useState(null),
-    [booting, Boot] = useState(true),
-    [groups, Groups] = useState([]),
-    [groupId, Group] = useState(""),
-    [tab, SetTab] = useState("chat"),
+  const [me,Me]=useState(null),[booting,Boot]=useState(true),[groups,GroupsValue]=useState([]),[groupId,Group]=useState(''),[visited,Visited]=useState([]),[error,E]=useState('');
+  const knownGroups=useRef({user:null,groups:[]}),socketHub=useRef({socket:null,handle:null}),[connected,Conn]=useState(false);
+  const current=groups.some(g=>g.id===groupId)?groupId:groups[0]?.id||'';
+  function Groups(value){GroupsValue(old=>mergeGroupList(old,typeof value==='function'?value(old):value));}
+  async function boot(){try{const value=await api('/auth/me');setCsrf(value.csrf);Me(value);const list=await api('/groups');Groups(list);const saved=readRestartDraft(localStorage,'navigation:'+value.user.id);Group(old=>list.some(g=>g.id===old)?old:list.find(g=>g.id===saved?.groupId)?.id||list[0]?.id||'');E('');}catch(e){if(e.code==='UNAUTHORIZED'||!me)Me(null);else E(e.message);}finally{Boot(false);}}
+  useEffect(()=>{void boot();},[]);
+  useEffect(()=>{
+    if(!me?.user.id)return;let alive=true,retry;
+    function open(){const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');socketHub.current.socket=socket;
+      socket.onopen=()=>{Conn(true);socketHub.current.handle?.({type:'socket-open'});};
+      socket.onmessage=e=>{let event;try{event=JSON.parse(e.data);}catch{return;}if(event.type==='group-unread')Groups(old=>groupUnread(old,event.data));else if(event.type==='group-state')Groups(old=>old.map(g=>g.id===event.data?.groupId?{...g,pending:event.data.pending??g.pending,hasUpdates:g.hasUpdates||!!event.data.pending||event.data.revision>(g.revision??-1),revision:event.data.revision??g.revision}:g));else if(['group-deleted','access-revoked'].includes(event.type))Groups(old=>old.filter(g=>g.id!==event.data?.groupId));else if(event.type==='permissions')void api('/groups').then(Groups).catch(()=>{});socketHub.current.handle?.(event);};
+      socket.onclose=e=>{Conn(false);if(e.code===4001){Me(null);return;}if(e.code===4003)void api('/groups').then(Groups).catch(()=>{});if(alive)retry=setTimeout(open,2500);};socket.onerror=()=>socket.close();}
+    open();return()=>{alive=false;clearTimeout(retry);socketHub.current.socket?.close();socketHub.current.socket=null;};
+  },[me?.user.id]);
+  useEffect(()=>{if(!me?.user.id)return;const prior=knownGroups.current;if(prior.user===me.user.id)for(const before of prior.groups){const after=groups.find(g=>g.id===before.id);if(!after||(['gm','admin'].includes(before.role)&&!['gm','admin'].includes(after.role)))purgeGroupDrafts(localStorage,sessionStorage,me.user.id,before.id,{gmOnly:!!after});}knownGroups.current={user:me.user.id,groups};},[me?.user.id,groups]);
+  useEffect(()=>{if(!current)return;Visited(old=>[...new Set([...old,current])].filter(g=>groups.some(row=>row.id===g)));},[current,groups]);
+  if(booting)return <div className="loading">◈ 正在翻开书页…</div>;
+  if(!me)return <Auth done={boot}/>;
+  const sessions=[...new Set([...visited,current])].filter(g=>!g||groups.some(row=>row.id===g));
+  return <>{error&&<div className="banner error" role="alert">{error}<button onClick={boot}>重新连接</button></div>}{sessions.map(gid=><div key={me.user.id+':'+gid} hidden={gid!==current} className="group-session"><RareLootProvider><BattlePresentationProvider><GroupSession {...{me,Me,groups,Groups,boot,socketHub,connected}} groupId={gid} Group={Group} selected={gid===current}/></BattlePresentationProvider></RareLootProvider></div>)}</>;
+}
+function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub,connected}) {
+  const battleFeedback=useBattleFeedback(),rareLoot=useRareLoot();
+  const [tab, SetTab] = useState("chat"),
     [mobileConsole,MobileConsole]=useState(()=>matchMedia('(max-width:850px)').matches),
     [consolePrefs,ConsolePrefs]=useState({}),
     [rooms, Rooms] = useState([]),
@@ -263,6 +285,7 @@ function App() {
     [members, Members] = useState([]),
     [game, Game] = useState(null),
     [schema, Schema] = useState(null),
+    [gmDirectory,GMDirectory]=useState(null),
     [error, E] = useState(""),
     [notice, N] = useState(""),
     [busy, B] = useState(false),
@@ -271,66 +294,56 @@ function App() {
     [navigation, Navigation] = useState(null),
     [result, R] = useState(null),
     [accountRecovery, AccountRecovery] = useState(""),
-    [connected, Conn] = useState(false),
     [chatEvent, ChatEvent] = useState(null),
     [drafts, Drafts] = useState(() => {
       try {
-        return JSON.parse(
-          sessionStorage.getItem("wasteland-editor-drafts") || "{}",
-        );
+        const stored=JSON.parse(sessionStorage.getItem("wasteland-editor-drafts")||"{}");const key=groupId+":"+me.user.id;return {[key]:stored[key]||{}};
       } catch {
         return {};
       }
     }),
     [gmTab, GmTab] = useState("templates");
-  const ws = useRef(null),
-    active = useRef({}),
-    liveReady=useRef(false),prefsRef=useRef(null),
+  const active = useRef({}),
+    liveReady=useRef(false),prefsRef=useRef(null),subscription=useRef(0),gmNames=useRef({}),
     refreshTimer = useRef(null),deferredSections=useRef(new Map()),
     busyRef = useRef(false),
     pendingRef = useRef(null),
-    gameRef=useRef(null), readQueues=useRef(new Map()),directoryGroup=useRef(null),epoch=useRef(0),sceneClears=useRef({mapIds:[],battleIds:[]}),
+    gameRef=useRef(null),roomsRef=useRef([]), readQueues=useRef(new Map()),directoryGroup=useRef(null),epoch=useRef(0),sceneClears=useRef({mapIds:[],battleIds:[]}),
     memberRead=useRef(null),memberReadVersion=useRef(0),
     [foreground,Foreground]=useState(document.visibilityState==='visible'),
     [mobileSide, MobileSide] = useState(false);
-  const [quickMenu,QuickMenu]=useState(null),[taskList,TaskList]=useState(false);
+  const [quickMenu,QuickMenu]=useState(null),[taskList,TaskList]=useState(false),[resultOpen,ResultOpen]=useState(false),[gmUnread,GMUnread]=useState(false);
   const menuRef=useRef(null);
   const group = groups.find((g) => g.id === groupId),
     gm = ["gm", "admin"].includes(group?.role),
     scope = groupId + ":" + me?.user.id;
+  useEffect(()=>{if(selected)rareLoot.configure(scope,{groupId,channelId:canonicalChat(group,rooms)?.id||group?.chatRoomId});},[selected,scope,group?.chatRoomId,rooms]);
   const receiveSound=useMessageSound(me?.user.id,me?.user.preferences?.messageSound);
-  const tasks=chatTasks(game,me?.user.id),taskBadges=taskCounts(tasks,gm),unread=rooms.reduce((sum,r)=>sum+(r.unread||0),0);
-  const shortcuts=[["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]];
+  const tasks=chatTasks(game,me?.user.id),taskBadges=taskCounts(tasks,gm),unread=groups.reduce((sum,g)=>sum+(g.unread||0),0),otherUpdates=groups.some(g=>g.hasUpdates);
+  const shortcuts=[["console","操作台"],["character","角色"],["bag","背包"],["skills","技能"],["explore","探索"],["battle","战斗"],["activities","团务"],["more","更多"]];
   function openQuickMenu(e){if(e.type==='contextmenu'&&e.target.closest('input,textarea,select,a,[contenteditable="true"]'))return;e.preventDefault();QuickMenu({...contextPosition(e.clientX||e.currentTarget.getBoundingClientRect().left,e.clientY||e.currentTarget.getBoundingClientRect().bottom,innerWidth,innerHeight),groupId});}
   useEffect(()=>{if(!quickMenu)return;const close=e=>{if(!menuRef.current?.contains(e.target))QuickMenu(null);},escape=e=>{if(e.key==='Escape')QuickMenu(null);};document.addEventListener('pointerdown',close);document.addEventListener('keydown',escape);return()=>{document.removeEventListener('pointerdown',close);document.removeEventListener('keydown',escape);};},[quickMenu]);
   useEffect(()=>{QuickMenu(null);TaskList(false);},[groupId]);
+  useEffect(()=>{if(selected&&tab==='gm')SetTab(panelPref.pane==='console'?'chat':panelPref.pane);},[selected]);
+  useEffect(()=>{if(selected&&gm&&(group?.pending||group?.gmUnread>0))GMUnread(true);},[selected,gm,group?.pending,group?.gmUnread]);
+  useEffect(()=>{if(selected&&me?.user.id&&groupId)saveRestartDraft(localStorage,'navigation:'+me.user.id,{groupId,roomId});},[selected,me?.user.id,groupId,roomId]);
   async function savePreferences(patch){const target=me?.user.id;try{const value=await api('/preferences',patch);Me(old=>old?.user.id===target?{...old,user:{...old.user,preferences:value}}:old);}catch(e){E(e.message);}}
   const panelKey=consoleKey(me?.user.id,groupId,mobileConsole),panelPref=consolePrefs[panelKey]||readConsole(localStorage,panelKey,mobileConsole),panelOpen=panelPref.open;
   function setConsole(change){const next={...panelPref,...change};ConsolePrefs(old=>({...old,[panelKey]:next}));saveConsole(localStorage,panelKey,next);}
   function Tab(next){if(next==='gm'){SetTab(next);return;}if(next==='chat'){SetTab(panelPref.pane==='console'?'chat':panelPref.pane);return;}const pane=next==='console'?'console':next;setConsole({pane,open:true});SetTab(pane==='console'?'chat':pane);}
   useEffect(()=>{const q=matchMedia('(max-width:850px)'),change=()=>MobileConsole(q.matches);q.addEventListener('change',change);return()=>q.removeEventListener('change',change);},[]);
   useEffect(()=>{SetTab(panelPref.pane==='console'?'chat':panelPref.pane);},[panelKey]);
-  active.current = { groupId, roomId, scope,tab,panelOpen,roomIds:rooms.map(room=>room.id) };
-  pendingRef.current=pendingOperation;gameRef.current=game;
+  active.current = { groupId, roomId, scope,tab,panelOpen,selected,roomIds:rooms.map(room=>room.id),watchGroups:groups.map(g=>g.id) };
+  pendingRef.current=pendingOperation;gameRef.current=game;roomsRef.current=rooms;
   prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"magic";
   useEffect(()=>{battleFeedback.configure(scope,{mode:me?.user.preferences?.battleEffects||'full',onModeChange:next=>savePreferences({battleEffects:next})});},[scope,me?.user.preferences?.battleEffects]);
-  useEffect(()=>{if(!me?.user.id)return;const saved=readRestartDraft(localStorage,'gm-editor:'+me.user.id,true);if(saved)Drafts(old=>({...old,...saved}));},[me?.user.id]);
-  useEffect(()=>{const persist=event=>{if(busyRef.current||pendingRef.current)event.preventDefault();try{sessionStorage.setItem('wasteland-editor-drafts',JSON.stringify(drafts));if(me?.user.id){const mine=Object.fromEntries(Object.entries(drafts).filter(([key])=>key.endsWith(':'+me.user.id)));if(!saveRestartDraft(localStorage,'gm-editor:'+me.user.id,mine)||!saveRestartDraft(localStorage,'navigation:'+me.user.id,{groupId:active.current.groupId,roomId:active.current.roomId}))event.preventDefault();}}catch{event.preventDefault();}};window.addEventListener('book:before-restart',persist);return()=>window.removeEventListener('book:before-restart',persist);},[drafts,me?.user.id]);
-  async function boot() {
-    try {
-      const a = await api("/auth/me");
-      setCsrf(a.csrf);
-      Me(a);
-      Groups(await api("/groups"));
-    } catch {
-      Me(null);
-    } finally {
-      Boot(false);
-    }
-  }
-  useEffect(() => {
-    boot();
-  }, []);
+  useEffect(()=>{if(!me?.user.id)return;const saved=readRestartDraft(localStorage,'gm-editor:'+me.user.id+':'+groupId,true)||readRestartDraft(localStorage,'gm-editor:'+me.user.id);if(saved?.[scope])Drafts(old=>({...old,[scope]:saved[scope]}));},[me?.user.id,groupId]);
+  useEffect(()=>{const persist=event=>{
+    if(busyRef.current||pendingRef.current)event.preventDefault();
+    try{const stored=JSON.parse(sessionStorage.getItem('wasteland-editor-drafts')||'{}'),mine={[scope]:drafts[scope]||{}};sessionStorage.setItem('wasteland-editor-drafts',JSON.stringify({...stored,...mine}));
+      if(me?.user.id){if(!saveRestartDraft(localStorage,'gm-editor:'+me.user.id+':'+groupId,mine))event.preventDefault();if(selected&&!saveRestartDraft(localStorage,'navigation:'+me.user.id,{groupId,roomId:active.current.roomId}))event.preventDefault();}
+    }catch{event.preventDefault();}
+  };window.addEventListener('book:before-restart',persist);return()=>window.removeEventListener('book:before-restart',persist);},[drafts,me?.user.id,scope,selected]);
   function applyMembers(rows) {
     Members(old => mergeAvatarMembers(old, rows));
     const self = rows.find(m => m.userId === me?.user.id);
@@ -370,125 +383,83 @@ function App() {
   }
   useEffect(()=>{const changed=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',changed);return()=>document.removeEventListener('visibilitychange',changed);},[]);
   useEffect(() => {
-    if (!me) return;
-    const savedNavigation=readRestartDraft(localStorage,'navigation:'+me.user.id);
-    const gid = groups.some((g) => g.id === groupId)
-      ? groupId
-      : groups.find(g=>g.id===savedNavigation?.groupId)?.id||groups[0]?.id || "";
-    if (gid !== groupId) Group(gid);
-  }, [groups, me]);
-  useEffect(() => {
     liveReady.current=false;sceneClears.current={mapIds:[],battleIds:[]};
     epoch.current++;Game(null);gameRef.current=null;directoryGroup.current=null;readQueues.current.clear();Tab("chat");Navigation(null);
     Rooms([]);
     Members([]);
     Room("");
-    Schema(null);
+    Schema(null);GMDirectory(null);gmNames.current={};
+    if(!gm)Drafts(old=>{const pending=old[scope]?.pendingOperation;return {[scope]:pending&&!pending.isGM?{pendingOperation:pending}:{}};});
     Preview(null);
-    PendingOperation(drafts[groupId+":"+me?.user.id]?.pendingOperation||null);
+    const restored=drafts[scope]?.pendingOperation;PendingOperation(restored&&(!restored.isGM||gm)?restored:null);
     R(null);
-    if (!groupId || !me) return;
+    if (!selected||!groupId || !me) return;
     refresh().catch((e) => E(e.message));
     const base = "/groups/" + groupId + "/gm";
-    setTransport((path, body) => api(base + path, body));
-    window.gmMediaBase = "/api/web/v1" + base;
-    window.gmDirect=true;
-    window.gmSession = { guildId: groupId, userId: me.user.id };
+
     if (gm && active.current.tab==="gm")
       Promise.all([api(base + "/schemas"), api(base + "/directory")])
         .then(([s, d]) => {
           if (active.current.groupId !== groupId) return;
-          Schema(s);
-          window.gmSchema = s;
-          window.gmDirectory = d;
-          window.gmBoxes = s.boxes;
+          Schema(s);GMDirectory(d);
           Object.assign(labels, s.attributeLabels);
         })
         .catch((e) => E(e.message));
   }, [groupId, me?.user.id, gm]);
-  useEffect(()=>{if(!groupId||!me)return;void refresh({sections:visibleSections(tab,gameRef.current,panelOpen)}).catch(e=>E(e.message));
-    if(gm&&tab==='gm'&&!schema){const base='/groups/'+groupId+'/gm';const target=groupId;Promise.all([api(base+'/schemas'),api(base+'/directory')]).then(([s,d])=>{if(active.current.groupId!==target)return;Schema(s);window.gmSchema=s;window.gmDirectory=d;window.gmBoxes=s.boxes;Object.assign(labels,s.attributeLabels);}).catch(e=>E(e.message));}
-  },[tab,groupId,me?.user.id,gm,panelOpen]);
-  useEffect(()=>{if(panelOpen&&tab==='chat'&&(game?.dashboard?.battle||game?.dashboard?.map))void refresh({sections:visibleSections(tab,game,panelOpen)}).catch(()=>{});},[game?.dashboard?.battle?.id,game?.dashboard?.map?.id,panelOpen]);
-  useEffect(()=>{if(panelOpen&&game?.dashboard&&!game.dashboard.player&&game.sectionVersions.core===undefined)void refresh({sections:['core']}).catch(()=>{});},[!!game?.dashboard,game?.dashboard?.player?.id,groupId,panelOpen]);
+  useEffect(()=>{if(!selected||!groupId||!me)return;void refresh({sections:visibleSections(tab,gameRef.current,panelOpen)}).catch(e=>E(e.message));
+    if(gm&&tab==='gm'&&!schema){const base='/groups/'+groupId+'/gm';const target=groupId;Promise.all([api(base+'/schemas'),api(base+'/directory')]).then(([s,d])=>{if(active.current.groupId!==target)return;Schema(s);GMDirectory(d);Object.assign(labels,s.attributeLabels);}).catch(e=>E(e.message));}
+  },[selected,tab,groupId,me?.user.id,gm,panelOpen]);
+  useEffect(()=>{if(selected&&panelOpen&&tab==='chat'&&(game?.dashboard?.battle||game?.dashboard?.map))void refresh({sections:visibleSections(tab,game,panelOpen)}).catch(()=>{});},[selected,game?.dashboard?.battle?.id,game?.dashboard?.map?.id,panelOpen]);
+  useEffect(()=>{if(selected&&panelOpen&&game?.dashboard&&!game.dashboard.player&&game.sectionVersions.core===undefined)void refresh({sections:['core']}).catch(()=>{});},[selected,!!game?.dashboard,game?.dashboard?.player?.id,groupId,panelOpen]);
   useEffect(()=>{
-    if(!groupId||!me||!foreground)return;
+    if(!selected||!groupId||!me||!foreground)return;
     let alive=true,pending=false;
     async function check(){if(pending)return;pending=true;try{const v=await api('/groups/'+groupId+'/version');if(!alive||active.current.groupId!==groupId)return;const keys=visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).filter(k=>v.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]);if(keys.length)await refresh({sections:keys,expected:v.sectionVersions});}catch{}finally{pending=false;}}
     void check();const timer=setInterval(check,5000);return()=>{alive=false;clearInterval(timer);};
-  },[groupId,me?.user.id,foreground]);
+  },[selected,groupId,me?.user.id,foreground]);
   useEffect(() => {
-    const savedNavigation=readRestartDraft(localStorage,'navigation:'+me?.user.id);
-    if (!rooms.some((r) => r.id === roomId))
-      Room((savedNavigation?.groupId===groupId?rooms.find(r=>r.id===savedNavigation.roomId)?.id:null)||rooms.find((r) => r.kind === "chat")?.id || rooms[0]?.id || "");
-  }, [rooms]);
+    if(!rooms.some(r=>r.id===roomId))Room(canonicalChat(group,rooms)?.id||'');
+  }, [rooms,group?.chatRoomId]);
+  function sendSubscription(socket=socketHub.current.socket){if(socket?.readyState!==1)return;subscription.current=socketHub.current.requestId=(socketHub.current.requestId||0)+1;socket.send(JSON.stringify(subscribePayload(active.current,subscription.current)));}
   useEffect(() => {
-    if (!me) return;
-    let alive = true,
-      retry;
-    function open() {
-      const socket = new WebSocket(
-        (location.protocol === "https:" ? "wss://" : "ws://") +
-          location.host +
-          "/ws",
-      );
-      ws.current = socket;
-      socket.onopen = () => {
-        Conn(true);liveReady.current=false;battleFeedback.reconnect();
-        socket.send(
-          JSON.stringify({
-            type: "subscribe",
-            groupId: active.current.groupId || undefined,
-            roomId: active.current.roomId || undefined,
-          }),
-        );
-        refresh({sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'battle'])]}).catch(() => {});
-        ChatEvent({ type: "reconnect", at: Date.now() });
-      };
-      socket.onmessage = (e) => {
-        const event = JSON.parse(e.data);
+    if(!me||!selected)return;
+    function resume(){rareLoot.reconnect();liveReady.current=false;battleFeedback.reconnect();sendSubscription();void refresh({sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'battle'])]}).catch(()=>{});ChatEvent({type:'reconnect',at:Date.now()});}
+    const receive=event=>{
+      if(event.type==='socket-open'){resume();return;}
+        if(['subscribed','subscription-ack'].includes(event.type)){if(event.data?.requestId!==subscription.current&&event.requestId!==subscription.current)return;return;}
+        if(event.type==='subscription-error'){
+          const details=event.data||event;if(details.groupId&&details.groupId!==groupId){void api('/groups').then(Groups).catch(()=>{});return;}if(details.requestId!==undefined&&details.requestId!==subscription.current)return;
+          if(details.code==='UNAUTHORIZED'){Me(null);return;}
+          E(details.message||'本团访问已变化，请重新选择跑团。');
+          if(['FORBIDDEN','NOT_FOUND'].includes(details.code)&&(details.groupId===groupId||!details.groupId)){epoch.current++;Game(null);gameRef.current=null;Rooms([]);Members([]);Schema(null);GMDirectory(null);Preview(null);R(null);readQueues.current.clear();api('/groups').then(Groups).catch(()=>{});}return;
+        }
+        if(event.type==='group-unread')return;
+        if(event.type==='group-state')return;
+        if(['group-deleted','access-revoked'].includes(event.type))return;
+        if(event.data?.groupId&&event.data.groupId!==groupId&&!['permissions','music'].includes(event.type))return;
         receiveSound(event);
-        if(event.type==='message'&&active.current.roomIds?.includes(event.data?.roomId))battleFeedback.ingest(event,{source:'socket'});
+        if(event.type==='rare-loot'){rareLoot.ingest(event.data?.rareLoot,{source:'live'});return;}
+        if(event.type==='message'&&active.current.roomIds?.includes(event.data?.roomId)){battleFeedback.ingest(event,{source:'socket'});rareLoot.ingest(event.data.system?.rareLoot,{source:'live'});if(event.data.system?.corpses?.length)void refresh({sections:['battle']}).catch(()=>{});}
         if(event.type==='scenes-cleared'&&event.data?.groupId===active.current.groupId){
           const cleared=event.data;battleFeedback.clear(cleared.battleIds||[]);sceneClears.current={mapIds:[...new Set([...sceneClears.current.mapIds,...(cleared.mapIds||[])])],battleIds:[...new Set([...sceneClears.current.battleIds,...(cleared.battleIds||[])])]};
           Game(old=>{const next=clearSceneGame(old,sceneClears.current);gameRef.current=next;return next;});
           Navigation(old=>old&&[...(cleared.mapIds||[]),...(cleared.battleIds||[])].includes(old.id)?null:old);R(null);ChatEvent(event);N('旧探索场景已清理；角色资产保留，请等待GM建立新地图。');void refresh().catch(()=>{});return;
         }
         if(event.type==='avatar'){refreshMembers().catch(()=>{});}
-        else if(event.type==='room-unread'){Rooms(old=>unreadEvent(old,event.data));}
+        else if(event.type==='inbox-unread'){GMUnread(true);ChatEvent({...event,at:Date.now()});return;}
+        else if(event.type==='room-unread'){const next=unreadEvent(roomsRef.current,event.data);roomsRef.current=next;Rooms(next);if(event.data.unread!==undefined)Groups(old=>groupUnread(old,event.data));}
         else if(event.type==='state'){
           if(busyRef.current&&pendingRef.current){for(const key of event.data.sections||allSections)deferredSections.current.set(key,event.data.revision);}else if(document.visibilityState==='visible')refresh({sections:(event.data.sections||allSections).filter(k=>visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).includes(k)&&event.data.sectionVersions?.[k]!==gameRef.current?.sectionVersions?.[k]),expected:event.data.sectionVersions}).catch(e=>E(e.message));
         } else if(event.type==='permissions') {
           epoch.current++;directoryGroup.current=null;readQueues.current.clear();refresh({directory:true}).catch(()=>{});
         } else ChatEvent(event);
-      };
-      socket.onclose = (e) => {
-        Conn(false);
-        if ([4001, 4003].includes(e.code)) {
-          boot();
-          E("登录或访问权限已变化，请重新核对。");
-        }
-        if (alive) retry = setTimeout(open, 2500);
-      };
-      socket.onerror = () => socket.close();
-    }
-    open();
-    return () => {
-      alive = false;
-      clearTimeout(retry);
-      ws.current?.close();
+
     };
-  }, [me?.user.id]);
-  useEffect(() => {
-    if (ws.current?.readyState === 1)
-      ws.current.send(
-        JSON.stringify({
-          type: "subscribe",
-          groupId: groupId || undefined,
-          roomId: roomId || undefined,
-        }),
-      );
-  }, [groupId, roomId]);
+    Groups(old=>old.map(g=>g.id===groupId?{...g,hasUpdates:false}:g));socketHub.current.handle=receive;if(socketHub.current.socket?.readyState===1)resume();
+    return()=>{if(socketHub.current.handle===receive)socketHub.current.handle=null;};
+  },[me?.user.id,selected]);
+  useEffect(() => {if(selected)sendSubscription();}, [selected,groupId,roomId,groups.map(g=>g.id).join(',')]);
+  useEffect(()=>{if(!selected)return;const timer=setTimeout(()=>N(''),5000);return()=>clearTimeout(timer);},[notice,result,selected]);
   async function run(fn) {
     if (busyRef.current) return;
     busyRef.current=true;
@@ -521,7 +492,7 @@ function App() {
       try{
         const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:gameRef.current?.versions,includePatch:true,sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'dashboard','core','market'])].filter(k=>k!=='management').join(',')});
         if(active.current.groupId!==targetGroup)return;
-        battleFeedback.ingest(r.battleFeedback||[],{source:'http'});if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
+        if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
       }catch(e){
         if(active.current.groupId!==targetGroup)throw e;
         if(['CONFLICT','VALIDATION','FORBIDDEN','NOT_FOUND'].includes(e.code)){
@@ -538,17 +509,17 @@ function App() {
     if(!request)return;
     const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId+'?includePatch=1&sections='+visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).concat('core','market').join(','));
     if(active.current.groupId!==request.groupId || pendingRef.current?.operationId!==request.operationId)return;
-    if(r.status==='committed'){battleFeedback.ingest(r.battleFeedback||[],{source:'http'});if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
+    if(r.status==='committed'){if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
     else if(r.status==='uncommitted'){PendingOperation(null);saveLocal('pendingOperation',null);N('权威记录确认此操作未保存。填写内容已保留，可重新提交。');}
     else N(r.status==='processing'?'原操作仍在处理中，请稍后查询。':'保存结果尚未明确，修改保持暂停。');
     return r;
   }
   useEffect(()=>{
-    if(!pendingOperation || pendingOperation.groupId!==groupId || !me)return;
+    if(!selected||!pendingOperation || pendingOperation.groupId!==groupId || !me)return;
     let alive=true,timer;
     const check=async()=>{if(!alive)return;if(!busyRef.current && document.visibilityState==='visible')await checkDirect(pendingOperation).catch(()=>{});if(alive)timer=setTimeout(check,5000);};
     void check();return()=>{alive=false;clearTimeout(timer);};
-  },[groupId,me?.user.id,pendingOperation?.operationId]);
+  },[selected,groupId,me?.user.id,pendingOperation?.operationId]);
   function openRoom(id){Room(id);Tab('chat');MobileSide(false);}
   function navigateNotice(system){
     const target=notificationTarget(system,gm);if(!target)return;
@@ -558,7 +529,7 @@ function App() {
     if (!preview) return;
     const r = await api("/groups/" + groupId + "/game/receipt/" + preview.id);
     if (r.status === "committed") {
-      battleFeedback.ingest(r.battleFeedback||[],{source:'http'});
+      if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}
       R(r.result);
       Preview(null);
       await refresh();
@@ -572,7 +543,7 @@ function App() {
           draftId: f.id,
         });
         if(active.current.groupId!==targetGroup)return;
-        battleFeedback.ingest(r.battleFeedback||[],{source:'http'});
+        if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}
         R(r.result);
         Preview(null);
         N("已保存，网站通知在后台更新。");
@@ -598,7 +569,7 @@ function App() {
     Drafts((old) => {
       const next = { ...old, [scope]: { ...(old[scope] || {}), [key]: value } };
       try {
-        sessionStorage.setItem("wasteland-editor-drafts", JSON.stringify(next));
+        const stored=JSON.parse(sessionStorage.getItem("wasteland-editor-drafts")||"{}");sessionStorage.setItem("wasteland-editor-drafts", JSON.stringify({...stored,[scope]:next[scope]}));
       } catch {
         E("浏览器草稿空间不足，请保存服务器草稿。");
       }
@@ -642,11 +613,9 @@ function App() {
         </section>
       </div>
     );
-  if (booting) return <div className="loading">◈ 正在翻开书页…</div>;
-  if (!me) return <Auth done={boot} />;
   return (
-    <div className="site integrated-site immersive-site book-theme">
-      {mobileSide&&<button className="channel-scrim" aria-label="关闭频道导航" onClick={()=>MobileSide(false)}/>}
+    <GMContextProvider value={{api:bindGroupTransport(api,groupId),scope,active:selected&&tab==="gm",schema,directory:gmDirectory,boxes:schema?.boxes||[],direct:true,session:{guildId:groupId,userId:me.user.id},mediaBase:"/api/web/v1/groups/"+groupId+"/gm",names:gmNames.current}}><div className="site integrated-site immersive-site book-theme">
+      {mobileSide&&<button className="channel-scrim" aria-label="关闭跑团导航" onClick={()=>MobileSide(false)}/>}
       <aside className={"site-sidebar " + (mobileSide ? "shown" : "")}>
         <div className="brand">
           <img className="book-emblem" src="/brand/book-icon-v1.svg" alt=""/>
@@ -654,80 +623,11 @@ function App() {
             <img className="book-wordmark" src="/brand/book-wordmark-v1.svg" alt="异常之书"/><small>与同行者共写故事</small>
           </h1>
         </div>
-        <label className="group-picker">
-          <small>当前跑团</small>
-          <select
-            aria-label="切换跑团"
-            value={groupId}
-            onChange={(e) => Group(e.target.value)}
-          >
-            <option value="">选择跑团</option>
-            {groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <nav>
-          {[
-
-            ["chat", "◌", "营地通讯"],
-
-
-
-
-
-
-            ...(gm ? [["gm", "⌘", "GM 工作台"]] : []),
-
-            ...(me.user.admin ? [["settings", "⚙", "网站管理"]] : []),
-          ].map(([k, icon, name]) => (
-            <button
-              key={k}
-              className={tab === k ? "active" : ""}
-              onClick={() => {
-                Tab(k);
-                MobileSide(false);
-              }}
-            >
-              <span>{icon}</span>
-              {name}
-            </button>
-          ))}
+        <nav className="group-chat-list" aria-label="跑团群聊">
+          <small>你的跑团</small>
+          {groups.map(g=><button key={g.id} className={g.id===groupId?'chosen':''} onClick={()=>{Group(g.id);if(g.id===groupId){Room(canonicalChat(group,rooms)?.id||'');SetTab(panelPref.pane==='console'?'chat':panelPref.pane);}MobileSide(false);}}><span className="group-seal">{g.name?.slice(0,1)||'团'}</span><span>{g.name}<small>{g.role==='admin'?'管理员':g.role==='gm'?'GM':'玩家'}</small></span>{g.unread>0?<b className="unread">{g.unread>99?'99+':g.unread}</b>:g.hasUpdates?<i className="notification-dot" aria-label="本团有新动态"/>:null}</button>)}
         </nav>
-        <div className="channel-list">
-          <div className="section-title">
-            <small>本团频道</small>
-            {gm && (
-              <button
-                title="新建频道"
-                onClick={() => {
-                  Tab("settings");
-                }}
-              >
-                ＋
-              </button>
-            )}
-          </div>
-          {rooms.map((r) => (
-            <button
-              key={r.id}
-              className={roomId === r.id ? "chosen" : ""}
-              onClick={() => {
-                Room(r.id);
-                Tab("chat");
-                MobileSide(false);
-              }}
-            >
-              <span>
-                {r.kind === "gm" ? "▰" : r.kind === "dm" ? "↗" : "#"}
-              </span>
-              {r.name}
-              {r.unread > 0 && <b className="unread">{r.unread}</b>}
-            </button>
-          ))}
-        </div>
+        <nav className="group-management-links"><button onClick={()=>{Tab('settings');MobileSide(false);}}>成员与私聊</button>{gm&&<button onClick={()=>{Tab('gm');MobileSide(false);}}>GM 工作台{gmUnread&&<i className="notification-dot" aria-label="有新的GM待办"/>}</button>}{me.user.admin&&<button onClick={()=>{Tab('settings');MobileSide(false);}}>网站管理</button>}</nav>
         <footer>
           <span className={"connection " + (connected ? "online" : "")}>
             ● {connected ? "实时连接" : "重连中"}
@@ -746,20 +646,21 @@ function App() {
             aria-label="打开导航"
             onClick={() => MobileSide(!mobileSide)}
           >
-            ☰{unread>0&&<i className="notification-dot" aria-label={unread+' 条未读消息'}/>}
+            ☰{(unread>0||otherUpdates)&&<i className="notification-dot" aria-label={unread?unread+' 条未读消息':'有跑团新动态'}/>}
           </button>
           <div>
             <h2>
               {tab !== "gm"
-                ? rooms.find((r) => r.id === roomId)?.name || "营地通讯"
+                ? rooms.find((r) => r.id === roomId)?.kind==="dm"?rooms.find(r=>r.id===roomId)?.name:group?.name || "团群聊"
                 : group?.name || "跑团大厅"}
             </h2>
           </div>
           <div className="header-tags">
-            <span className="header-group">{group?.name || "尚未入团"}</span>
+            <span className={"connection header-connection "+(connected?"online":"")} title={connected?"实时连接":"正在重连"}>●</span>{rooms.find(r=>r.id===roomId)?.kind==="dm"&&<button onClick={()=>Room(canonicalChat(group,rooms)?.id||'')}>返回群聊</button>}<button className="console-toggle" aria-label={panelOpen?"收起操作台":"展开操作台"} onClick={()=>panelOpen?setConsole({open:false}):Tab('console')}>{panelOpen?"收起":"操作台"}</button>
             <button className="notifications-button" aria-label={'待办提醒'+(tasks.length?'，'+tasks.length+' 项':'')} aria-expanded={taskList} onClick={()=>TaskList(!taskList)}>提醒{tasks.length>0&&<b className="red-count">{tasks.length}</b>}</button>
+            <details className="chat-settings-menu"><summary aria-label="聊天设置与音乐">设置</summary><div className="chat-settings-body">{groupId&&<GroupMusic key={scope} active={selected} groupId={groupId} userId={me.user.id} gm={gm} event={chatEvent} preferences={me.user.preferences||{}} onPreferences={savePreferences}/>}<ConsoleStatus data={game?.dashboard}/><label><input type="checkbox" checked={!!me.user.preferences?.messageSound} onChange={e=>savePreferences({messageSound:e.target.checked})}/>新消息提示音</label>{result&&<button onClick={()=>ResultOpen(true)}>查看最近操作结果</button>}</div></details>
             <button className="quick-menu-button" aria-haspopup="menu" aria-expanded={!!quickMenu} onClick={openQuickMenu}>功能 ⋮</button>
-            {gm&&<button className="gm-quick-button" onClick={()=>Tab(tab==='gm'?'chat':'gm')}>{tab==='gm'?'返回聊天':'GM'}</button>}
+            {gm&&<button className="gm-quick-button" onClick={()=>{if(gmUnread)GmTab('inbox');Tab(tab==='gm'?'chat':'gm');}}>{tab==='gm'?'返回聊天':'GM'}{gmUnread&&<i className="notification-dot" aria-label="有新的GM待办"/>}</button>}
           </div>
         </header>
         {me.siteNotice&&<div className="banner domain-notice" role="status">{me.siteNotice}</div>}
@@ -770,13 +671,12 @@ function App() {
           </div>
         )}
         {notice && (
-          <div className="banner" role="status">
-            {notice}
+          <div className="banner success-toast" role="status">
+            {notice}{result&&<button onClick={()=>ResultOpen(true)}>查看结果</button>}
             <button onClick={() => N("")}>×</button>
           </div>
         )}
         {pendingOperation && <div className="banner" role="status"><span>上一操作待核对；仍可查看消息和面板。</span><button disabled={busy} onClick={()=>run(()=>checkDirect()).catch(()=>{})}>查询保存结果</button></div>}
-        {groupId&&<GroupMusic key={scope} groupId={groupId} userId={me.user.id} gm={gm} event={chatEvent} preferences={me.user.preferences||{}} onPreferences={savePreferences}/>}
         {(game?.dashboard?game.dashboard.battle?.pending?.length:game?.battles.some((b) => b.pending.length)) && (
           <div className="banner defense-card" role="status">
             你有待结算的受击，请及时防守。
@@ -815,11 +715,9 @@ function App() {
         ) : (
           <>
             <div className={"chat-workspace "+(panelOpen||tab==="gm"?"with-panel":"console-collapsed")+(tab==="gm"?" gm-workspace":"")}><div hidden={tab==="gm"} className="chat-page">
-              <div className="player-toolbar" aria-label="玩家工具栏"><button aria-expanded={panelOpen} aria-controls="player-operation-panel" onClick={()=>{if(!panelOpen)Tab('console');else setConsole({open:false});}}>{panelOpen?"收起":"操作台"}</button>{shortcuts.map(([k,name])=><button key={k} className={panelOpen&&tab===k?"active":""} onClick={()=>Tab(k)}>{name}{taskBadges[k]>0&&<i className="notification-dot" aria-label={taskBadges[k]+' 项待处理'}/>}</button>)}</div>
-              {game?.dashboard?.player&&<ConsoleStatus data={game.dashboard}/>}
               <PendingTasks game={game} userId={me.user.id} onNavigate={system=>{navigateNotice(system);TaskList(false);}} onOpen={target=>{Tab(target);TaskList(false);}} expanded={taskList}/>
               {!(panelOpen&&(tab==='battle'||(['chat','console'].includes(tab)&&game?.dashboard?.battle)))&&<BattleStage battle={game?.battles?.find(b=>b.id===game?.dashboard?.battle?.id)} userId={me.user.id} compact/>}
-              {result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看个人结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}
+              {result&&resultOpen&&<section className="chat-result-popover" aria-label="个人操作结果"><button className="result-close" onClick={()=>ResultOpen(false)}>关闭结果 ×</button><Result value={result}/></section>}
               <Chat
                 key={scope}
                 {...{
@@ -839,16 +737,16 @@ function App() {
                 }}
                 error={E}
                 notice={N}
-                visible={tab !== "gm"}
-                onRead={(id,sequence)=>Rooms(old=>markRead(old,id,sequence))}
+                visible={selected&&tab !== "gm"}
+                onRead={(room,sequence,summary)=>{const next=markRead(roomsRef.current,room,sequence);roomsRef.current=next;Rooms(next);if(summary?.groupId&&summary.unread!==undefined)Groups(old=>groupUnread(old,summary));}}
               />
             </div>
             <div id="player-operation-panel" hidden={!panelOpen&&tab!=="gm"} className={"page-content "+(tab!=="gm"?"player-drawer":"")} key={groupId}>
               <header className="drawer-header"><div><b>{({console:"玩家一体操作台",chat:"玩家一体操作台",character:"我的角色",bag:"背包与交易",skills:"技能卡册",explore:"探索地图",battle:"战术战斗",activities:"团务与资料",more:"营地服务",settings:"成员与账号",library:"公共模板库",home:"营地总览",gm:"GM工作台"})[tab]}</b></div>{tab!=="gm"&&<button onClick={()=>setConsole({open:false})} aria-label="收起操作台">⌄</button>}</header>{tab==='gm'&&result&&<details className="chat-private-result"><summary>本次操作已保存 · 查看结果</summary><Result value={result}/><button onClick={()=>R(null)}>收起结果</button></details>}<PanelErrorBoundary resetKey={groupId+':'+tab+':'+gmTab}><Suspense fallback={<div className="loading" role="status">正在载入面板…</div>}>
-              <Keep show={panelOpen&&(tab==="chat"||tab==="console")}>{game&&<Workbench {...{game,groupId,prepare,run,refresh,busy}} userId={me.user.id} active={panelOpen&&(tab==="chat"||tab==="console")} error={E} onOpen={(target,detail)=>{if(detail)Navigation({...detail,key:id()});Tab(target);}}/>}</Keep>
+              <Keep show={panelOpen&&(tab==="chat"||tab==="console")}>{game&&<Workbench {...{game,groupId,prepare,run,refresh,busy}} userId={me.user.id} active={selected&&panelOpen&&(tab==="chat"||tab==="console")} error={E} onOpen={(target,detail)=>{if(detail)Navigation({...detail,key:id()});Tab(target);}}/>}</Keep>
               <Keep show={panelOpen&&tab==="more"}><section className="panel service-menu"><h3>营地服务</h3>{[["home","公告与未读"],["library","公共模板库"],["settings","成员、私聊与账号"],["bag","收藏柜与兑换券"],["activities","规则与名词"]].map(([k,name])=><button key={k} onClick={()=>Tab(k)}>{name}</button>)}</section></Keep>
               <Keep show={panelOpen&&tab === "home"}>
-                <GroupHome {...{ game, group, members, rooms, Preview }} onRoom={openRoom} onNavigate={navigateNotice} />
+                <GroupHome {...{ game, group, members, Preview }} rooms={rooms.filter(r=>r.id===canonicalChat(group,rooms)?.id)} onRoom={openRoom} onNavigate={navigateNotice} />
               </Keep>
               <Keep show={panelOpen&&["character", "bag"].includes(tab)}>
                 {game && (
@@ -866,28 +764,29 @@ function App() {
               </Keep>
               <Keep show={panelOpen&&tab === "explore"}>
                 {game && (
-                  <WorldExplorer {...{ game, groupId, prepare, run, refresh,gm }} admin={me.user.admin} userId={me.user.id} navigation={navigation} active={panelOpen&&tab==="explore"} openMap={mapId=>Navigation({type:'map',id:mapId,key:id()})} />
+                  <WorldExplorer {...{ game, groupId, prepare, run, refresh,gm }} admin={me.user.admin} userId={me.user.id} navigation={navigation} active={selected&&panelOpen&&tab==="explore"} openMap={mapId=>Navigation({type:'map',id:mapId,key:id()})} />
                 )}
               </Keep>
               <Keep show={panelOpen&&tab === "battle"}>
                 {game && (
                   <BattlePanel
                     {...{ game, groupId, prepare, run, refresh }}
-                    active={panelOpen&&tab==="battle"}
+                    active={selected&&panelOpen&&tab==="battle"}
                     navigation={navigation}
                     userId={me.user.id}
                   />
                 )}
               </Keep>
-              <Keep show={panelOpen&&tab === "skills"}>{game&&<SkillBook {...{game,groupId,prepare}} userId={me.user.id} active={panelOpen&&tab==="skills"} artStyle={me.user.preferences?.artStyle||"magic"}/>}</Keep>
+              <Keep show={panelOpen&&tab === "skills"}>{game&&<SkillBook {...{game,groupId,prepare}} userId={me.user.id} active={selected&&panelOpen&&tab==="skills"} artStyle={me.user.preferences?.artStyle||"magic"}/>}</Keep>
               <Keep show={panelOpen&&tab === "activities"}>
                 {game && <ActivitiesPanel key={groupId} {...{ game, prepare }} />}
               </Keep>
               <Keep show={tab === "gm"}>
                 {gm && schema && (
                   <>
-                    <div className="tabs">
+                    <div className="toolbar gm-refresh"><button disabled={busy} onClick={()=>run(async()=>{await refresh({directory:true,sections:allSections});N('已读取本团最新数据，填写内容保留。');}).catch(()=>{})}>刷新本团数据</button><small>只读取当前团，不重新执行操作。</small></div><div className="tabs">
                       {[
+                        ["inbox", "GM 待办"],
                         ["templates", "内容录入"],
                         ["grant", "角色与发放"],
                         ["maps", "地图管理"],
@@ -906,6 +805,7 @@ function App() {
                         </button>
                       ))}
                     </div>
+                    <Keep show={gmTab === "inbox"}><GMInbox groupId={groupId} active={selected&&foreground&&tab==='gm'&&gmTab==='inbox'} event={chatEvent} onRead={summary=>{GMUnread(!!summary?.gmUnread);Groups(old=>{const next=summary?.unreadVersion?groupUnread(old,summary):old;return next.map(g=>g.id===groupId?{...g,pending:!!summary?.gmUnread,gmUnread:summary?.gmUnread||0}:g);});}} onNavigate={navigateNotice} error={E}/></Keep>
                     <Keep show={gmTab === "templates"}>
                       <Templates {...common} />
                     </Keep>
@@ -915,11 +815,11 @@ function App() {
                     <Keep show={gmTab === "maps"}>
                       <World {...common} kind="maps" navigation={navigation} openTemplates={() => GmTab("templates")} />
                     </Keep>
-                    <Keep show={gmTab==='world'}><AtlasManager {...{game,groupId,prepare,run,refresh}} gm={true} admin={me.user.admin} userId={me.user.id} active={tab==='gm'&&gmTab==='world'} onMap={mapId=>{Navigation({type:'map',id:mapId,key:id()});Tab('explore');}}/></Keep>
+                    <Keep show={gmTab==='world'}><AtlasManager {...{game,groupId,prepare,run,refresh}} gm={true} admin={me.user.admin} userId={me.user.id} active={selected&&tab==='gm'&&gmTab==='world'} onMap={mapId=>{Navigation({type:'map',id:mapId,key:id()});Tab('explore');}}/></Keep>
                     <Keep show={gmTab === "battles"}>
                       <World {...common} kind="battles" navigation={navigation} />
                     </Keep>
-                    <Keep show={gmTab === "markets"}><Market {...{groupId}} active={tab==="gm"&&gmTab==="markets"} type="weapon" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/><Market {...{groupId}} active={tab==="gm"&&gmTab==="markets"} type="armor" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/></Keep>
+                    <Keep show={gmTab === "markets"}><Market {...{groupId}} active={selected&&tab==="gm"&&gmTab==="markets"} type="weapon" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/><Market {...{groupId}} active={selected&&tab==="gm"&&gmTab==="markets"} type="armor" gm prepare={(c,p)=>prepare(c,p,true)} revision={game?.sectionVersions?.market} onError={E}/></Keep>
                     <Keep show={gmTab === "content"}>
                       <Commands
                         {...common}
@@ -932,14 +832,14 @@ function App() {
                   </>
                 )}
               </Keep>
-              <Keep show={panelOpen&&tab === "library"}>
+              <Keep show={panelOpen&&tab === "library"}><GMActivity active={selected&&gm&&panelOpen&&tab==='library'}>
                 <Library
                   {...{ me, groupId, gm, run }}
                   error={E}
                   notice={N}
                   refresh={refresh}
                 />
-              </Keep>
+              </GMActivity></Keep>
               <Keep show={panelOpen&&tab === "settings"}>
                 <Settings
                   {...{
@@ -966,7 +866,8 @@ function App() {
           </>
         )}
       </main>
-      {quickMenu?.groupId===groupId&&<div ref={menuRef} className="chat-context-menu" role="menu" aria-label="快捷功能" style={{left:quickMenu.left,top:quickMenu.top}}><small>快捷功能 · 也可右键打开</small>{shortcuts.map(([key,label])=><button role="menuitem" key={key} onClick={()=>{Tab(key);QuickMenu(null);}}>{label}{taskBadges[key]>0&&<b className="red-count">{taskBadges[key]}</b>}</button>)}<button role="menuitem" onClick={()=>{Tab('settings');QuickMenu(null);}}>账号与成员</button><button role="menuitem" onClick={()=>{MobileSide(true);QuickMenu(null);}}>切团与频道{unread>0&&<b className="red-count">{unread}</b>}</button>{gm&&<button role="menuitem" onClick={()=>{Tab('gm');QuickMenu(null);}}>GM 工作台</button>}</div>}
+      {quickMenu?.groupId===groupId&&<div ref={menuRef} className="chat-context-menu" role="menu" aria-label="快捷功能" style={{left:quickMenu.left,top:quickMenu.top}}><small>快捷功能 · 也可右键打开</small>{shortcuts.map(([key,label])=><button role="menuitem" key={key} onClick={()=>{Tab(key);QuickMenu(null);}}>{label}{taskBadges[key]>0&&<b className="red-count">{taskBadges[key]}</b>}</button>)}<button role="menuitem" onClick={()=>{Tab('settings');QuickMenu(null);}}>账号与成员</button><button role="menuitem" onClick={()=>{MobileSide(true);QuickMenu(null);}}>切换跑团{unread>0&&<b className="red-count">{unread}</b>}</button>{gm&&<button role="menuitem" onClick={()=>{Tab('gm');QuickMenu(null);}}>GM 工作台</button>}</div>}
+      {selected&&<RareLootToast defensePending={!!(game?.dashboard?.battle?.pending?.length||game?.battles?.some(b=>b.pending?.length))} onOpen={cue=>{if(cue.battleId)navigateNotice({battleId:cue.battleId});else if(cue.mapId)navigateNotice({mapId:cue.mapId,cell:cue.cell});else if(cue.journeyId)navigateNotice({worldJourneyId:cue.journeyId});else {ResultOpen(true);Tab('bag');}}}/>}
       <aside className="character-sidebar" hidden>
         <span className="eyebrow">你的角色</span>
         {game?.player ? (
@@ -1085,7 +986,7 @@ function App() {
           </section>
         </div>
       )}
-    </div>
+    </div></GMContextProvider>
   );
 }
 export function Bar({ name, value = 0, max = 1, reserve = false }) {
@@ -1126,6 +1027,7 @@ function Chat({
   visible,
   onPreferences,
 }) {
+  const rareLoot=useRareLoot();
   const [storedMessages, Messages] = useState([]),
     [drafts, Drafts] = useState({}),
     [composers, Composers] = useState({}),
@@ -1139,7 +1041,7 @@ function Chat({
   const composer=composers[roomId]||{},attachments=composer.attachments||[],reply=composer.reply||null,kind=composer.kind||'text',mode=composer.mode||'normal';
   const change=(key,v)=>Composers(old=>{const c=old[roomId]||{},value=typeof v==='function'?v(c[key]||[]):v;return {...old,[roomId]:{...c,[key]:value}};});
   const Attachments=v=>change('attachments',v),Reply=v=>change('reply',v),Kind=v=>change('kind',v),Mode=v=>change('mode',v);
-  useEffect(()=>{if(!gm){Personas([]);return;}let alive=true;api('/groups/'+groupId+'/chat/personas').then(rows=>{if(alive)Personas(rows);}).catch(()=>{});return()=>{alive=false;};},[groupId,gm,kind==='rp']);
+  useEffect(()=>{if(!visible||!gm){if(!gm)Personas([]);return;}let alive=true;api('/groups/'+groupId+'/chat/personas').then(rows=>{if(alive)Personas(rows);}).catch(()=>{});return()=>{alive=false;};},[visible,groupId,gm,kind==='rp']);
   const sendingRooms=useRef(new Set());
   const bottom = useRef(null),
     active = useRef(roomId),
@@ -1149,7 +1051,7 @@ function Chat({
   useRestartDraft('chat:'+me.user.id+':'+groupId,{drafts,composers,client:client.current},saved=>{Drafts(saved.drafts||{});Composers(saved.composers||{});client.current=saved.client||{};},()=>sendingRooms.current.size>0);
   active.current = roomId;
   const room = rooms.find((r) => r.id === roomId),
-    readOnly = room?.kind === "system";
+    readOnly = !!room?.archived || room?.kind === "system";
   async function load(before) {
     if (!roomId) return;
     const r = await api(
@@ -1159,6 +1061,7 @@ function Chat({
         (before ? "?before=" + before : ""),
     );
     if (active.current === roomId) {
+      rareLoot.baseline(r.flatMap(m=>m.system?.rareLoot||[]));
       if(before)scroll.preserveHistory();
       Messages((old) =>
         mergeMessages(old,protectMessages(r)),
@@ -1191,12 +1094,13 @@ function Chat({
       );
   }
   useEffect(() => {
-    Messages([]);
-    cursor.current = 0;
-    load().catch((e) => error(e.message));
+    if(!visible)return;
+    cursor.current = messages.at(-1)?.sequence||0;
+    catchUp().catch((e) => error(e.message));
     Sending(sendingRooms.current.has(roomId));
-  }, [roomId]);
+  }, [roomId,visible]);
   useEffect(() => {
+    if(!visible)return;
     if(chatEvent?.type==='scenes-cleared'&&chatEvent.data?.groupId===groupId){sceneClears.current={mapIds:[...new Set([...sceneClears.current.mapIds,...(chatEvent.data.mapIds||[])])],battleIds:[...new Set([...sceneClears.current.battleIds,...(chatEvent.data.battleIds||[])])]};Messages(old=>protectMessages(old));return;}
     if (chatEvent?.type === "reconnect") {
       catchUp().catch(() => {});
@@ -1211,11 +1115,11 @@ function Chat({
       Messages((old) =>
         mergeMessages(old,protectMessages([chatEvent.data])),
       );
-  }, [chatEvent, roomId]);
+  }, [chatEvent, roomId,visible]);
   useEffect(()=>{const handler=()=>Foreground(document.visibilityState==='visible');document.addEventListener('visibilitychange',handler);return()=>document.removeEventListener('visibilitychange',handler);},[]);
   useEffect(()=>{const observer=new IntersectionObserver(([entry])=>InView(entry.isIntersecting),{root:scroll.list.current});if(bottom.current)observer.observe(bottom.current);return()=>observer.disconnect();},[roomId]);
   useEffect(()=>{if(messages.length)cursor.current=Math.max(cursor.current,messages.at(-1).sequence);},[messages.at(-1)?.sequence]);
-  useEffect(()=>{if(visible&&foreground&&inView&&roomId&&messages.length)api('/rooms/'+encodeURIComponent(roomId)+'/read',{sequence:messages.at(-1).sequence}).then(()=>onRead(roomId,messages.at(-1).sequence)).catch(()=>{});},[visible,foreground,inView,roomId,messages.at(-1)?.sequence]);
+  useEffect(()=>{if(visible&&foreground&&inView&&roomId&&messages.length)api('/rooms/'+encodeURIComponent(roomId)+'/read',{sequence:messages.at(-1).sequence}).then(summary=>onRead(roomId,messages.at(-1).sequence,summary)).catch(()=>{});},[visible,foreground,inView,roomId,messages.at(-1)?.sequence]);
   async function send(e) {
     e.preventDefault();
     if (sendingRooms.current.has(roomId) || !roomId) return;
@@ -1313,7 +1217,7 @@ function Chat({
             <p>
               {roomId
                 ? "写下一段话，与你的同伴建立联系。"
-                : "选择左侧频道，或先加入一个团。"}
+                : "选择一个跑团，开始新的故事。"}
             </p>
           </div>
         )}
@@ -1365,7 +1269,7 @@ function Chat({
                     {m.replySummary.author}：{m.replySummary.text}
                   </blockquote>
                 )}
-                <p>{m.deleted ? "消息已删除" : m.text}</p>
+                {m.kind==='system'&&m.text?.length>240?<details className="system-text-details"><summary>{m.text.split('\n')[0]} · 展开详情</summary><p>{m.deleted?"消息已删除":m.text}</p></details>:<p>{m.deleted ? "消息已删除" : m.text}</p>}
                 {m.dice && (
                   <div className="dice-result">
                     <span>⬡</span>
@@ -1496,13 +1400,18 @@ function Chat({
             {sending ? "保存中…" : "发送 ↗"}
           </button>
         </div>
-        <small className="muted">
+        <details className="composer-settings"><summary>{(me.user.preferences?.sendShortcut||'ctrlEnter')==='enter'?'Enter 发送 · Shift + Enter 换行':'Ctrl / ⌘ + Enter 发送'} · 发送设置</summary><small className="muted">
           <select aria-label="发送快捷键" value={me.user.preferences?.sendShortcut||'ctrlEnter'} onChange={e=>onPreferences({sendShortcut:e.target.value})}><option value="ctrlEnter">Ctrl / ⌘ + Enter 发送</option><option value="enter">Enter 发送 · Shift + Enter 换行</option></select> ·{" "}
           {kind === "rp" ? "RP 不改变规则判定" : "断线后保留输入与原消息编号"}
-        </small>
+        </small></details>
       </form>
     </>
   );
+}
+function GMInbox({groupId,active,event,onNavigate,error,onRead}){
+  const [items,Items]=useState([]),[loaded,Loaded]=useState(false);const request=useRef(0);
+  useEffect(()=>{if(!active)return;const version=++request.current;api('/groups/'+groupId+'/inbox').then(r=>{if(version===request.current){Items(r.items||[]);Loaded(true);if(r.roomId&&r.items?.length)void api('/rooms/'+encodeURIComponent(r.roomId)+'/read',{sequence:Math.max(...r.items.map(i=>i.sequence||0))}).then(summary=>{if(version===request.current)onRead?.(summary);}).catch(()=>{});else if(!r.unread)onRead?.();}}).catch(e=>{if(version===request.current)error(e.message);});return()=>{request.current++;};},[active,groupId,event?.type==='state'?event.data?.revision:null,event?.type==='inbox-unread'?event.at:null]);
+  return <section className="panel gm-inbox"><h3>GM 待办与隐藏通知</h3><p className="muted">仅本团 GM 可见。处理后以最新状态为准。</p>{!loaded?<p>正在读取…</p>:!items.length?<p>当前没有 GM 待办。</p>:items.map(item=><article key={item.id}><h4>{item.title||item.name||'待处理事项'}</h4><p>{item.text||item.description}</p>{notificationTarget(item.system,true)&&<button onClick={()=>onNavigate(item.system)}>前往处理 →</button>}</article>)}</section>;
 }
 function EventDetails({ event }) {
   return <BattleEventDetails event={event}/>;
@@ -1732,9 +1641,6 @@ function Settings({
     <>
       {group && <AccountAvatar {...{ me, groupId }} member={members.find(m => m.userId === me.user.id)} onSaved={onAvatarSaved}/>}
       {group && <MemberDirectory {...{ members, game, openDM, me, groupId }} />}
-      {group && ["admin", "gm"].includes(group.role) && (
-        <ChannelManager {...{ groupId, rooms, members, run, refresh }} />
-      )}
       <section className="panel">
         <h3>营地与成员</h3>
         {me.user.admin && (
@@ -2014,4 +1920,4 @@ function Settings({
     </>
   );
 }
-createRoot(document.getElementById("root")).render(<BattlePresentationProvider><App /></BattlePresentationProvider>);
+createRoot(document.getElementById("root")).render(<App />);

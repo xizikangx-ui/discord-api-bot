@@ -9,17 +9,19 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
     if (room.kind === "dm")
       S.ok(room.participants.includes(userId), "无权读取此私聊。", "FORBIDDEN");
     const a = authorization?.group.id===room.groupId&&authorization.user.id===userId ? authorization : await accounts.member(room.groupId, userId, r);
+    S.ok(!a.group.chatResetActive,"本团聊天正在整理，请稍后打开。","UNAVAILABLE");
     if (room.kind === "gm") accounts.gm(a);
     if (room.members?.length && !["gm", "admin"].includes(a.role))
       S.ok(room.members.includes(userId), "无权读取此频道。", "FORBIDDEN");
     return { room, a };
   }
-  async function rooms(group, userId, r, authorization) {
+  async function rooms(group, userId, r, authorization, { includeWorkbench = false } = {}) {
     const a=authorization || await accounts.member(group,userId,r);
     const all = await repo.list("room", group),
       out = [];
     for (const c of all) {
       try {
+        if (a.group.groupChatVersion && c.workbenchOnly && !includeWorkbench) continue;
         await access(userId, c.id,r,a,c);
         if (c.kind === "dm") {
           const other = await accounts.user(
@@ -33,7 +35,8 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
     return out;
   }
   async function create(a, p) {
-    accounts.gm(await accounts.member(a.group.id, a.user.id));
+    const current=await accounts.member(a.group.id, a.user.id);accounts.gm(current);
+    S.ok(!current.group.groupChatVersion,"每团使用一个群聊；GM 私密事项请打开工作台。","CONFLICT");
     S.ok(["chat", "rp", "gm"].includes(p.kind), "频道类型无效。");
     const members = [...new Set(p.members || [])];
     for (const id of members) await accounts.member(a.group.id, id);
@@ -73,6 +76,9 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
   }
   async function send(userId, roomId, p, { system = false } = {}) {
     S.ok(/^[a-zA-Z0-9:_-]{8,150}$/.test(p.clientId || ""), "消息编号无效。");
+    const originalRoomId=roomId;
+    S.ok(!(await repo.get('chatTombstone',S.hash(originalRoomId+':'+userId+':'+p.clientId))),"这条消息所属的历史已清理，请发送新消息。","CONFLICT");
+    if(system){const oldRoom=await repo.get('room',roomId);if(oldRoom?.supersededBy)roomId=oldRoom.supersededBy;}
     const { room } = system
       ? { room: await repo.get("room", roomId) }
       : await access(userId, roomId);
@@ -88,6 +94,8 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
       async (r) => {
         if (!system) await access(userId, roomId, r);
         const group=await repo.get("group",room.groupId,r,true);S.ok(group&&!group.deleting,"此团已关闭。");
+        S.ok(!group.chatResetActive,"本团聊天正在整理，请稍后发送。","UNAVAILABLE");
+        S.ok(!(await repo.get('chatTombstone',S.hash(originalRoomId+':'+userId+':'+p.clientId),r)),"这条消息所属的历史已清理，请发送新消息。","CONFLICT");
         const old = await repo.duplicate(roomId, userId, p.clientId, r);
         if (old) return old;
         const live = await repo.get("room", roomId, r, true);
@@ -257,6 +265,7 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
           "此频道不能修改。",
         );
         S.ok(c.version === p.version, "频道已变化。", "CONFLICT");
+        if(c.groupChat||c.workbenchOnly)S.ok(!p.archived&&!(p.members?.length),"团群聊和 GM 待办不能关闭或限制部分成员。","CONFLICT");
         c.name = S.text(p.name || c.name, "频道名", 50);
         c.members = p.members || [];
         for (const id of c.members) await accounts.member(a.group.id, id);
@@ -277,13 +286,23 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
     return value;
   }
   async function upsertSystem(roomId, key, revision, p) {
+    const originalRoom=await repo.get('room',roomId);
+    const originalGroup=originalRoom&&await repo.get('group',originalRoom.groupId);
+    if(originalGroup?.historyGameRevision && revision<=originalGroup.historyGameRevision)return{cleared:true,status:'cleared',roomId:originalGroup.publicRoomId};
+    const tombstone=await repo.get('chatCardTombstone',roomId+':'+key);
+    if(tombstone?.revision>=revision)return{cleared:true,status:'cleared',roomId:originalGroup?.publicRoomId||roomId};
+    if(originalRoom?.supersededBy)roomId=originalRoom.supersededBy;
     const m = await repo.tx(
       "card:" + roomId + ":" + key + ":" + revision,
       async (r) => {
+        const hint=await repo.get('room',roomId,r);S.ok(hint,"频道已删除。","NOT_FOUND");
+        // Match normal sends and reset/deletion: group before room/card.
+        const group=await repo.get("group",hint.groupId,r,true);S.ok(group&&!group.deleting,"此团已关闭。");
+        S.ok(!group.chatResetActive,"本团聊天正在整理。","UNAVAILABLE");
+        if(group.historyGameRevision&&revision<=group.historyGameRevision)return{cleared:true,status:'cleared',roomId:group.publicRoomId};
         const room = await repo.get("room", roomId, r, true),
           prior = await repo.get("card", roomId + ":" + key, r, true);
-        S.ok(room,"频道已删除。","NOT_FOUND");
-        const group=await repo.get("group",room.groupId,r,true);S.ok(group&&!group.deleting,"此团已关闭。");
+        S.ok(!room.archived,"原频道已归档，请读取本团最新群聊。","CONFLICT");
         if (prior?.revision >= revision)
           return repo.findMessage(prior.messageId, r);
         const old = prior && (await repo.findMessage(prior.messageId, r)),
@@ -314,6 +333,7 @@ function createChat(repo, accounts, { broadcast = () => {} } = {}) {
         return message;
       },
     );
+    if(m?.cleared)return m;
     const current = await repo.findMessage(m.id);
     broadcast(roomId, { type: "message", data: current });
     return current;

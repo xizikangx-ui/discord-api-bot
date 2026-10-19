@@ -345,22 +345,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
         { scope: g.id },
         r,
       );
-      for (const [kind, name] of [
-        ["chat", "营地闲聊"],
-        ["rp", "剧情 RP"],
-        ["system", "行动记录"],
-        ["gm", "GM 指挥室"],
-      ]) {
-        const c = {
-          id: uid(),
-          groupId: g.id,
-          name,
-          kind,
-          sequence: 0,
-          version: 1,
-        };
-        await repo.put("room", c, { scope: g.id }, r);
-      }
+      await require('./group-chat').bootstrapGroup(repo,g,r);
       return g;
     });
   }
@@ -403,7 +388,7 @@ function createAccounts(repo, { bootstrapHash, changed = () => {} } = {}) {
       await repo.put("member", m, { scope: a.group.id }, r);
       return m;
     });
-    changed(p.userId);
+    changed(p.userId,{groupId:a.group.id});
     return result;
   }
   return {

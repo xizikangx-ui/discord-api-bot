@@ -2,10 +2,10 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { nearLatest, newMessageCount } from './chat-scroll';
 
 export function useChatScroll(roomId, messages, visible) {
-  const list = useRef(null), content = useRef(null), state = useRef({}), latest = useRef(0);
+  const list = useRef(null), content = useRef(null), state = useRef({}), rooms = useRef(new Map()), latest = useRef(0);
   const [unseen, Unseen] = useState(0);
   latest.current = messages.at(-1)?.sequence || 0;
-  if (state.current.roomId !== roomId) state.current = { roomId, pinned: true, initialized: false, seen: 0 };
+  if(state.current.roomId!==roomId){if(state.current.roomId)rooms.current.set(state.current.roomId,state.current);state.current=rooms.current.get(roomId)||{roomId,pinned:true,initialized:false,seen:0,top:0};}
   function followLatest() {
     state.current.pinned = true;
     state.current.seen = latest.current;
@@ -14,7 +14,7 @@ export function useChatScroll(roomId, messages, visible) {
   }
   function onScroll() {
     if (!list.current || !visible) return;
-    state.current.pinned = nearLatest(list.current);
+    state.current.top=list.current.scrollTop;state.current.pinned = nearLatest(list.current);
     if (state.current.pinned) { state.current.seen = latest.current; Unseen(0); }
   }
   function preserveHistory() {
@@ -31,9 +31,9 @@ export function useChatScroll(roomId, messages, visible) {
       const anchor = [...view.querySelectorAll('[data-message-id]')].find(el => el.dataset.messageId === s.anchor.id);
       if (anchor) view.scrollTop += anchor.getBoundingClientRect().top - view.getBoundingClientRect().top - s.anchor.offset;
       s.anchor = null;
-    } else if (!s.initialized || s.pinned) followLatest();
+    } else if (!s.initialized || s.pinned) followLatest();else view.scrollTop=s.top||0;
     if (messages.length) s.initialized = true;
-    Unseen(s.pinned ? 0 : newMessageCount(messages, s.seen));
+    s.top=view.scrollTop;Unseen(s.pinned ? 0 : newMessageCount(messages, s.seen));
   }, [roomId, messages, visible]);
   useLayoutEffect(() => {
     if (!visible || !list.current || !content.current) return;

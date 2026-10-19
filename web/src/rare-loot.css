@@ -1,0 +1,34 @@
+/* Explicit boundaries isolate the toast from the lazy GM workbench's global
+   aside, header and aside footer rules, regardless of stylesheet load order. */
+aside.rare-loot-toast{
+ --rare:#f2ce73;position:fixed;z-index:65;right:24px;top:70px;left:auto;bottom:auto;
+ display:block;width:min(390px,calc(100vw - 28px));height:auto;min-height:0;max-height:calc(100dvh - 90px);
+ box-sizing:border-box;margin:0;padding:20px;border:1px solid color-mix(in srgb,var(--rare) 65%,transparent);border-radius:16px;
+ background:linear-gradient(135deg,#19213bf7,#11182ef7);color:#f1f3ff;box-shadow:0 15px 60px #0008,0 0 28px color-mix(in srgb,var(--rare) 15%,transparent);
+ overflow-x:hidden;overflow-y:auto;animation:rare-loot-arrive .28s ease-out;pointer-events:auto
+}
+.rare-loot-toast.red{--rare:#ff7599}
+.rare-loot-glow{position:absolute;inset:0;background:radial-gradient(ellipse at 85% 0,color-mix(in srgb,var(--rare) 17%,transparent),transparent 65%);pointer-events:none}
+aside.rare-loot-toast>header{
+ position:relative;inset:auto;display:flex;gap:12px;align-items:center;justify-content:flex-start;flex-wrap:nowrap;
+ width:auto;height:auto;min-height:0;max-height:none;padding:0;border:0;margin:0 0 14px;background:transparent;box-shadow:none
+}
+.rare-loot-toast header>span{font-size:34px;color:var(--rare);text-shadow:0 0 18px var(--rare)}
+.rare-loot-toast small{color:var(--rare);font-size:12px;letter-spacing:.08em}
+.rare-loot-toast h3{margin:4px 20px 0 0;font-size:18px;overflow-wrap:anywhere}
+.rare-loot-close{position:absolute!important;right:9px;top:8px;min-width:30px;min-height:30px;padding:0!important;background:transparent!important;border:0!important;color:#dce4ff!important;font-size:22px}
+.rare-loot-toast ul{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+.rare-loot-toast li{display:flex;gap:10px;align-items:center;background:#ffffff05;padding:7px;border-radius:8px}
+.rare-loot-toast li img,.rare-loot-toast li .equipment-glyph,.rare-loot-toast li .art-placeholder{width:40px;height:40px;object-fit:contain}
+.rare-loot-toast li b{flex:1;min-width:0;overflow-wrap:anywhere;font-size:14px}
+.rare-loot-toast li b.gold{color:#f6d98b}.rare-loot-toast li b.red{color:#ffa1b9}
+.rare-loot-toast li>span:last-child{color:#dce1ef;font-size:13px}
+aside.rare-loot-toast>footer{
+ position:static;inset:auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;
+ width:auto;height:auto;min-height:0;max-height:none;margin:14px 0 0;padding:0;border:0;background:transparent;box-shadow:none;
+ font-size:12px;line-height:1.5;color:#b9c3dc
+}
+.rare-loot-toast footer button{background:#ffffff09!important;border:1px solid #ffffff22!important;font-size:12px;padding:6px 9px!important;color:var(--rare)!important;white-space:nowrap}
+@keyframes rare-loot-arrive{from{transform:translateY(-12px);opacity:0}to{transform:translateY(0);opacity:1}}
+@media(max-width:700px){aside.rare-loot-toast{top:58px;right:14px;padding:16px;max-height:calc(100dvh - 76px)}aside.rare-loot-toast>footer{display:flex}}
+@media(prefers-reduced-motion:reduce){aside.rare-loot-toast{animation:none}}

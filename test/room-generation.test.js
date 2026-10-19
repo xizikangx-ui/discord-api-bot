@@ -139,3 +139,20 @@ test('ordinary legacy generated maps are not retrofitted, and NPC random-entry d
  const f=fixture(),m=map(f);delete m.generation.combatPercent;X.generate(f.s,m,min);assert.equal(counts(m).battle,0);assert.ok(Object.values(m.cells).filter(c=>c.room).every(c=>!c.room.generation));const before=C.clone(m);X.generate(f.s,m,()=>{throw Error('legacy reroll');});assert.deepEqual(m,before);
  const R=require('../src/rpg/room-settings');assert.deepEqual(R.defaultProbabilities(10),[65,25,8,2,0,0,0,0,0,0,0]);assert.deepEqual(R.defaultProbabilities(6),[0,100,0,0,0,0,0]);assert.equal(R.quantities({},['npc'],19).npc,1);
 });
+test('only newly created random maps guarantee containers in both ordinary safe and battle rooms',()=>{
+ const f=fixture(),m=map(f,10,30);m.generation.containerPolicyVersion=2;X.generate(f.s,m,min);assert.deepEqual(counts(m),{safe:7,battle:3});
+ for(const {room:r}of Object.values(m.cells).filter(c=>c.room)){assert.equal(r.containers.length,1);assert.equal(r.containers[0].box,'医疗包');assert.equal(r.generation.containerPolicyVersion,2);assert.equal(r.randomResults.filter(e=>e.kind==='containerGuarantee').length,1);}
+ const saved=C.clone(m);X.generate(f.s,m,()=>{throw Error('cannot redraw policy containers');});assert.deepEqual(m,saved);
+ const fresh=X.create(f.s,'GM','another','新随机图',1,4,'random',f.cat.id);assert.equal(fresh.generation.containerPolicyVersion,2);
+ const fixed=X.create(f.s,'GM','fixed','GM固定图',1,4,'fixed',f.cat.id);assert.equal(fixed.generation,undefined);
+});
+test('safe-room guarantee selects legal thematic containers, rejects a full thematic shutdown before RNG and preserves old drafts',()=>{
+ const f=fixture();f.s.containerDefinitions=K.definitions();f.s.containerDefinitions['医疗包'].enabled=false;const m=map(f,3,0);m.generation.containerPolicyVersion=2;X.generate(f.s,m,min);assert.ok(Object.values(m.cells).filter(c=>c.room).every(c=>c.room.containers[0].box==='药品柜'));
+ const blocked=map(f,3,0);blocked.generation.containerPolicyVersion=2;f.s.containerDefinitions['药品柜'].enabled=false;const before=C.clone(blocked);let rolls=0;assert.throws(()=>X.generate(f.s,blocked,lo=>{rolls++;return lo;}),/候选已全部停用/);assert.equal(rolls,0);assert.deepEqual(blocked,before);
+ const plain=fixture();plain.room.randomContainers=[];const fallback=map(plain,3,0);fallback.generation.containerPolicyVersion=2;X.generate(plain.s,fallback,min);assert.ok(Object.values(fallback.cells).filter(c=>c.room).every(c=>c.room.containers[0].box==='纸箱'));
+ const legacy=map(plain,3,0);X.generate(plain.s,legacy,min);assert.ok(Object.values(legacy.cells).filter(c=>c.room).every(c=>c.room.containers.length===0));
+ const old=Layout.create(plain.s,'GM','old','旧草稿重排','indoor','manual',plain.cat.id,4,3,{},min);delete old.generation.containerPolicyVersion;Layout.build(old,{},min);assert.equal(old.generation.containerPolicyVersion,undefined);X.generate(plain.s,old,min);assert.ok(Object.values(old.cells).filter(c=>c.room?.generation.role==='safe').every(c=>!c.room.containers.length));
+});
+test('explicit GM safe rooms and special nodes keep their saved zero-container configuration under the new policy',()=>{
+ const f=fixture(),m=map(f,5,0);m.generation.containerPolicyVersion=2;m.cells['1,0'].templateId=f.room.id;m.cells['1,0'].variantId='v0';m.cells['2,0'].room={id:'boss',boss:{},containers:[],npcs:[]};m.cells['3,0'].room={id:'merchant',merchant:{},containers:[],npcs:[]};const specials=C.clone([m.cells['2,0'],m.cells['3,0']]);X.generate(f.s,m,min);assert.equal(m.cells['1,0'].room.containers.length,0);assert.deepEqual([m.cells['2,0'],m.cells['3,0']],specials);assert.equal(m.cells['4,0'].room.containers.length,1);
+});

@@ -1,8 +1,10 @@
+import {useGMContext} from './context';
 import {useEffect,useRef} from 'react';
 export function useQuery(load,deps,receive,error){
+  const gm=useGMContext();
   const callbacks=useRef({load,receive,error});callbacks.current={load,receive,error};
-  useEffect(()=>{let alive=true;const scope=window.gmSession?.guildId;
-    Promise.resolve().then(()=>callbacks.current.load()).then(value=>{if(alive&&scope===window.gmSession?.guildId)callbacks.current.receive(value);}).catch(e=>{if(alive&&scope===window.gmSession?.guildId)callbacks.current.error?.(e.message);});
+  useEffect(()=>{if(!gm.active)return;let alive=true;const current=callbacks.current;
+    Promise.resolve().then(()=>current.load()).then(value=>{if(alive)current.receive(value);}).catch(e=>{if(alive)current.error?.(e.message);});
     return()=>{alive=false;};
-  },deps);
+  },[gm.scope,gm.active,...deps]);
 }

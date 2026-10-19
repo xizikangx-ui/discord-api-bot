@@ -59,15 +59,16 @@ function plan(state,m){
  const eligible=missing.filter(([,c])=>cache.get(c.categoryId).combat.length);
  C.requireThat(eligible.length>=needed,'普通战斗房需要 '+needed+' 个可用地点，但当前主题在怪物等级上限内没有足够的已发布NPC候选；请调整主题、NPC或战斗比例。');
  // Check all eligible themes before any rooms or random results are created.
- if(needed)for(const [,c]of eligible){const entry=cache.get(c.categoryId);entry.fallback??=containerFallback(state,entry.groups);}
+ if(m.generation?.containerPolicyVersion===2)for(const entry of cache.values())entry.fallback=containerFallback(state,entry.groups);
+ else if(needed)for(const [,c]of eligible){const entry=cache.get(c.categoryId);entry.fallback??=containerFallback(state,entry.groups);}
  return {percent,target,needed,missing,eligible,cache,maxRank};
 }
 function generate(state,m,rng){
  const p=plan(state,m);if(!p)return null;
  const shuffled=require('./random-layout').shuffled,battles=new Set(shuffled(p.eligible.map(([ref])=>ref),rng).slice(0,p.needed)),result={};
  for(const [ref,c]of p.missing){const theme=p.cache.get(c.categoryId),role=battles.has(ref)?'battle':'safe',template=pick(role==='battle'?theme.combat:theme.groups,rng);
-  const room=require('./exploration').instantiate(state,template,rng,p.maxRank,null,{role,npcs:legalNpcs(state,template,p.maxRank),fallback:theme.fallback});
-  room.generation={policy:1,role,combatPercent:p.percent};result[ref]=room;
+  const room=require('./exploration').instantiate(state,template,rng,p.maxRank,null,{role,npcs:legalNpcs(state,template,p.maxRank),fallback:theme.fallback,containerPolicyVersion:m.generation?.containerPolicyVersion});
+  room.generation={policy:1,role,combatPercent:p.percent,...(m.generation?.containerPolicyVersion===2?{containerPolicyVersion:2}:{})};result[ref]=room;
  }
  return result;
 }

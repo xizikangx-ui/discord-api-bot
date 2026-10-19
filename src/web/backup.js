@@ -64,6 +64,11 @@ async function restore(pool, archive, { names } = {}) {
     const groups=new Set((archive.namespaces.game.guilds||[]).map(g=>g.guild_id));
     for(const row of archive.namespaces.platform.records||[])if(row.kind==='group')groups.add(row.id);
     S.ok(!marks.some(m=>groups.has(m.id)),'备份包含已永久删除的团，禁止恢复以免复活。');
+    const chatCutoffs=(await r.query('SELECT id,scope,version FROM "'+source+'".records WHERE kind=$1',['chatHistoryCutoff'])).rows;
+    const floors=new Map(chatCutoffs.map(c=>[c.id,Number(c.version)-1]));
+    S.ok(!(archive.namespaces.platform.messages||[]).some(m=>floors.has(m.room_id)&&Number(m.sequence)<=floors.get(m.room_id)),'备份包含已清理的聊天历史，禁止恢复以免复活。');
+    const archivedFloors=new Map((archive.namespaces.platform.records||[]).filter(x=>x.kind==='chatHistoryCutoff').map(x=>[x.id,Number(x.version)]));
+    S.ok(!chatCutoffs.some(c=>groups.has(c.scope)&&(!archivedFloors.has(c.id)||archivedFloors.get(c.id)<Number(c.version))),'备份早于聊天清理标记，禁止恢复以免复活旧消息或回执。');
     const gameSource=archive.sourceSchemas?.game||'rpg_web';S.ok(valid(gameSource),'备份游戏命名空间无效。');
     const removedMaps=(await r.query('SELECT guild_id,object_id FROM "'+gameSource+'".objects WHERE collection=$1',['mapTombstones'])).rows;
     const oldMaps=new Set((archive.namespaces.game.objects||[]).filter(x=>x.collection==='explorations').map(x=>x.guild_id+':'+x.object_id));

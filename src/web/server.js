@@ -23,6 +23,7 @@ function createWeb({
   allowHttp = false,
   renderer: providedRenderer,
   clientRelease: providedClientRelease,
+  chatMigration = process.env.WEB_GROUP_CHAT_MIGRATION === '1',
 }) {
   const metrics=require('./metrics').createMetrics();
   const clientRelease=providedClientRelease||require('./client-release').createClientRelease();
@@ -40,14 +41,19 @@ function createWeb({
     limits = new Map(),
     pending = new Map();
   let backups;
+  let unreadClock=0;
+  const unreadVersion=()=>unreadClock=Math.max(Date.now()*1000,unreadClock+1);
   let ready = false,
     server,
     websocket, heartbeat, stopPromise;
   const accounts = require("./accounts").createAccounts(repo, {
     bootstrapHash,
-    changed: (uid) => {
+    changed: (uid, scope) => {
       for (const ws of sockets)
-        if (ws.userId === uid) ws.close(4001, "权限已变化");
+        if (ws.userId === uid) {
+          if (scope?.groupId) background.run(async () => {await subscriptions.check(ws);subscriptions.send(ws,'permissions',{groupId:scope.groupId});});
+          else ws.close(4001, "登录权限已变化");
+        }
     },
   });
   async function emit(scope, event, room = false) {
@@ -55,19 +61,26 @@ function createWeb({
     const once=(cache,key,fn)=>{if(!cache.has(key))cache.set(key,fn());return cache.get(key);};
     await Promise.allSettled(
       [...sockets]
-        .filter((ws) => (room ? ws.roomId === scope : ws.groupId === scope))
+        .filter((ws) => (room ? ws.roomId === scope : ws.groupId === scope || event.type === 'state' && ws.watchGroups?.has(scope)))
         .map(async (ws) => {
           try {
             const auth=await once(auths,ws.credential,()=>accounts.session(ws.credential));
             const a=await once(memberships,ws.userId,()=>accounts.member(room?knownRoom?.groupId:scope,ws.userId,undefined,auth.user));
             if(room)await chat.access(ws.userId,scope,undefined,a,knownRoom);
+            if(room ? ws.roomId!==scope : ws.groupId!==scope && !(event.type==='state'&&ws.watchGroups?.has(scope)))return;
+            if(event.type==='rare-loot' && !event.data?.recipientIds?.includes(ws.userId) && !(event.data?.gm && ['admin','gm'].includes(a.role)))return;
             if (ws.bufferedAmount > 262144) {
               ws.close(1013, "请重新同步");
               return;
             }
-            if (ws.readyState === 1) ws.send(JSON.stringify(event));
-          } catch {
-            ws.close(4003, "权限已失效");
+            const outgoing = event.type==='rare-loot'
+              ? {type:'rare-loot',data:{groupId:scope,rareLoot:(event.data?.rareLoot||[]).map(({recipientIds,gm,...cue})=>cue)}}
+              : !room && ws.groupId !== scope
+              ? {type:'group-state',data:{groupId:scope,revision:event.data?.revision,sections:event.data?.sections,sectionVersions:event.data?.sectionVersions}}
+              : event;
+            if (ws.readyState === 1) ws.send(JSON.stringify(outgoing));
+          } catch (e) {
+            subscriptions.failure(ws,e,room?knownRoom?.groupId:scope);
           }
         }),
     );
@@ -75,8 +88,10 @@ function createWeb({
   const chat = require("./chat").createChat(repo, accounts, {
       broadcast: (room, event) => {
         background.run(() => emit(room, event, true));
-        if (["message", "deleted"].includes(event.type))
-          background.run(() => notifyUnread(room, event.data.sequence, event.data.authorId));
+        if (["message", "deleted"].includes(event.type)) {
+          const version=unreadVersion();
+          background.run(() => notifyUnread(room, event.data.sequence, event.data.authorId,version));
+        }
       },
     }),
     library = require("./library").createLibrary(content),
@@ -91,33 +106,39 @@ function createWeb({
       broadcast: (group, event) => background.run(() => emit(group, event)),
       metrics,
     });
+  const subscriptions = require('./subscriptions').createSubscriptions({accounts,chat,limit,presence:async roomId=>emit(roomId,{type:'presence',data:[...new Set([...sockets].filter(ws=>ws.roomId===roomId).map(ws=>ws.userId))]},true)});
+  const groupChat = require('./group-chat').createGroupChat({repo,accounts,games,storage,broadcast:(group,event)=>background.run(()=>emit(group,event))});
   const music=require('./music').createMusic({repo,accounts,crypt,storage,changed:group=>background.run(async()=>{
     const groups=group?[group]:[...new Set([...sockets].map(ws=>ws.groupId).filter(Boolean))];
     await Promise.allSettled(groups.map(id=>emit(id,{type:'music',data:{groupId:id,library:!group}})));
   })});
-  async function notifyUnread(roomId, sequence, authorId) {
+  async function unreadSnapshot(groupId,uid,a,version=unreadVersion()){
+    const rooms=await chat.rooms(groupId,uid,undefined,a,{includeWorkbench:true}),reads=new Map((await repo.list('read',uid)).map(x=>[x.id,x.sequence||0]));
+    const count=cs=>cs.reduce((n,c)=>n+Math.max(0,(c.sequence||0)-(reads.get(uid+':'+c.id)||0)),0);
+    return {groupId,unread:count(rooms.filter(c=>c.kind!=='gm')),gmUnread:count(rooms.filter(c=>c.kind==='gm')),unreadVersion:version,chatVersion:a.group.groupChatVersion};
+  }
+  async function notifyUnread(roomId, sequence, authorId,version) {
     const room = await repo.get("room", roomId);
     if (!room) return;
+    const summaries=new Map();
     await Promise.allSettled(
       [...sockets]
         .filter(
           (ws) =>
-            ws.groupId === room.groupId &&
-            ws.roomId !== roomId &&
+            (ws.groupId === room.groupId || ws.watchGroups?.has(room.groupId)) &&
             ws.readyState === 1,
         )
         .map(async (ws) => {
           try {
-            await accounts.session(ws.credential);
-            await chat.access(ws.userId, roomId);
+            const auth=await accounts.session(ws.credential);
+            const a=await accounts.member(room.groupId,ws.userId,undefined,auth.user);
+            await chat.access(ws.userId, roomId,undefined,a,room);
             if (ws.bufferedAmount > 262144) return ws.close(1013, "请重新同步");
-            ws.send(
-              JSON.stringify({
-                type: "room-unread",
-                data: { roomId, sequence, authorId },
-              }),
-            );
-          } catch {
+            if(room.workbenchOnly){subscriptions.send(ws,ws.groupId===room.groupId?'inbox-unread':'group-state',{groupId:room.groupId,roomId,sequence,authorId,pending:true});return;}
+            if(!summaries.has(ws.userId))summaries.set(ws.userId,unreadSnapshot(room.groupId,ws.userId,a,version));
+            subscriptions.send(ws,ws.groupId===room.groupId&&ws.roomId!==roomId?'room-unread':'group-unread',{...await summaries.get(ws.userId),roomId,sequence,authorId});
+          } catch (e) {
+            if(e.code==='UNAUTHORIZED')ws.close(4001,'登录已失效');
             /* A hidden channel must not reveal that a message exists. */
           }
         }),
@@ -181,10 +202,24 @@ function createWeb({
       store: games.store,
       renderer,
     });
-  const deletion=require('./group-deletion').createDeletion({repo,content,accounts,games,database,storage,disconnected:group=>{for(const ws of sockets)if(ws.groupId===group)ws.close(4003,'此团正在删除');}});
+  const deletion=require('./group-deletion').createDeletion({repo,content,accounts,games,database,storage,disconnected:group=>{for(const ws of sockets)if(ws.groupId===group||ws.watchGroups?.has(group))subscriptions.clearGroup(ws,group,{code:'NOT_FOUND',message:'此团正在删除。'});}});
   const explorationReset=require('./exploration-reset').createReset({repo,accounts,games,broadcast:(group,event)=>background.run(()=>emit(group,event))});
   chat.setSystemReader(async(group,messages)=>{await games.ensure(group);const marks=games.store.select(group,s=>({maps:s.mapTombstones||{},battles:s.battleTombstones||{}}));return require('./exploration-reset').decorate(messages,marks);});
-  async function readableFeedback(saved,group,uid,a){if(!saved.battleFeedback?.length)return saved;const rooms=new Set((await chat.rooms(group,uid,undefined,a)).map(r=>r.id));return{...saved,battleFeedback:saved.battleFeedback.filter(f=>rooms.has(f.channelId))};}
+  async function readableFeedback(saved,group,uid,a){
+    if(!saved || (!saved.battleFeedback?.length && !saved.rareLoot?.length))return saved;
+    const access=new Map();
+    const allowed=async event=>{
+      if(event.groupId && event.groupId!==group)return false;
+      if(event.visibility==='private' && event.recipientId!==uid)return false;
+      if(event.visibility==='audience' && !event.recipientIds?.includes(uid) && !(event.gm&&['gm','admin'].includes(a.role)))return false;
+      const roomId=event.channelId;
+      if(!roomId)return event.visibility==='private' && event.recipientId===uid;
+      if(!access.has(roomId))access.set(roomId,chat.access(uid,roomId,undefined,a).then(x=>x.room.groupId===group).catch(()=>false));
+      return access.get(roomId);
+    };
+    const filter=async values=>{const results=await Promise.all((values||[]).map(allowed));return(values||[]).filter((_,i)=>results[i]);};
+    return {...saved,...(saved.battleFeedback?{battleFeedback:await filter(saved.battleFeedback)}:{}),...(saved.rareLoot?{rareLoot:await filter(saved.rareLoot)}:{})};
+  }
   let deletionTimer;
   const json = (res, status, value) => {
     res.writeHead(status, {
@@ -411,12 +446,14 @@ function createWeb({
         return answer({ revoked: true });
       }
       if (pth === "/groups" && !p) {
-        const groups = await repo.list("group"),
+        const version=unreadVersion(),groups = await repo.list("group"),
+          reads = new Map((await repo.list('read',uid)).map(r=>[r.id,r.sequence||0])),
           mine = [];
         for (const g of groups) {
           try {
             const a = await accounts.member(g.id, uid);
-            mine.push({ ...g, role: a.role });
+            const rooms=await chat.rooms(g.id,uid,undefined,a,{includeWorkbench:true}),count=cs=>cs.reduce((n,c)=>n+Math.max(0,(c.sequence||0)-(reads.get(uid+':'+c.id)||0)),0);
+            mine.push({ ...g, role: a.role,membershipVersion:a.member?.version||0,chatVersion:g.groupChatVersion||0,unread:count(rooms.filter(c=>c.kind!=='gm')),gmUnread:count(rooms.filter(c=>c.kind==='gm')),unreadVersion:version });
           } catch {}
         }
         return answer(mine);
@@ -481,7 +518,8 @@ function createWeb({
         return res.end(bytes);
       }
       if (pth.startsWith("/rooms/")) {
-        const [, , roomId, action] = pth.split("/");
+        const [, , encodedRoomId, action] = pth.split("/"),roomId=decodeURIComponent(encodedRoomId);
+        S.ok(!roomId.includes('/')&&roomId.length<=200,'群聊编号无效。');
         if (action === "messages" && !p)
           return answer(
             await chat.history(uid, roomId, {
@@ -498,17 +536,17 @@ function createWeb({
           return answer(await chat.send(uid, roomId, p));
         }
         if (action === "read" && p) {
-          const { room } = await chat.access(uid, roomId);
-          const sequence = Math.min(
+          const { room,a } = await chat.access(uid, roomId);
+          const requested = Math.min(
             room.sequence,
             C.number(p.sequence, "已读位置", 0, Number.MAX_SAFE_INTEGER),
           );
-          await repo.put(
-            "read",
-            { id: uid + ":" + roomId, sequence },
-            { scope: uid },
-          );
-          return answer({ sequence });
+          const sequence=await repo.markRead(uid,roomId,requested);
+          const summary=await unreadSnapshot(room.groupId,uid,a,unreadVersion());
+          for(const ws of sockets)if(ws.userId===uid&&(ws.groupId===room.groupId||ws.watchGroups?.has(room.groupId)))background.run(async()=>{
+            try{const live=await accounts.session(ws.credential);await accounts.member(room.groupId,uid,undefined,live.user);subscriptions.send(ws,'group-unread',summary);}catch(e){if(e.code==='UNAUTHORIZED')ws.close(4001,'登录已失效');}
+          });
+          return answer({ sequence,...summary });
         }
       }
       if (pth === "/messages/delete" && p)
@@ -520,6 +558,13 @@ function createWeb({
         rest = "/" + parts.slice(3).join("/");
       isGM = ["admin", "gm"].includes(a.role);
       await games.ensure(group);
+      if(rest==='/inbox'&&!p){
+        accounts.gm(a);
+        const roomId=a.group.gmRoomId||(await chat.rooms(group,uid,undefined,a,{includeWorkbench:true})).find(r=>r.kind==='gm')?.id;
+        if(!roomId)return answer({items:[],unread:0});
+        const {room}=await chat.access(uid,roomId,undefined,a),read=await repo.get('read',uid+':'+roomId),messages=await chat.history(uid,roomId,{after:Number(u.searchParams.get('after')||0),forward:u.searchParams.has('after'),before:Number.MAX_SAFE_INTEGER,limit:50});
+        return answer({roomId,items:messages.filter(m=>!m.deleted).map(m=>({id:m.id,title:m.text?.split('\n')[0]||'GM 待办',text:m.text,createdAt:m.at||m.createdAt,sequence:m.sequence,system:m.system,target:m.system})),unread:Math.max(0,room.sequence-(read?.sequence||0))});
+      }
       if(rest==='/chat/personas'&&!p){accounts.gm(a);return answer(await npcSpeakers(group));}
       if(rest==='/music'&&!p)return answer(await music.read(uid,group));
       if(rest==='/music/upload'&&p)return answer(await music.upload(a,p));
@@ -793,7 +838,7 @@ function createWeb({
         });
       if (gpath === "/directory")
         return answer({
-          channels: (await chat.rooms(group, uid))
+          channels: (await chat.rooms(group, uid,undefined,a,{includeWorkbench:true}))
             .filter((c) => c.kind !== "dm")
             .map((c) => ({ id: c.id, name: c.name, kind:c.kind })),
           roles: [],
@@ -1035,9 +1080,16 @@ function createWeb({
     await music.migrateLegacy();
     await worldLibrary.refresh();
     await explorationReset.restoreFences();
-    const recoveringReset=(await repo.list('explorationReset')).some(j=>j.status!=='completed');
+    backups = require("./backup").createBackups({pool,repo,crypt,storage,names:{platform:repo.schema,content:content.schema,game:process.env.WEB_TEST_DIAGNOSTICS==='1'?undefined:'rpg_web'}});
+    const pendingChat=(await repo.list('chatReset')).some(j=>j.status!=='completed');
+    const migrationBackup=require('./chat-migration-backup').createMigrationBackup({repo,backups,storage,crypt,decrypt:gameCrypt?.decrypt});
+    await migrationBackup.prepare(chatMigration||pendingChat);
+    await groupChat.prepare({enabled:chatMigration});
+    const recoveringReset=(await repo.list('explorationReset')).some(j=>j.status!=='completed') || (await repo.list('chatReset')).some(j=>j.status!=='completed');
     for (const g of await repo.list("group")) if(!g.deleting) await games.ensure(g.id,{maintenance:recoveringReset});
     await explorationReset.resume();
+    await groupChat.resume();
+    await migrationBackup.verify(games,await repo.list('group'));
     server = http.createServer((req, res) => {
       const done=metrics.start(req.url.startsWith('/api/')?'request.api':'request.static');res.once('finish',()=>{done();metrics.gauge('http.lastStatus',res.statusCode);});
       void route(req, res);
@@ -1087,44 +1139,7 @@ function createWeb({
               );
           });
           ws.on("error", () => {});
-          ws.on("message", async (bytes) => {
-            try {
-              limit("ws-message:" + ws.userId, 60);
-              const p = JSON.parse(bytes);
-              await accounts.session(ws.credential);
-              S.ok(p.type === "subscribe", "实时接口仅供订阅。");
-              if (p.groupId) await accounts.member(p.groupId, ws.userId);
-              if (p.roomId) {
-                const { room } = await chat.access(ws.userId, p.roomId);
-                S.ok(room.groupId === p.groupId, "频道不属于此团。");
-              }
-              ws.groupId = p.groupId;
-              ws.roomId = p.roomId;
-              ws.send(
-                JSON.stringify({
-                  type: "subscribed",
-                  data: { groupId: p.groupId, roomId: p.roomId },
-                }),
-              );
-              if (p.roomId)
-                await emit(
-                  p.roomId,
-                  {
-                    type: "presence",
-                    data: [
-                      ...new Set(
-                        [...sockets]
-                          .filter((s) => s.roomId === p.roomId)
-                          .map((s) => s.userId),
-                      ),
-                    ],
-                  },
-                  true,
-                );
-            } catch {
-              ws.close(4003, "订阅无效");
-            }
-          });
+          ws.on("message", bytes => { void subscriptions.enqueue(ws,bytes); });
         });
       } catch {
         socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
@@ -1142,37 +1157,19 @@ function createWeb({
     await library.installSupplies();
     games.start();
     void deletion.resume();
-    deletionTimer=setInterval(()=>{void deletion.resume().catch(()=>{});void explorationReset.resume().catch(()=>{});},30000);deletionTimer.unref();
+    deletionTimer=setInterval(()=>{void deletion.resume().catch(()=>{});void explorationReset.resume().catch(()=>{});void groupChat.resume().catch(()=>{});},30000);deletionTimer.unref();
     heartbeat = setInterval(() => background.run(async () => {
       for (const ws of sockets) {
         if (!ws.alive) {
           ws.terminate();
           continue;
         }
-        try {
-          await accounts.session(ws.credential);
-          if (ws.groupId) await accounts.member(ws.groupId, ws.userId);
-          if (ws.roomId) await chat.access(ws.userId, ws.roomId);
-          ws.alive = false;
-          ws.ping();
-        } catch {
-          ws.close(4003, "权限失效");
-        }
+        await subscriptions.check(ws);
+        if(ws.readyState===1){ws.alive=false;ws.ping();}
       }
     }), 30000);
     heartbeat.unref();
     server.once("close", () => clearInterval(heartbeat));
-    backups = require("./backup").createBackups({
-      pool,
-      repo,
-      crypt,
-      storage,
-      names: {
-        platform: repo.schema,
-        content: content.schema,
-        game: process.env.WEB_TEST_DIAGNOSTICS === "1" ? undefined : "rpg_web",
-      },
-    });
     if (process.env.WEB_TEST_DIAGNOSTICS !== "1") backups.start();
     return server.address();
   }
@@ -1185,6 +1182,7 @@ function createWeb({
     clearInterval(deletionTimer);
     await deletion.drain();
     await explorationReset.stop();
+    await groupChat.stop();
     await backups?.stop();
     for (const ws of sockets) ws.close(1001, "网站维护");
     await games.stop();
@@ -1209,6 +1207,7 @@ function createWeb({
     library,
     deletion,
     explorationReset,
+    groupChat,
     games,
     renderer,
     get server() {

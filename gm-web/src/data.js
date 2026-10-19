@@ -12,3 +12,6 @@ export const rowSeeds={effects:{target:'attr:constitution',op:'add',value:0},con
 export const actionDefaults={attack:{abilityKey:'',targetId:'',action:'formal',firing:{mode:'semi',count:1}},move:{x:25,y:25},reload:{ammoId:'',magazineId:'',weaponId:''},switch:{weaponId:'',hand:'auto'},item:{itemId:'',quantity:1},cast:{},pass:{type:'quick'},finish:{},flee:{},defend:{hitId:'',choice:'defend'},ammo:{ammoVersion:0,operation:{type:'fill',magazineId:'',ammoId:'',quantity:1}}};
 export const objectDefaults={ai:{mode:'auto',target:'nearest',strategy:'smart',weights:{quick:{reload:35,extract:15,fill:15,heal:20,switch:5,cast:10},formal:{'attack:*':100},defense:{defend:100,dodge:0,both:0,none:0}}},data:{name:'',description:'',startsAt:'2026-10-10 20:00'},params:actionDefaults.attack};
 export const randomRoomProbabilities=(max,source)=>Array.from({length:max+1},(_,n)=>source==='npcTemplates'?([65,25,8,2][n]||0):n===1?100:0);
+
+// Capture the group once; an await or another mounted workbench cannot retarget it.
+export function bindGroupTransport(request,groupId){const base="/groups/"+encodeURIComponent(groupId)+"/gm";return (path,body)=>{if(!groupId)throw Error("请先选择跑团。");return request(base+path,body);};}

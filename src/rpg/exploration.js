@@ -43,7 +43,7 @@ function create(state, owner, channelId, name, floors, width, mode, categoryId,m
   const m = { mapType,id: id('m'), owner, channelId, name: C.text(name, '地图名称', 80),
     floors: num(floors, '楼层', 1, 20), width: num(width, '每层格数', 1, 20), mode, categoryId,
     cells: {}, revealed: {}, participants: {}, status: 'draft', version: 1, createdAt: Date.now(), messageId: null };
-  if(mode==='random')m.generation={combatPercent:30,roomPolicyVersion:2};
+  if(mode==='random')m.generation={combatPercent:30,roomPolicyVersion:2,containerPolicyVersion:2};
   for (let y = 0; y < m.floors; y++) for (let x = 0; x < m.width; x++)
     m.cells[key(x, y)] = { type:mapType==='region'?(x===0&&y===0?'entrance':x===0||y===0?'road':'wild'):x === 0 ? (y === 0 ? 'entrance' : 'stairs') : x % 2 ? 'corridor' : 'room', categoryId };
   state.explorations[m.id] = m; return m;
@@ -119,9 +119,9 @@ function instantiate(state, template, rng=randomInt, maxRank=10, fixedVariant=nu
     const npc=clone(policy.npcs[rng(0,policy.npcs.length)]);r.npcs.push({template:npc,quantity:1});r.randomResults.push({kind:'npcGuarantee',ref:npc.id,quantity:1});
   }
   r.npcs=r.npcs.flatMap(e=>e.template.randomStrength?Array.from({length:e.quantity},()=>({template:require('./npc-strength').freeze(e.template,rng),quantity:1})): [e]);
-  if(!policy?.skipContainer&&r.npcs.some(e=>e.quantity>0)&&!r.containers.length){
+  if(!policy?.skipContainer&&(r.npcs.some(e=>e.quantity>0)||policy?.containerPolicyVersion===2)&&!r.containers.length){
     const fallback=policy?.fallback||require('./room-generation').fallbackFor(state,template);
-    ok(fallback&&require('./containers').get(state,fallback)?.enabled!==false,'当前战斗房没有可用容器，请先启用主题容器。');
+    ok(fallback&&require('./containers').get(state,fallback)?.enabled!==false,'当前房间没有可用容器，请先启用主题容器。');
     r.containers.push({id:id('c'),box:fallback,status:'unopened',batch:null,owner:null});r.randomResults.push({kind:'containerGuarantee',ref:fallback,quantity:1});
   }
   r.remainingNpcs=clone(r.npcs);r.encounter=r.npcs.length ? 'pending' : 'resolved';
