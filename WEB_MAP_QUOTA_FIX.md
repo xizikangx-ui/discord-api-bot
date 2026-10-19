@@ -19,3 +19,11 @@
 隔离浏览器实际验证 GM 统计与房格标签，测试数据为 3 间普通房=1 战斗+2 平静，截图 `docs/evidence/map-quota-labels-desktop.png`。生产排查仅读取目标地图元数据，未代玩家行动。
 
 发布前加密备份 `1792370433364-4f929883` 已保存、解密读回，12 个媒体；上线核对与部署编号在发布后追加。此次只更新网站，Bot/数据库及客户端安装包保持现状。
+
+## 已上线
+
+业务提交 `451f41468a990f0330a4966a60883da89bedc801` 已推送，停止旧网站并确认停止后，新部署 `be14155c-42ec-411a-9005-f86f56cae912`／实例 `989780be-e184-4a02-8e17-ee434013e75f` SUCCESS/RUNNING，独占写锁为 1。4 个团的修订及角色、地图、战斗、交易、死亡和战利品摘要全部与发布前一致；“7”地图仍 v12，10 安全+5 战斗（1 已解除）。没有改图或重抽。测试 schema 为 0。
+
+首页/健康/隐私正常，线上 JS 与本地构建摘要一致、gzip 生效，私有匿名接口401、错误来源403。更新清单仍为1.1.0，客户端不需重新安装。5次公网匿名健康请求932—967ms，不是登录态提交P95。启动日志无错误。
+
+临时 SSH `bc96eddd-4616-49c9-8770-cb5665c756e2` 已撤销，本地临时公私钥删除，隔离浏览器页及服务关闭。Bot `2a1ca8a1-a529-42e2-b1a7-0fb5e367f7c2`／`39034c37-cfa1-48b1-8b04-f08f959ee95a` 与 PG `43fb3050-c2f7-45f1-a268-6b274bcc967a`／`d40601c0-1eb5-40f4-bfe0-fc60840f5e63` 原实例保持。最终证据为任务 `work/quota-web-before.json`、`quota-web-after.json`、`quota-target-before.json`、`quota-target-after.json`、`quota-runtime-readonly.json`、`quota-public-check.json`、`quota-ssh-revoked.json`。
