@@ -1286,7 +1286,7 @@ if (require.main === module) {
     await app.start(Number(process.env.PORT || 3000), "0.0.0.0");
     console.log("独立跑团网站已就绪。");
   })().catch((e) => {
-    console.error("网站启动失败：" + (e.code || "CONFIG"));
+    console.error("网站启动失败：" + (e.code || "CONFIG") + " - " + (e.message || String(e)));
     process.exitCode = 1;
     void shutdown();
   });
