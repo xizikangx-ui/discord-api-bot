@@ -27,12 +27,14 @@ export function BattlePresentationProvider({ children }) {
     clear(battleIds) { const removed=new Set(battleIds);for(const id of removed)clearedRef.current.add(id);while(clearedRef.current.size>1000)clearedRef.current.delete(clearedRef.current.values().next().value);Queue(old=>old.filter(c=>!removed.has(c.battleId)));Last(old=>removed.has(old?.battleId)?null:old);for(const [key,hit] of waitingRef.current)if(removed.has(hit.battleId))waitingRef.current.delete(key);Waiting([...waitingRef.current.values()]); },
     dismiss(id){
       if(id)hiddenRef.current.add(id);else{for(const c of tracker.current.activeCues||[])hiddenRef.current.add(c.battleId);}
+      while(hiddenRef.current.size>1000)hiddenRef.current.delete(hiddenRef.current.values().next().value);
       Hidden(new Set(hiddenRef.current));Queue(old=>id?old.filter(c=>c.battleId!==id):[]);Last(old=>!id||old?.battleId===id?null:old);
     },
     syncBattles(battles){
       for(const b of battles)if(b.status==='ended'&&!endedRef.current.has(b.id)){
         endedRef.current.set(b.id,Date.now());
         Queue(old=>{const final=old.filter(c=>c.battleId===b.id&&['settle','death','heal'].includes(c.phase)).at(-1);return [...old.filter(c=>c.battleId!==b.id),...(final?[final]:[])];});
+        Last(old=>old?.battleId===b.id&&!['settle','death','heal'].includes(old.phase)?null:old);
         for(const [key,hit]of waitingRef.current)if(hit.battleId===b.id)waitingRef.current.delete(key);Waiting([...waitingRef.current.values()]);
         timers.current.set(b.id,setTimeout(()=>{clearedRef.current.add(b.id);while(clearedRef.current.size>1000)clearedRef.current.delete(clearedRef.current.values().next().value);Queue(old=>old.filter(c=>c.battleId!==b.id));Last(old=>old?.battleId===b.id?null:old);timers.current.delete(b.id);},2000));
       }

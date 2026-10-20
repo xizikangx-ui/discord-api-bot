@@ -13,7 +13,7 @@ import React, { useState, useEffect, useRef, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { api, id, setCsrf, mediaUrl } from "./api";
 import { labels,bindGroupTransport } from "../../gm-web/src/data";
-import {GMContextProvider,GMActivity} from "../../gm-web/src/context";
+import {GMContextProvider,GMActivity,useGMContext} from "../../gm-web/src/context";
 import {canonicalChat,groupUnread,subscribePayload,purgeGroupDrafts,mergeGroupList} from "./group-chat-state";
 import {Result} from "../../gm-web/src/result";
 import {Field,SearchSelect} from "../../gm-web/src/controls";
@@ -245,11 +245,12 @@ class PanelErrorBoundary extends React.Component {
   }
 }
 function Keep({ show, children, resetKey = '' }) {
+  const gmContext=useGMContext();
   const [seen, Seen] = useState(show);
   useEffect(() => {
     if (show) Seen(true);
   }, [show]);
-  return seen || show ? <div hidden={!show}><PanelErrorBoundary resetKey={resetKey+':'+show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></PanelErrorBoundary></div> : null;
+  return seen || show ? <div hidden={!show}><GMActivity active={!!show&&gmContext.active}><PanelErrorBoundary resetKey={resetKey+':'+show}><Suspense fallback={<div className="loading">正在载入面板…</div>}>{children}</Suspense></PanelErrorBoundary></GMActivity></div> : null;
 }
 function PendingTasks({game,userId,onNavigate,onOpen,expanded=false}){const all=chatTasks(game,userId),tasks=expanded?all:all.filter(t=>t.system?.hitId);return tasks.length?<div className={'chat-tasks'+(expanded?' expanded':'')} aria-label="待处理事项">{tasks.map(t=><button key={t.key} className={t.system?.hitId?'urgent':''} onClick={()=>t.system?onNavigate(t.system):onOpen(t.tab)}><i className="notification-dot" aria-hidden="true"/>{t.text} →</button>)}</div>:expanded?<div className="chat-tasks" role="status">当前没有待处理事项。</div>:null;}
 function ConsoleStatus({data}){const p=data?.player,b=data?.battle;if(!p)return null;return <div className="console-status" aria-label="常驻角色状态"><b>{p.name}</b><span>HP {p.health.hp}/{p.health.maxHP}</span><span className={p.health.downed?'danger':''}>倒地 {p.health.reserveHP}/{p.health.maxHP}</span><span>AP {p.ap}</span>{b&&<><span>轮 {b.actionRound?.number||1} · {b.actionRound?.counts?.[b.actorId]||0} 次</span><span>下次 {b.nextCost} AP</span><span>快 {b.quick} / 正 {b.formal}</span></>}</div>;}
@@ -679,7 +680,7 @@ function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub
           </div>
         )}
         {pendingOperation && <div className="banner" role="status"><span>上一操作待核对；仍可查看消息和面板。</span><button disabled={busy} onClick={()=>run(()=>checkDirect()).catch(()=>{})}>查询保存结果</button></div>}
-        {(game?.dashboard?game.dashboard.battle?.pending?.length:game?.battles.some((b) => b.pending.length)) && (
+        {!!(game?.dashboard?game.dashboard.battle?.pending?.length:game?.battles.some((b) => b.pending.length)) && (
           <div className="banner defense-card" role="status">
             你有待结算的受击，请及时防守。
             <button onClick={() => Tab("battle")}>打开防守面板</button>
