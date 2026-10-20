@@ -31,11 +31,11 @@ function grantOne(s,uid,type,ref,quantity){
   if(type==='checkskill'){ok(n===1,'鉴定技能授予数量为1。');const t=s.checkSkillTemplates[ref];ok(t?.published,'技能不存在。');p.checkSkills||={};ok(!p.checkSkills[ref],'已拥有该鉴定技能。');return p.checkSkills[ref]={templateId:ref,name:t.name,level:t.level,xp:0,version:1,templateVersion:t.version};}
   error('发放类型无效。');
 }
-function grantBatch(s,rows){
+function grantBatch(s,rows,rejected={}){
   ok(Array.isArray(rows)&&rows.length&&rows.length<=625,'发放清单无效。');const grouped=new Map();
   for(const row of rows){const list=grouped.get(row.uid)||[];list.push(row);grouped.set(row.uid,list);}
   ok(grouped.size<=25,'一次最多25名角色。');const results=[];
-  for(const [uid,list]of grouped){try{const p=M.player(s,uid);ok(list.every(r=>r.characterId===p.id),'目标角色已变化。');const items=list.filter(r=>r.type==='item');ok(new Set(items.map(r=>r.ref)).size<=25&&items.reduce((n,r)=>n+Number(r.quantity),0)<=100,'每角色最多25种、总计100件物品。');
+  for(const [uid,list]of grouped){try{ok(!rejected[uid],rejected[uid]);const p=M.player(s,uid);ok(list.every(r=>r.characterId===p.id),'目标角色已变化。');const items=list.filter(r=>r.type==='item');ok(new Set(items.map(r=>r.ref)).size<=25&&items.reduce((n,r)=>n+Number(r.quantity),0)<=100,'每角色最多25种、总计100件物品。');
     const totals=new Map();for(const r of list){const key=r.type+':'+(r.ref||'');totals.set(key,(totals.get(key)||0)+Number(r.quantity));const cap=r.type==='xp'?1000000000:['points','tickets','coupon'].includes(r.type)?100000:r.type==='item'?100:1;ok(totals.get(key)<=cap,'同一项目累计数量超过单次发放上限。');}
     const staged={...s,players:{...s.players,[uid]:C.clone(p)}};const entries=list.map(r=>({type:r.type,ref:r.ref,result:grantOne(staged,uid,r.type,r.ref,r.quantity)}));s.players[uid]=staged.players[uid];results.push({uid,name:p.name,success:true,entries});
   }catch(e){results.push({uid,success:false,reason:e.message});}}

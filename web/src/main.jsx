@@ -337,6 +337,8 @@ function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub
   pendingRef.current=pendingOperation;gameRef.current=game;roomsRef.current=rooms;
   prefsRef.current=me?.user.preferences;window.webArtStyle=me?.user.preferences?.artStyle||"magic";
   useEffect(()=>{battleFeedback.configure(scope,{mode:me?.user.preferences?.battleEffects||'full',onModeChange:next=>savePreferences({battleEffects:next})});},[scope,me?.user.preferences?.battleEffects]);
+  useEffect(()=>{battleFeedback.syncBattles(game?.battles||[]);},[game?.sectionVersions?.battle,scope]);
+  useEffect(()=>()=>battleFeedback.reconnect(),[scope]);
   useEffect(()=>{if(!me?.user.id)return;const saved=readRestartDraft(localStorage,'gm-editor:'+me.user.id+':'+groupId,true)||readRestartDraft(localStorage,'gm-editor:'+me.user.id);if(saved?.[scope])Drafts(old=>({...old,[scope]:saved[scope]}));},[me?.user.id,groupId]);
   useEffect(()=>{const persist=event=>{
     if(busyRef.current||pendingRef.current)event.preventDefault();
@@ -439,7 +441,7 @@ function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub
         if(event.data?.groupId&&event.data.groupId!==groupId&&!['permissions','music'].includes(event.type))return;
         receiveSound(event);
         if(event.type==='rare-loot'){rareLoot.ingest(event.data?.rareLoot,{source:'live'});return;}
-        if(event.type==='message'&&active.current.roomIds?.includes(event.data?.roomId)){battleFeedback.ingest(event,{source:'socket'});rareLoot.ingest(event.data.system?.rareLoot,{source:'live'});if(event.data.system?.corpses?.length)void refresh({sections:['battle']}).catch(()=>{});}
+        if(event.type==='message'&&active.current.roomIds?.includes(event.data?.roomId)){battleFeedback.ingest(event,{source:'socket'});if(event.data.system?.ended&&event.data.system?.battleId)battleFeedback.syncBattles([{id:event.data.system.battleId,status:'ended'}]);rareLoot.ingest(event.data.system?.rareLoot,{source:'live'});if(event.data.system?.corpses?.length)void refresh({sections:['battle']}).catch(()=>{});}
         if(event.type==='scenes-cleared'&&event.data?.groupId===active.current.groupId){
           const cleared=event.data;battleFeedback.clear(cleared.battleIds||[]);sceneClears.current={mapIds:[...new Set([...sceneClears.current.mapIds,...(cleared.mapIds||[])])],battleIds:[...new Set([...sceneClears.current.battleIds,...(cleared.battleIds||[])])]};
           Game(old=>{const next=clearSceneGame(old,sceneClears.current);gameRef.current=next;return next;});
@@ -490,16 +492,16 @@ function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub
     return await run(async()=>{
       PendingOperation(request);saveLocal('pendingOperation',request);
       try{
-        const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:gameRef.current?.versions,includePatch:true,sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'dashboard','core','market'])].filter(k=>k!=='management').join(',')});
+        const r=await api('/groups/'+targetGroup+(isGM?'/gm/execute':'/game/execute'),{operationId,command,params,versions:gameRef.current?.versions,includePatch:true,sections:[...new Set([...visibleSections(active.current.tab,gameRef.current,active.current.panelOpen),'dashboard','core'])].filter(k=>k!=='management').join(',')});
         if(active.current.groupId!==targetGroup)return;
-        if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
+        if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});battleFeedback.syncBattles(r.battleStates||[]);}if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}R(command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(command==='corpse.claim'?'已拾取，物品已放入背包。':'已保存，通知在后台更新。');if(!r.gamePatch)void refresh().catch(()=>{});return r;
       }catch(e){
         if(active.current.groupId!==targetGroup)throw e;
         if(['CONFLICT','VALIDATION','FORBIDDEN','NOT_FOUND'].includes(e.code)){
           PendingOperation(null);saveLocal('pendingOperation',null);if(e.details)R({conflicts:e.details});await refresh().catch(()=>{});
         }else {
           const recovered=await checkDirect(request).catch(()=>N('连接中断，原操作待核对；不会重复执行。'));
-          if(recovered?.status==='committed')return;
+          if(recovered?.status==='committed')return recovered;
         }
         throw e;
       }
@@ -507,9 +509,9 @@ function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub
   }
   async function checkDirect(request=pendingOperation){
     if(!request)return;
-    const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId+'?includePatch=1&sections='+visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).concat('core','market').join(','));
+    const r=await api('/groups/'+request.groupId+'/game/operations/'+request.operationId+'?includePatch=1&sections='+visibleSections(active.current.tab,gameRef.current,active.current.panelOpen).concat('core').join(','));
     if(active.current.groupId!==request.groupId || pendingRef.current?.operationId!==request.operationId)return;
-    if(r.status==='committed'){if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
+    if(r.status==='committed'){if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});battleFeedback.syncBattles(r.battleStates||[]);}if(r.gamePatch){gameRef.current=mergeGame(gameRef.current,clearSceneGame(r.gamePatch,sceneClears.current));Game(gameRef.current);}E('');R(request.command==='corpse.claim'?null:r.result);PendingOperation(null);saveLocal('pendingOperation',null);N(request.command==='corpse.claim'?'已核对：战利品已放入背包。':'上一操作已保存，可以继续操作。');if(!r.gamePatch)void refresh().catch(()=>{});}
     else if(r.status==='uncommitted'){PendingOperation(null);saveLocal('pendingOperation',null);N('权威记录确认此操作未保存。填写内容已保留，可重新提交。');}
     else N(r.status==='processing'?'原操作仍在处理中，请稍后查询。':'保存结果尚未明确，修改保持暂停。');
     return r;
@@ -529,7 +531,7 @@ function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub
     if (!preview) return;
     const r = await api("/groups/" + groupId + "/game/receipt/" + preview.id);
     if (r.status === "committed") {
-      if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}
+      if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});battleFeedback.syncBattles(r.battleStates||[]);}
       R(r.result);
       Preview(null);
       await refresh();
@@ -543,7 +545,7 @@ function GroupSession({me,Me,groups,Groups,boot,groupId,Group,selected,socketHub
           draftId: f.id,
         });
         if(active.current.groupId!==targetGroup)return;
-        if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});}
+        if(active.current.selected){rareLoot.ingest(r.rareLoot||[],{source:'http'});battleFeedback.ingest(r.battleFeedback||[],{source:'http'});battleFeedback.syncBattles(r.battleStates||[]);}
         R(r.result);
         Preview(null);
         N("已保存，网站通知在后台更新。");

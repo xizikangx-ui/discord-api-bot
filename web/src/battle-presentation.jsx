@@ -2,22 +2,22 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { actionStyle, battleStatus, createBattleFeedbackTracker, damageLabels, defenseRemaining, mergeBattleCues, resultRows } from './battle-presentation-state';
 import './battle-presentation.css';
 
-const noop = () => {}, emptyController = { configure: noop, reconnect: noop, baseline: noop, ingest: noop,clear:noop,ready:()=>false }, modes = { full: '完整动效', reduced: '简化动效', off: '关闭动效' };
+const noop = () => {}, emptyController = { configure: noop, reconnect: noop, baseline: noop, ingest: noop,clear:noop,syncBattles:noop,dismiss:noop,ready:()=>false }, modes = { full: '完整动效', reduced: '简化动效', off: '关闭动效' };
 const Feedback = createContext({ controller: emptyController, mode: 'full', effectiveMode: 'full', setMode: noop, current: null, last: null, waiting: [] });
 const modeKey = scope => 'yichang-battle-motion:' + scope;
 export function BattlePresentationProvider({ children }) {
-  const tracker = useRef(createBattleFeedbackTracker()), scope = useRef(''), waitingRef = useRef(new Map()), clearedRef=useRef(new Set()),modeRef = useRef('full'), onModeChange = useRef(null);
-  const [queue, Queue] = useState([]), [last, Last] = useState(null), [waiting, Waiting] = useState([]), [mode, Mode] = useState('full');
+  const tracker = useRef(createBattleFeedbackTracker()), scope = useRef(''), waitingRef = useRef(new Map()), clearedRef=useRef(new Set()),endedRef=useRef(new Map()),timers=useRef(new Map()),hiddenRef=useRef(new Set()),modeRef = useRef('full'), onModeChange = useRef(null);
+  const [queue, Queue] = useState([]), [last, Last] = useState(null), [waiting, Waiting] = useState([]), [mode, Mode] = useState('full'),[hidden,Hidden]=useState(new Set());
   const [systemReduced, SystemReduced] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches);
   useEffect(() => { if (typeof matchMedia === 'undefined') return; const media = matchMedia('(prefers-reduced-motion: reduce)'), update = () => SystemReduced(media.matches); media.addEventListener('change', update); return () => media.removeEventListener('change', update); }, []);
   modeRef.current = mode;
-  const setMode = useCallback(next => { if (!modes[next]) return;modeRef.current=next; Mode(next); if (next === 'off') Queue([]); try { localStorage.setItem(modeKey(scope.current), next); } catch {} onModeChange.current?.(next); }, []);
-  useEffect(()=>{if(mode==='off')Queue([]);},[mode]);
+  const setMode = useCallback(next => { if (!modes[next]) return;modeRef.current=next; Mode(next); if(next==='off'){Queue([]);Last(null);}else{hiddenRef.current.clear();Hidden(new Set());} try { localStorage.setItem(modeKey(scope.current), next); } catch {} onModeChange.current?.(next); }, []);
+  useEffect(()=>{if(mode==='off'){Queue([]);Last(null);}},[mode]);
   const controller = useMemo(() => ({
     configure(next, options = {}) {
       onModeChange.current = options.onModeChange || null;
       if (scope.current === next) { if (modes[options.mode]) Mode(options.mode); return; }
-      scope.current = next; tracker.current.connect(next); waitingRef.current.clear();clearedRef.current.clear(); Waiting([]); Queue([]); Last(null);
+      scope.current = next; tracker.current.connect(next); waitingRef.current.clear();clearedRef.current.clear();endedRef.current.clear();for(const t of timers.current.values())clearTimeout(t);timers.current.clear();hiddenRef.current.clear();Hidden(new Set()); Waiting([]); Queue([]); Last(null);
       let saved; try { saved = localStorage.getItem(modeKey(next)); } catch {}
       Mode(modes[options.mode] ? options.mode : modes[saved] ? saved : 'full');
     },
@@ -25,8 +25,21 @@ export function BattlePresentationProvider({ children }) {
     baseline(items) { tracker.current.baseline(items || []);let changed=false;for(const entry of items||[])for(const id of entry.settledHitIds||[])changed=waitingRef.current.delete(entry.battleId+':'+id)||changed;if(changed)Waiting([...waitingRef.current.values()]); },
     ready() { return tracker.current.ready(); },
     clear(battleIds) { const removed=new Set(battleIds);for(const id of removed)clearedRef.current.add(id);while(clearedRef.current.size>1000)clearedRef.current.delete(clearedRef.current.values().next().value);Queue(old=>old.filter(c=>!removed.has(c.battleId)));Last(old=>removed.has(old?.battleId)?null:old);for(const [key,hit] of waitingRef.current)if(removed.has(hit.battleId))waitingRef.current.delete(key);Waiting([...waitingRef.current.values()]); },
+    dismiss(id){
+      if(id)hiddenRef.current.add(id);else{for(const c of tracker.current.activeCues||[])hiddenRef.current.add(c.battleId);}
+      Hidden(new Set(hiddenRef.current));Queue(old=>id?old.filter(c=>c.battleId!==id):[]);Last(old=>!id||old?.battleId===id?null:old);
+    },
+    syncBattles(battles){
+      for(const b of battles)if(b.status==='ended'&&!endedRef.current.has(b.id)){
+        endedRef.current.set(b.id,Date.now());
+        Queue(old=>{const final=old.filter(c=>c.battleId===b.id&&['settle','death','heal'].includes(c.phase)).at(-1);return [...old.filter(c=>c.battleId!==b.id),...(final?[final]:[])];});
+        for(const [key,hit]of waitingRef.current)if(hit.battleId===b.id)waitingRef.current.delete(key);Waiting([...waitingRef.current.values()]);
+        timers.current.set(b.id,setTimeout(()=>{clearedRef.current.add(b.id);while(clearedRef.current.size>1000)clearedRef.current.delete(clearedRef.current.values().next().value);Queue(old=>old.filter(c=>c.battleId!==b.id));Last(old=>old?.battleId===b.id?null:old);timers.current.delete(b.id);},2000));
+      }
+      while(endedRef.current.size>1000)endedRef.current.delete(endedRef.current.keys().next().value);
+    },
     ingest(items, options) {
-      const cues = tracker.current.ingest(items, options).filter(cue=>!clearedRef.current.has(cue.battleId));
+      const cues = tracker.current.ingest(items, options).filter(cue=>!clearedRef.current.has(cue.battleId)&&!hiddenRef.current.has(cue.battleId)&&(!endedRef.current.has(cue.battleId)||Date.now()-endedRef.current.get(cue.battleId)<2000&&cue.phase!=='launch'));
       if (!cues.length) return;
       for (const cue of cues) for (const hit of cue.hits) {
         const key = cue.battleId + ':' + hit.id;
@@ -34,7 +47,7 @@ export function BattlePresentationProvider({ children }) {
         else if (['settle', 'heal', 'death'].includes(cue.phase)) waitingRef.current.delete(key);
       }
       while (waitingRef.current.size > 40) waitingRef.current.delete(waitingRef.current.keys().next().value);
-      Waiting([...waitingRef.current.values()]); Last(cues.findLast(cue=>cue.killed)||cues.findLast(cue=>['settle','death','heal'].includes(cue.phase))||cues.at(-1));
+      Waiting([...waitingRef.current.values()]); if(modeRef.current==='off'){Last(null);return;}Last(cues.findLast(cue=>cue.killed)||cues.findLast(cue=>['settle','death','heal'].includes(cue.phase))||cues.at(-1));
       if (modeRef.current !== 'off') Queue(old => {
         if (!old.length) return mergeBattleCues(cues, 8);
         return [old[0], ...mergeBattleCues([...old.slice(1), ...cues], 7)];
@@ -43,7 +56,8 @@ export function BattlePresentationProvider({ children }) {
   }), []);
   const current = queue[0] || null, effectiveMode = mode === 'off' ? 'off' : systemReduced ? 'reduced' : mode;
   useEffect(() => { if (!current) return; const timer = setTimeout(() => Queue(old => old[0]?.id === current.id ? old.slice(1) : old), effectiveMode === 'reduced' ? 850 : 1800); return () => clearTimeout(timer); }, [current?.id, effectiveMode]);
-  return <Feedback.Provider value={{ controller, mode, effectiveMode, setMode, current, last, waiting, systemReduced }}>{children}</Feedback.Provider>;
+  useEffect(()=>()=>{for(const t of timers.current.values())clearTimeout(t);},[]);
+  return <Feedback.Provider value={{ controller, mode, effectiveMode, setMode, current, last, waiting, systemReduced,hidden }}>{children}</Feedback.Provider>;
 }
 export const useBattleFeedback = () => useContext(Feedback).controller;
 
@@ -94,10 +108,10 @@ function MiniHealth({ row }) {
 }
 
 export function BattleStage({ battle, userId, selectedTargetId, compact = false }) {
-  const { current, last, waiting, effectiveMode } = useContext(Feedback),cue = (!battle&&last&&['settle','death','heal'].includes(last.phase)?[last,current]:[current,last]).find(c => c && (!battle || c.battleId === battle.id)),status=battleStatus(battle,userId,cue), target = battle?.actors?.find(a => a.id === selectedTargetId), pending = waiting.filter(hit => (!battle || hit.battleId === battle.id)&&battle?.pendingCount!==0);
-  if (!battle && !cue) return null;
+  const { current, last, waiting, effectiveMode,controller,hidden } = useContext(Feedback),cue = (!battle&&last&&['settle','death','heal'].includes(last.phase)?[last,current]:[current,last]).find(c => c && (!battle || c.battleId === battle.id)),status=battleStatus(battle,userId,cue), target = battle?.actors?.find(a => a.id === selectedTargetId), pending = waiting.filter(hit => (!battle || hit.battleId === battle.id)&&battle?.pendingCount!==0);
+  if(effectiveMode==='off'||hidden?.has(battle?.id||cue?.battleId)||!battle&&!cue||battle?.status==='ended'&&!cue)return null;
   const show = effectiveMode !== 'off' && cue, animating = current?.id === cue?.id;
-  return <section className={'battle-live-stage ' + (compact ? 'compact ' : '') + 'state-' + status.state} aria-label="战斗实时反馈"><header><div><small>战场实况</small><strong>{status.title}</strong></div><BattleEffectsSettings compact/></header><div className="battle-focus-row"><span>当前行动：<b>{status.actor?.name || '等待安排'}</b></span>{target && <span className="selected-target">已选目标：<b>{target.name}</b></span>}{pending.length > 0 && <span className="awaiting-defense">攻击已保存 · 等待 {pending.length} 个目标防守</span>}</div>
+  return <section className={'battle-live-stage ' + (compact ? 'compact ' : '') + 'state-' + status.state} aria-label="战斗实时反馈"><header><div><small>战场实况</small><strong>{status.title}</strong></div><div className="battle-stage-controls"><BattleEffectsSettings compact/><button type="button" aria-label="关闭战斗表现" title="关闭本场战斗表现，操作和文字记录保留" onClick={()=>controller.dismiss(battle?.id||cue?.battleId)}>×</button></div></header><div className="battle-focus-row"><span>当前行动：<b>{status.actor?.name || '等待安排'}</b></span>{target && <span className="selected-target">已选目标：<b>{target.name}</b></span>}{pending.length > 0 && <span className="awaiting-defense">攻击已保存 · 等待 {pending.length} 个目标防守</span>}</div>
     {show ? <div className={'combat-viewport'+(animating&&effectiveMode==='full'?' is-playing':'')} key={cue.id}><CombatArtwork cue={cue} animated={animating} reduced={effectiveMode === 'reduced'}/>{cue.rows?.some(row=>row.after)&&<div className="stage-health">{cue.rows.filter(row=>row.after).slice(0,3).map(row=><div key={row.hitId}><strong>{row.name}</strong><MiniHealth row={row}/></div>)}</div>}<div className={'combat-caption ' + (cue.killed ? 'kill' : cue.full ? 'maximum' : '')} role="status"><b>{cue.title}</b><span>{cue.phase === 'launch' ? '攻击成立；伤害尚未结算' : cue.rows?.length > 1 ? '已保存 ' + cue.rows.length + ' 个目标结果，逐项详情见下方记录' : cue.subtitle}</span></div></div> : <div className="battle-stage-quiet"><span aria-hidden="true">✧</span><p>{status.state === 'turn' ? '选择目标与动作，一次点击执行。' : status.state === 'defense' ? '请选择防守方式；动画不会延长防守期限。' : effectiveMode === 'off' ? '动画已关闭，文字结果和操作照常更新。' : '每次真实操作后，出手与结算将在这里呈现。'}</p></div>}
     {status.pending.length > 0 && <div className="battle-stage-deadlines">{status.pending.slice(0, 3).map(hit => <span key={hit.id}>{hit.attackName || '待防守攻击'} <DefenseClock expiresAt={hit.expiresAt}/></span>)}{status.pending.length > 3 && <small>另有 {status.pending.length - 3} 个目标待处理</small>}</div>}
   </section>;

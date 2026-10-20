@@ -334,7 +334,7 @@ function nextOpportunity(state, b, rng = randomInt) {
     if (a.casting && a.casting.count < a.casting.required) a.casting.count++;
     beginConditions(p, b, a, rng, state);
     if (p.hp <= 0) { completeOpportunity(b,{actorId:a.id,free:queued.free,roundNumber:round.number}); endConditions(p, b, a, rng); record(b, a.name + (a.deathId ? '已死亡，跳过主动行动。' : '失能，跳过主动行动。')); continue; }
-    b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, movementLimit: M.stats(p).move, moveSpent: 0, startedAt: Date.now(), free: queued.free,
+    b.current = { id: id('u'), actorId: a.id, quick: 1, formal: 1, move: M.stats(p).move, movementLimit: M.stats(p).move, moveSpent: 0, movementRuleVersion:2, startedAt: Date.now(), free: queued.free,
       roundNumber: round.number, opportunity: queued.free ? 0 : round.counts[a.id], apCost };
     record(b, '轮到' + a.name + '行动。' + (queued.free ? '免费偷袭机会。' : '第' + round.number + '轮，第' + b.current.opportunity + '次，扣除' + apCost + ' AP。'),
       { actorId: a.id, turnId: b.current.id, roundNumber: round.number, opportunity: b.current.opportunity, apCost, apRemaining: p.ap });
@@ -356,9 +356,20 @@ function start(state, b, surpriseTeam, rng = randomInt) {
   }
   nextOpportunity(state, b, rng);
 }
+function normalizeMovement(p,turn){
+  const limit=M.stats(p).move;
+  if(turn.movementRuleVersion!==2){
+    const oldLimit=Number.isFinite(turn.movementLimit)?turn.movementLimit:M.legacyMove(p);
+    turn.moveSpent=Number.isFinite(turn.moveSpent)?Math.max(0,turn.moveSpent):C.round2(Math.max(0,oldLimit-(Number(turn.move)||0)));
+    turn.move=C.round2(Math.max(0,limit-turn.moveSpent));turn.movementLimit=limit;turn.movementRuleVersion=2;
+  }
+  return turn;
+}
+function migrateMovement(state){if(state.movementRuleVersion===2)return null;const updated=[];for(const b of Object.values(state.battles))if(b.status!=='ended'&&b.current){const a=b.actors.find(a=>a.id===b.current.actorId);if(a){normalizeMovement(actorCharacter(state,a),b.current);b.version++;updated.push(b.id);}}state.movementRuleVersion=2;return{battles:updated,formula:'15+5*effectiveAgility'};}
 function current(state, b, turnId) {
   ok(b.status === 'active' && b.current && b.current.id === turnId, '当前行动已变化或战斗暂停，请重新打开面板。');
   const a = actorById(b, b.current.actorId); const p = actorCharacter(state, a);
+  normalizeMovement(p,b.current);
   const expired = M.expireEffects(p);
   ok(p.hp > 0 && !a.retreated, '角色已经失能或离场。');
   const remaining = C.round2(Math.max(0, M.stats(p).move - (b.current.moveSpent || 0)));
@@ -519,7 +530,7 @@ function defend(state, b, pendingId, choice, rng = randomInt) {
   return result;
 }
 // Candidate checks copy only the acting character; they never roll or alter the live battle.
-function readonlyCurrent(state,b,turnId){ok(b.status==='active'&&b.current?.id===turnId,'当前行动已变化或战斗暂停，请重新打开面板。');const actor=actorById(b,b.current.actorId),p=clone(actorCharacter(state,actor));const expired=M.expireEffects(p);ok(p.hp>0&&!actor.retreated,'角色已经失能或离场。');const remaining=C.round2(Math.max(0,M.stats(p).move-(b.current.moveSpent||0)));const limit=M.stats(p).move,move=expired.length||b.current.movementLimit!==undefined&&b.current.movementLimit!==limit?remaining:Math.min(b.current.move,remaining);return {actor,p,turn:{...b.current,move,movementLimit:limit}};}
+function readonlyCurrent(state,b,turnId){ok(b.status==='active'&&b.current?.id===turnId,'当前行动已变化或战斗暂停，请重新打开面板。');const actor=actorById(b,b.current.actorId),p=clone(actorCharacter(state,actor));const turn=normalizeMovement(p,{...b.current});const expired=M.expireEffects(p);ok(p.hp>0&&!actor.retreated,'角色已经失能或离场。');const remaining=C.round2(Math.max(0,M.stats(p).move-(turn.moveSpent||0)));const limit=M.stats(p).move,move=expired.length||turn.movementLimit!==undefined&&turn.movementLimit!==limit?remaining:Math.min(turn.move,remaining);return {actor,p,turn:{...turn,move,movementLimit:limit}};}
 function validateQuick(state,b,{actor,p,turn},op){require('./conditions').requireAction(p,op.type,op.type==='cast'?abilities(p).find(e=>e.key===actor.casting?.key)?.attack:null,'quick');ok(!b.pending&&turn.quick>0,'快速行动不可用。');
  if(op.type==='cast')ok(actor.casting&&actor.casting.count>=actor.casting.required,'吟唱未完成或快速行动已用完。');
  else if(op.type==='switch'){ok(['main','off','auto'].includes(op.hand||'auto'),'请选择主手或副手。');if(op.item){ok(p.inventory[op.item]?.snapshot.kind==='武器','武器不可用。');if(actor.userId)ok(M.available(state,actor.userId,op.item)>0,'武器已被交易预留。');}}
@@ -608,5 +619,5 @@ function endBattle(state, b, reason = 'GM结束了战斗。') {
 }
 module.exports = { actorCharacter, actorById, record, validateCondition, applyCondition, beginConditions, endConditions,
   createBattle, join, withdraw, validateNPC, addNPC, position, setTerrain, liveActors, activeActors, order, advance,
-  roundState, ensureActionRound, opportunityCost, resetActionRound, nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, attackPlan, readonlyCurrent, validateOperation, defend,
+  normalizeMovement, migrateMovement, roundState, ensureActionRound, opportunityCost, resetActionRound, nextOpportunity, start, current, finish, pass, movementCost, move, abilities, attack, attackPlan, readonlyCurrent, validateOperation, defend,
   confirmCasting, reload, switchWeapon, useItem, flee, pause, endBattle, terminalOutcome, autoEnd };

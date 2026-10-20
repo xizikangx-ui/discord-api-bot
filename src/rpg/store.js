@@ -141,6 +141,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
         try{if (database) await database.save(guild, before, next, undefined, changes); else await persist(guild, next);}finally{commitDone?.();}
         if(pagedHistory)database?.compactHistory?.(next);
         states.set(guild, next);
+        try{options.onCommitted?.({before,next,changes});}catch{metrics?.observe('notification.callbackFailure',1);}
         for (const listener of listeners) { try { listener(guild, {before,next,label,operation,changes}); } catch { /* Notification cannot invalidate a durable commit. */ } }
         return C.clone(savedResult);
       } catch (error) {

@@ -17,4 +17,3 @@ test('streaming encryption preserves authenticated v1 format across arbitrary by
 test('disabled Discord RPG does not import its implementation and handles obsolete controls privately',async()=>{
  const before=new Set(Object.keys(require.cache)),off=require('../src/discord-rpg').createDisabled(),sent=[];assert.equal(await off.handle({commandName:'战斗',reply:async p=>sent.push(p)}),true);assert.equal(await off.handle({customId:'rpg:move:old',reply:async p=>sent.push(p)}),true);assert.equal(await off.handle({commandName:'禁言'}),false);assert.ok(sent.every(p=>p.flags===64));assert.deepEqual(off.renderStats(),{workers:0,queued:0,cacheBytes:0,cacheEntries:0});assert.ok(!Object.keys(require.cache).filter(k=>!before.has(k)).some(k=>/[\\/]rpg[\\/]index\.js$/.test(k)));
 });
-

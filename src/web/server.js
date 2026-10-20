@@ -219,7 +219,9 @@ function createWeb({
       return access.get(roomId);
     };
     const filter=async values=>{const results=await Promise.all((values||[]).map(allowed));return(values||[]).filter((_,i)=>results[i]);};
-    return {...saved,...(saved.battleFeedback?{battleFeedback:await filter(saved.battleFeedback)}:{}),...(saved.rareLoot?{rareLoot:await filter(saved.rareLoot)}:{})};
+    const battleFeedback=saved.battleFeedback?await filter(saved.battleFeedback):undefined;
+    const battleStates=battleFeedback?games.store.select(group,s=>[...new Set(battleFeedback.map(e=>e.battleId))].map(id=>({id,status:s.battles[id]?.status})).filter(b=>b.status)):undefined;
+    return {...saved,...(battleFeedback?{battleFeedback,battleStates}:{}),...(saved.rareLoot?{rareLoot:await filter(saved.rareLoot)}:{})};
   }
   let deletionTimer;
   const json = (res, status, value) => {
@@ -697,7 +699,7 @@ function createWeb({
         const key=group+':'+uid+':'+p.operationId;
         if(p.command==='npc.portrait'&&p.params)p.params.mediaId ||= p.params.uploadId;
         const job=games.execute(group,uid,p.command,p.params||{},p.operationId,p.versions,rest==='/gm/execute');pending.set(key,job);
-        try{const saved=await job;if(p.command==='character.portrait')background.run(()=>notifyAvatar(uid,group));let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');try{gamePatch=await games.view(group,uid,keys,a);}catch{metrics.gauge('response.patchFailure',1);}}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...await safeFeedback(saved,group,uid,a),...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
+        try{const saved=await job;if(p.command==='character.portrait')background.run(()=>notifyAvatar(uid,group));let gamePatch;if(p.includePatch){const keys=require('./response-sections').forCommand(p.command,p.sections,saved._sections);try{if(keys.length)gamePatch=await games.view(group,uid,keys,a);}catch{metrics.gauge('response.patchFailure',1);}}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...await safeFeedback(saved,group,uid,a),...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
       }
       if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length),result=pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op);if(result.status==='committed'&&u.searchParams.get('includePatch')==='1')try{result.gamePatch=await games.view(group,uid,require('./game-sections').parse(u.searchParams.get('sections')||'dashboard,core,battle,explore,bag,market'),a);}catch{metrics.gauge('response.patchFailure',1);}return answer(await safeFeedback(result,group,uid,a));}
       if (rest === "/game/preview" && p)
@@ -1034,6 +1036,7 @@ function createWeb({
     await music.migrateLegacy();
     await worldLibrary.refresh();
     await explorationReset.restoreFences();
+
     const pendingChat=(await repo.list('chatReset')).some(j=>j.status!=='completed');
     const migrationBackup=require('./chat-migration-backup').createMigrationBackup({repo,backups,storage,crypt,decrypt:gameCrypt?.decrypt});
     await migrationBackup.prepare(chatMigration||pendingChat);

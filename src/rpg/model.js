@@ -94,13 +94,14 @@ function stats(p, extraEffects = []) {
   const limit = (attributes.strength + attributes.constitution) * 500;
   const burdened = carried > limit / 2;
   const overloaded = carried > limit;
-  const move = overloaded ? 0 : C.round2(Math.max(0,modify(effects, 'move', Math.max(0, attributes.agility - (burdened ? 2 : 0)) * 3))*require('./conditions').movement(p));
+  const move = overloaded ? 0 : C.round2(Math.max(0,modify(effects, 'move', 15 + Math.max(0, attributes.agility - (burdened ? 2 : 0)) * 5))*require('./conditions').movement(p));
   const luck = Math.max(-9, Math.min(11, Math.floor(signedModifier(effects, 'attr:luck', p.luck ?? 1))));
   return { luck, attributes, defenses, maxHP, carried, limit, burdened, overloaded, move, effects,
     apGain: modify(effects, 'apGain', attributes.agility * 5),
     hit: modify(effects, 'hit', 0),
     resist: Object.fromEntries(Object.keys(C.DAMAGE_TYPES).map(k => [k, signedModifier(effects, 'resist:' + k)])) };
 }
+function legacyMove(p){const s=stats(p);return s.overloaded?0:C.round2(Math.max(0,modify(s.effects,'move',Math.max(0,s.attributes.agility-(s.burdened?2:0))*3))*require('./conditions').movement(p));}
 function syncHP(p) { p.hp = Math.max(0, Math.min(p.hp, stats(p).maxHP)); require('./health').sync(p); }
 function expireEffects(p, now = Date.now()) {
   const expired = (p.temporaryEffects || []).filter(e => e.duration.kind === 'minutes' && e.expiresAt <= now);
@@ -586,4 +587,4 @@ function deleteCharacter(state, userId) {
 module.exports = { player, newCharacter, rollCharacter, confirmCharacter, equippedIds, isAttached, sourceEffects,
   modify, signedModifier, weight, stats, syncHP, allocate, grantXP, normalizeEffects, validateTemplate, publishTemplate, makeItem,
   activeOffer, reserved, available, transferable, receive, issue, openLoot, drop, battleFor, equip, attach, useSpecial,
-  createOffer, updateOffer, confirmOffer, cancelOffer, expireOffers, deleteCharacter, bundleItems, itemWeight, equipCharacter, attachCharacter, consume, consumeMany, expireEffects, finishEffects };
+  legacyMove, createOffer, updateOffer, confirmOffer, cancelOffer, expireOffers, deleteCharacter, bundleItems, itemWeight, equipCharacter, attachCharacter, consume, consumeMany, expireEffects, finishEffects };

@@ -159,7 +159,7 @@ test('experience precise multiplier, consecutive levels, point milestones and le
 test('half load slows movement only; overloading and pending loot keep result and ticket', () => {
   const s = state(), p = s.players['1'];
   p.inventory.a = { id: 'a', quantity: 1, snapshot: { weight: 2501 } };
-  assert.equal(M.stats(p).move, 12); assert.equal(M.stats(p).apGain, 30);
+  assert.equal(M.stats(p).move, 35); assert.equal(M.stats(p).apGain, 30);
   p.inventory.a.snapshot.weight = 5000; p.tickets.boxes['大衣'] = 1;
   const first = M.openLoot(s, '1', '大衣', minRng);
   assert.ok(first.pending); assert.equal(p.tickets.boxes['大衣'], 1);
@@ -251,7 +251,7 @@ test('recruitment duplicate, withdraw, battle isolation, turn budget and auto ro
   assert.notEqual(b.current.id, first); assert.equal(b.current.actorId, b.actors[0].id); assert.equal(s.players['1'].ap, 102); assert.equal(b.current.apCost, 200);
   assert.throws(() => B.finish(s, b, first));
   B.pause(b); assert.throws(() => B.move(s, b, b.current.id, 26, 25));
-  B.pause(b, true); B.move(s, b, b.current.id, 26, 25); assert.equal(b.current.move, 119);
+  B.pause(b, true); B.move(s, b, b.current.id, 26, 25); assert.equal(b.current.move, 214);
 });
 test('same agility tie rerolls, surprise free action and no live actors pause', () => {
   const s = state(), b = B.createBattle(s, 'channel', 'GM', 'test'); B.join(s, b, '1'); B.join(s, b, '2');
@@ -266,8 +266,8 @@ test('same agility tie rerolls, surprise free action and no live actors pause', 
 test('map obstacles, difficult terrain and partial movement budget', () => {
   const { s, b } = fight(); const current = b.current.id;
   b.terrain['0,0'] = 'difficult';
-  B.move(s, b, current, 28, 25); assert.equal(b.current.move, 12);
-  B.move(s, b, current, 30, 25); assert.equal(b.current.move, 8);
+  B.move(s, b, current, 28, 25); assert.equal(b.current.move, 39);
+  B.move(s, b, current, 30, 25); assert.equal(b.current.move, 35);
   b.terrain['0,0'] = 'blocked'; assert.throws(() => B.move(s, b, current, 31, 25));
   assert.throws(() => B.move(s, b, current, 1000, 25));
   b.terrain['0,0'] = 'normal'; s.players['1'].inventory.heavy = { id: 'heavy', quantity: 1, snapshot: { weight: 5001 } };
@@ -718,7 +718,7 @@ test('minute effects expire while paused, clamp HP and remaining movement withou
   const item = M.issue(s, '1', t.id)[0], now = Date.now(); M.consume(p, item.id, minRng, null, now);
   assert.equal(p.hp, 15); p.hp = 25; b.current.move = 24; b.current.moveSpent = 6;
   assert.deepEqual(A.expireAll(s, now + 59999), []);
-  assert.deepEqual(A.expireAll(s, now + 60000), [p.id]); assert.equal(p.hp, 15); assert.equal(b.current.move, 12);
+  assert.deepEqual(A.expireAll(s, now + 60000), [p.id]); assert.equal(p.hp, 15); assert.equal(b.current.move, 39);
   assert.equal(b.status, 'paused'); assert.equal(p.temporaryEffects.length, 0);
 });
 
@@ -1042,7 +1042,7 @@ test('minute debuff expiry restores unused movement allowance without refunding 
   const t = food(s, { heal: '0', effects: [{ target: 'attr:agility', op: 'add', value: -2 }], duration: { kind: 'minutes', count: 1 } });
   M.consume(p, M.issue(s, '1', t.id)[0].id, minRng, null, now);
   b.current.move = 7; b.current.moveSpent = 5;
-  A.expireAll(s, now + 60000); assert.equal(b.current.move, 13);
+  A.expireAll(s, now + 60000); assert.equal(b.current.move, 40);
 });
 
 test('failed check publication can resend saved attempt without another roll or attempt', async () => {

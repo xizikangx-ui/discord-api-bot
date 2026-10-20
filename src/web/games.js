@@ -252,6 +252,7 @@ function createGames({
       if(store.select(id,s=>s.worldUpgradeVersion!==1))await store.transact(id,'web-world-fields-v1','system:web',s=>{require('./world').init(s);return{initialized:true};},'初始化世界地图字段',{delivery:false,maintenance,lifecycle:!maintenance});
       if(store.select(id,s=>s.webMarketVersion!==1))await store.transact(id,'web-markets-v1','system:web',s=>require('../rpg/markets').initialize(s),'初始化关闭的营地市场',{delivery:false,maintenance,lifecycle:!maintenance});
       if(store.select(id,s=>s.webNpcAutoVersion!==1))await store.transact(id,'web-npc-auto-v1','system:web',s=>require('../rpg/npc-policy').migrate(s),'NPC默认自动操作：一次性切换现有模式',{delivery:false,maintenance,lifecycle:!maintenance});
+      if(store.select(id,s=>s.movementRuleVersion!==2))await store.transact(id,'web-movement-rule-v2','system:web',s=>B.migrateMovement(s),'移动预算改为15米加敏捷乘5',{delivery:false,maintenance,lifecycle:false});
       if(!stamps.has(id))stamps.set(id,versions(id).sectionVersions);
       if(!maintenance&&store.select(id,needsLifecycle))await store.transact(id,'web-lifecycle-recover:'+store.select(id,s=>s.revision),'system:web',()=>({recovered:true}),'恢复战斗结束检查');
       if (!maintenance&&store.select(id, Loot.needsBackfill))
@@ -417,7 +418,7 @@ function createGames({
       ...(command === "world.assign" ? [p.uid] : []),
       ...(["world.vote","world.permit","world.arrive"].includes(command) && p.journeyId ? select(s=>s.worldJourneys[p.journeyId]?.members||[]) : []),
       ...(p.users || []),
-      ...rows.filter((r) => r.uid).map((r) => r.uid),
+      ...(gm&&command==='grant'?[]:rows.filter((r) => r.uid).map((r) => r.uid)),
     ].filter(Boolean))
       await accounts.member(a.group.id, id);
     if (
@@ -514,7 +515,8 @@ function createGames({
           else t.portraits[f.params.slot] = { webMediaId: f.params.mediaId };
           t.version++;
           result = { id: t.id, version: t.version };
-        } else
+        } else if(f.gm&&f.command==='grant'&&f.direct)result=G.grantBatch(s,f.params.rows,f.recipientErrors);
+        else
           result = f.gm
             ? G.apply(s, uid, f.command, f.params)
             : P.applyPlayer(s, uid, f.command, f.params);
@@ -561,27 +563,29 @@ function createGames({
     // Replaying its authoritative receipt is a read, not a new permission grant.
     if(!gm&&['map.link','map.vote'].includes(command)&&prior?.status==='done')return P.playerResult(command,C.clone(prior.result));
     await validateReferences(a,command,params,gm);
+    let changedSections;
     const result=await store.transact(group,operationId,uid,async s=>{
       await authorize(group,uid,gm);
       const previous=s.forms[id];
       if(previous){S.ok(previous.command===command && G.fingerprint(previous.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');return previous.result;}
-      const guards=gm?G.guards(s,command,params):P.playerGuards(s,uid,command,params);
+      const guards=gm&&command==='grant'?[]:gm?G.guards(s,command,params):P.playerGuards(s,uid,command,params);
       S.ok(expected && typeof expected==='object','页面版本缺失，请刷新后重新操作。','CONFLICT');
       const conflicts=guards.filter(g=>(expected[g.source+':'+(g.id||'')]??(g.source.startsWith('world')?G.fingerprint(undefined):undefined))!==g.hash);
       if(conflicts.length){const e=Error('相关内容已变化，已保留输入。请核对最新状态后再次提交。');e.code='CONFLICT';e.details=conflictDetails(s,conflicts,gm);throw e;}
       await validateReferences(await accounts.member(group,uid),command,params,gm,s);
+      const recipientErrors=gm&&command==='grant'?await require('./grant-checks').checks(s,group,params.rows,expected,accounts):undefined;
       const normalized=C.clone(params);let expiresAt=C.confirmationDeadline(300000);
       if(!gm && command==='battle.action'){
         normalized.params=P.normalizeAction(s,uid,params);
         if(params.action==='defend'){const hit=require('../rpg/aoe').hit(s.battles[params.battleId],normalized.params.hitId);S.ok(hit,'防守已结算。');expiresAt=Math.min(expiresAt,hit.expiresAt);}
       }
-      const f={id,kind:'webAction',owner:uid,gm,command,params:normalized,originalParams:C.clone(params),guards,expiresAt,status:'ready',at:Date.now(),direct:true};
+      const f={id,kind:'webAction',owner:uid,gm,command,params:normalized,originalParams:C.clone(params),guards,...(recipientErrors?{recipientErrors}:{}),expiresAt,status:'ready',at:Date.now(),direct:true};
       s.forms[id]=f;
       return applyForm(s,uid,f,operationId);
-    },'网站直接执行 · '+(P.playerCommands[command]||command));
+    },'网站直接执行 · '+(P.playerCommands[command]||command),{onCommitted:change=>{changedSections=Sections.changed(change.before,change.next,change.changes);}});
     if(store.select(group,s=>!!s.sceneClearOperations?.[operationId]))return{operationId,status:'committed',cleared:true,result:{message:'原操作已保存，关联场景现已清理。'}};
     const saved=store.select(group,s=>s.forms[id]);S.ok(saved?.command===command && G.fingerprint(saved.originalParams)===G.fingerprint(params),'同一操作编号不可用于不同操作。','CONFLICT');
-    return gm?saved.result:P.playerResult(command,saved.result);
+    const response=gm?saved.result:P.playerResult(command,saved.result);if(changedSections)Object.defineProperty(response,'_sections',{value:changedSections});return response;
   }
   async function operationReceipt(group,uid,clientId){
     await authorize(group,uid);operation(clientId);
