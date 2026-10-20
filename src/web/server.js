@@ -106,7 +106,7 @@ function createWeb({
       broadcast: (group, event) => background.run(() => emit(group, event)),
       metrics,
     });
-  const subscriptions = require('./subscriptions').createSubscriptions({accounts,chat,limit,presence:async roomId=>emit(roomId,{type:'presence',data:[...new Set([...sockets].filter(ws=>ws.roomId===roomId).map(ws=>ws.userId))]},true)});
+  const subscriptions = require('./subscriptions').createSubscriptions({accounts,chat,limit,presence:async roomId=>background.run(()=>emit(roomId,{type:'presence',data:[...new Set([...sockets].filter(ws=>ws.roomId===roomId).map(ws=>ws.userId))]},true))});
   const groupChat = require('./group-chat').createGroupChat({repo,accounts,games,storage,broadcast:(group,event)=>background.run(()=>emit(group,event))});
   const music=require('./music').createMusic({repo,accounts,crypt,storage,changed:group=>background.run(async()=>{
     const groups=group?[group]:[...new Set([...sockets].map(ws=>ws.groupId).filter(Boolean))];
@@ -1079,7 +1079,7 @@ function createWeb({
           ws.on("close", () => {
             sockets.delete(ws);
             if (ws.roomId)
-              void emit(
+              background.run(() => emit(
                 ws.roomId,
                 {
                   type: "presence",
@@ -1092,7 +1092,7 @@ function createWeb({
                   ],
                 },
                 true,
-              );
+              ));
           });
           ws.on("error", () => {});
           ws.on("message", bytes => { void subscriptions.enqueue(ws,bytes); });

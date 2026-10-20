@@ -16,6 +16,14 @@ test('failed broadcasts are contained while shutdown still drains successful wor
   tasks.run(()=>{finished=true;});tasks.seal();await tasks.drain();
   assert.equal(errors,1);assert.equal(finished,true);await tasks.drain();
 });
+
+test('late WebSocket close notifications cannot query storage after shutdown',{timeout:30000},async t=>{
+ const h=await require('./helpers/chat-website.cjs').launch(),{WebSocket}=require('ws'),{once}=require('node:events');let closing=false,storageClosed=false,lateReads=0,release;
+ const gate=new Promise(resolve=>release=resolve),original=h.repo.get;h.repo.get=async(kind,id,...args)=>{if(kind==='room'&&closing){lateReads++;await gate;if(storageClosed)throw Error('storage was closed');}return original(kind,id,...args);};
+ const ws=new WebSocket(h.origin.replace('http:','ws:')+'/ws',{headers:{Origin:h.origin,Cookie:'web_session='+h.admin.secret}});t.after(async()=>{release();ws.terminate();await h.app.stop();});
+ await once(ws,'open');const present=new Promise(resolve=>ws.on('message',raw=>{if(JSON.parse(raw).type==='presence')resolve();}));ws.send(JSON.stringify({type:'subscribe',requestId:'shutdown',groupId:h.group.id,roomId:h.room.id,watchGroups:[h.group.id]}));await present;
+ closing=true;await h.app.stop();storageClosed=true;release();await new Promise(resolve=>setTimeout(resolve,75));assert.equal(lateReads,0,'sealed notification work must not start after shutdown');
+});
 test('game shutdown drains the active publication pump despite repeated ticks and timer wakeups',{timeout:5000},async t=>{
   const C=require('../src/rpg/constants'),repo=require('./helpers/web-demo.cjs').memoryRepository(),group='shutdown-pump-test',saved=new Map([[group,C.newState(group)]]);
   let writes=0,sends=0,release,entered;
