@@ -205,7 +205,7 @@ function createWeb({
   const deletion=require('./group-deletion').createDeletion({repo,content,accounts,games,database,storage,disconnected:group=>{for(const ws of sockets)if(ws.groupId===group||ws.watchGroups?.has(group))subscriptions.clearGroup(ws,group,{code:'NOT_FOUND',message:'此团正在删除。'});}});
   const explorationReset=require('./exploration-reset').createReset({repo,accounts,games,broadcast:(group,event)=>background.run(()=>emit(group,event))});
   chat.setSystemReader(async(group,messages)=>{await games.ensure(group);const marks=games.store.select(group,s=>({maps:s.mapTombstones||{},battles:s.battleTombstones||{}}));return require('./exploration-reset').decorate(messages,marks);});
-  async function safeFeedback(saved,group,uid,a){try{return await readableFeedback(saved,group,uid,a);}catch{metrics.gauge('response.feedbackFailure',1);return saved;}}
+  async function safeFeedback(saved,group,uid,a){try{return await readableFeedback(saved,group,uid,a);}catch{metrics.gauge('response.feedbackFailure',1);return {operationId:saved?.operationId,status:saved?.status,result:{message:'操作已保存；补充信息暂时不可用，可稍后查看原结果。'}};}}
   async function readableFeedback(saved,group,uid,a){
     if(!saved || (!saved.battleFeedback?.length && !saved.rareLoot?.length))return saved;
     const access=new Map();
@@ -1029,10 +1029,11 @@ function createWeb({
     await repo.init();
     await content.init();
     await database.acquireLease("standalone-web");
+    backups = require("./backup").createBackups({pool,repo,crypt,storage,names:{platform:repo.schema,content:content.schema,game:process.env.WEB_TEST_DIAGNOSTICS==='1'?undefined:'rpg_web'}});
+    await require('./startup-backup').verifyReleaseBackup({id:process.env.WEB_RELEASE_BACKUP_GATE,repo,backups,storage,database});
     await music.migrateLegacy();
     await worldLibrary.refresh();
     await explorationReset.restoreFences();
-    backups = require("./backup").createBackups({pool,repo,crypt,storage,names:{platform:repo.schema,content:content.schema,game:process.env.WEB_TEST_DIAGNOSTICS==='1'?undefined:'rpg_web'}});
     const pendingChat=(await repo.list('chatReset')).some(j=>j.status!=='completed');
     const migrationBackup=require('./chat-migration-backup').createMigrationBackup({repo,backups,storage,crypt,decrypt:gameCrypt?.decrypt});
     await migrationBackup.prepare(chatMigration||pendingChat);
