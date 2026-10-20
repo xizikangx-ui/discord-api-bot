@@ -36,9 +36,10 @@ const { createNicknamePanel, nicknameCommand } = require('./nickname-panel');
 const { createPurgePanel, purgeCommand } = require('./purge-panel');
 const { createScheduledPunishments, scheduledPunishmentCommands } = require('./scheduled-punishments');
 const { createPolls, pollCommand, pollPanelCommand } = require('./polls');
-const { createRpg, commands: rpgCommands } = require('./rpg');
+const DISCORD_RPG_ENABLED=process.env.DISCORD_RPG_ENABLED!=='0';
+const {createRpg,commands:rpgCommands}=DISCORD_RPG_ENABLED?require('./rpg'):{commands:()=>[]};
 const noticeExemptions = require('./management-notice-exemptions');
-const { DEFAULT_GUILD_ID: rpgDefaultGuild } = require('./rpg/constants');
+const { DEFAULT_GUILD_ID: rpgDefaultGuild } = require('./discord-rpg');
 
 const required = ['DISCORD_TOKEN', 'DISCORD_CLIENT_ID'];
 const missing = required.filter((key) => !process.env[key]);
@@ -347,10 +348,10 @@ async function registerCommands() {
   const body = commands.map((command) => command.toJSON());
   if (guildIds.length) {
     for (const guildId of guildIds) {
-      const guildBody = rpgGuildIds().includes(guildId) ? [...body, ...rpgCommands().map(c => c.toJSON())] : body;
+      const guildBody = DISCORD_RPG_ENABLED&&rpgGuildIds().includes(guildId) ? [...body, ...rpgCommands().map(c => c.toJSON())] : body;
       if (new Set(guildBody.map(c => (c.type || 1) + ':' + c.name)).size !== guildBody.length) throw new Error('重复的应用指令名称。');
       await rest.put(Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, guildId), { body: guildBody });
-      console.log('服务器 ' + guildId + ' 已注册 ' + guildBody.length + ' 个指令' + (rpgGuildIds().includes(guildId) ? '（含跑团）' : '') + '。');
+      console.log('服务器 ' + guildId + ' 已注册 ' + guildBody.length + ' 个指令' + (DISCORD_RPG_ENABLED&&rpgGuildIds().includes(guildId) ? '（含跑团）' : '') + '。');
     }
     console.log(`Registered ${commands.length} commands for ${guildIds.length} server(s).`);
   } else {
@@ -3491,14 +3492,14 @@ const polls = createPolls({ client, settingsFor, guildIds: commandGuildIds, save
   scopeFor: guildId => punishmentGuildIds().includes(guildId) ? punishmentGuildIds() : [guildId],
   validatePunishment: validatePunishmentRequest, executePunishment: executePunishmentRequest,
 });
-if (process.env.RPG_STORAGE_BACKEND && !['discord','postgres'].includes(process.env.RPG_STORAGE_BACKEND)) throw Error('RPG_STORAGE_BACKEND须为discord或postgres。');
-if (process.env.RPG_STORAGE_BACKEND==='postgres'&&!process.env.RPG_DATABASE_URL) throw Error('PostgreSQL跑团存储须配置RPG_DATABASE_URL。');
+if (DISCORD_RPG_ENABLED&&process.env.RPG_STORAGE_BACKEND && !['discord','postgres'].includes(process.env.RPG_STORAGE_BACKEND)) throw Error('RPG_STORAGE_BACKEND须为discord或postgres。');
+if (DISCORD_RPG_ENABLED&&process.env.RPG_STORAGE_BACKEND==='postgres'&&!process.env.RPG_DATABASE_URL) throw Error('PostgreSQL跑团存储须配置RPG_DATABASE_URL。');
 const rpgMetrics=require('./rpg/metrics').createMetrics({enabled:process.env.RPG_PERFORMANCE_METRICS==='1'});
-const rpgDatabase=process.env.RPG_STORAGE_BACKEND==='postgres'?require('./rpg/postgres').createPostgres({connectionString:process.env.RPG_DATABASE_URL,encrypt:encryptJson,decrypt:decryptJson,metrics:rpgMetrics,onLeaseLost:()=>{storageReady=false;scheduledPunishments.stop();rpg.store.guilds().forEach(g=>rpg.store.freeze(g));rpg.stop();client.destroy();console.error('数据库运行锁已丢失，Bot停止处理，等待单实例恢复。');process.exitCode=1;setTimeout(()=>process.exit(1),1000).unref();}}):null;
+const rpgDatabase=DISCORD_RPG_ENABLED&&process.env.RPG_STORAGE_BACKEND==='postgres'?require('./rpg/postgres').createPostgres({connectionString:process.env.RPG_DATABASE_URL,encrypt:encryptJson,decrypt:decryptJson,metrics:rpgMetrics,onLeaseLost:()=>{storageReady=false;scheduledPunishments.stop();rpg.store.guilds().forEach(g=>rpg.store.freeze(g));rpg.stop();client.destroy();console.error('数据库运行锁已丢失，Bot停止处理，等待单实例恢复。');process.exitCode=1;setTimeout(()=>process.exit(1),1000).unref();}}):null;
 client.rest.on('rateLimited',rpgMetrics.rateLimited);
 client.rest.on('response',rpgMetrics.restResponse);
 const gatewayMetricsTimer=setInterval(()=>{rpgMetrics.gauge('discord.gatewayPing',client.ws.ping);rpgMetrics.gauge('discord.cache.users',client.users.cache.size);rpgMetrics.gauge('discord.cache.members',[...client.guilds.cache.values()].reduce((n,g)=>n+g.members.cache.size,0));rpgMetrics.gauge('discord.cache.messages',[...client.channels.cache.values()].reduce((n,c)=>n+(c.messages?.cache?.size||0),0));for(const [key,value]of Object.entries(rpg.renderStats?.()||{}))rpgMetrics.gauge('render.'+key,value);},60000);gatewayMetricsTimer.unref();
-const rpg = createRpg({ client, guildIds: rpgGuildIds, channel: () => storageChannel, settingsFor,database:rpgDatabase,metrics:rpgMetrics,allowImport:process.env.RPG_IMPORT_DISCORD_ONCE==='1',
+const rpg = DISCORD_RPG_ENABLED?createRpg({ client, guildIds: rpgGuildIds, channel: () => storageChannel, settingsFor,database:rpgDatabase,metrics:rpgMetrics,allowImport:process.env.RPG_IMPORT_DISCORD_ONCE==='1',
   saveIndex: saveGuildData, encrypt: encryptJson, decrypt: decryptJson, logFailure,
   protectedRoles: guildId => {
     const setting = settingsFor(guildId);
@@ -3509,7 +3510,7 @@ const rpg = createRpg({ client, guildIds: rpgGuildIds, channel: () => storageCha
       ...(setting.purgePolicy?.operatorRoleIds || []), ...(setting.nicknamePolicy?.operatorRoleIds || []),
       ...Object.values(setting.middleManagementGroups || {}).flatMap(g => g.companionRoleIds || [])].filter(Boolean);
   },
-});
+}):require('./discord-rpg').createDisabled();
 let readyWatchdog;
 client.on('shardError', (error) => logFailure('Discord 网关连接错误。', error));
 client.on('shardConnecting', () => console.log('正在连接 Discord 实时网关……'));

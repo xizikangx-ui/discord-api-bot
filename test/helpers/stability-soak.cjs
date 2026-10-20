@@ -1,0 +1,18 @@
+'use strict';
+// Explicit local/isolated endurance run, never started by the production server.
+const crypto=require('node:crypto'),assert=require('node:assert/strict'),fs=require('node:fs'),{gzipSync}=require('node:zlib'),C=require('../../src/rpg/constants'),S=require('../../src/web/security');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+(async()=>{
+ const url=process.env.RPG_TEST_DATABASE_URL;assert.ok(url&&['127.0.0.1','localhost'].includes(new URL(url).hostname),'soak requires a localhost test database');
+ const schema='rpg_test_stability_soak_'+crypto.randomBytes(5).toString('hex'),codec=S.rpgCodec(crypto.randomBytes(32).toString('base64')),db=require('../../src/rpg/postgres').createPostgres({connectionString:url,schema,...codec});
+ let completed=false;try{
+  await db.acquireLease('stability-soak');const state=C.newState('soak');state.upgrade=9;state.conditionPackVersion=1;state.supplyContainersVersion=1;await db.save('soak',null,state);
+  const payload='x'.repeat(8000),rows=40000;
+  for(let base=0;base<rows;base+=100){const values=[],args=[];for(let n=base;n<base+100;n++){const id='cold-'+n,e={id,at:Date.now(),actorId:'system',label:'冷历史压力',revision:n,result:{payload}},bytes=Buffer.from(codec.encrypt({kind:'rpg-record-v1',guildId:'soak',scope:'audit',id,body:gzipSync(Buffer.from(JSON.stringify(e))).toString('base64')}));values.push(`($${args.length+1},$${args.length+2},$${args.length+3},$${args.length+4})`);args.push('soak',n,id,bytes);}await db.pool.query(`INSERT INTO "${schema}".audit(guild_id,sequence,operation_id,payload) VALUES ${values.join(',')}`,args);}
+  const store=require('../../src/rpg/store').createStore({database:db,pagedHistory:true,systemActorId:'system'});await store.load('soak');const started=Date.now(),duration=Number(process.env.STABILITY_SOAK_MS||7200000),samples=[];let operations=0,queue=0;
+  console.log(JSON.stringify({type:'soak-start',started:new Date(started).toISOString(),durationMs:duration,coldAuditRows:rows,expandedHistoryBytes:rows*8000,nodeHeapLimit:require('node:v8').getHeapStatistics().heap_size_limit}));
+  for(const count of [20,50]){const times=await Promise.all(Array.from({length:count},async(_,i)=>{const at=performance.now();await store.transact('soak','burst-'+count+'-'+i,'system',s=>{s.config.soak=(s.config.soak||0)+1;return{saved:true};});return performance.now()-at;}));times.sort((a,b)=>a-b);console.log(JSON.stringify({type:'soak-concurrency',count,p95ms:times[Math.ceil(count*.95)-1]}));}
+  while(Date.now()-started<duration){await store.transact('soak','loop-'+operations++,'system',s=>{s.config.soak=(s.config.soak||0)+1;return{saved:true};});await store.transact('soak','skipped-'+operations,'system',()=>{throw Error('empty work executed');},'skip',{when:()=>false});if(operations%15===0){global.gc?.();const mem=process.memoryUsage(),sample={at:Date.now(),...mem,operations,auditWindow:store.select('soak',s=>s.events.length)};assert.equal(sample.auditWindow,100);samples.push(sample);console.log(JSON.stringify({type:'soak-memory',...sample}));}await sleep(2000);}
+  global.gc?.();const report={completed:true,startedAt:started,endedAt:Date.now(),durationMs:Date.now()-started,operations,samples,finalMemory:process.memoryUsage(),auditRows:Number((await db.pool.query(`SELECT count(*) AS n FROM "${schema}".audit`)).rows[0].n)};if(process.env.STABILITY_SOAK_REPORT)fs.writeFileSync(process.env.STABILITY_SOAK_REPORT,JSON.stringify(report,null,2));console.log(JSON.stringify({type:'soak-complete',...report,samples:samples.length}));completed=true;
+ }finally{await db.pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await db.close();if(!completed)console.error('soak did not complete');}
+})().catch(e=>{console.error(e.stack);process.exitCode=1;});

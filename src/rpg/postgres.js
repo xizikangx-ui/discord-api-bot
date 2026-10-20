@@ -42,11 +42,11 @@ function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool
     lease.on?.('error', fail); lease.on?.('end', fail);
     heartbeat = setInterval(() => lease.query('SELECT 1').catch(fail), 5000); heartbeat.unref();
   }
-  async function load(guild, runner) {
+  async function load(guild, runner, { hot = false } = {}) {
     await init(); assertLease();
     if (!runner) {
       const reader = await pool.connect();
-      try { await reader.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY'); const state = await load(guild, reader); await reader.query('COMMIT'); return state; }
+      try { await reader.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY'); const state = await load(guild, reader, {hot}); await reader.query('COMMIT'); return state; }
       catch (error) { await reader.query('ROLLBACK').catch(() => {}); throw error; }
       finally { reader.release(); }
     }
@@ -58,10 +58,15 @@ function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool
     delete state._collections;
     const objects = await runner.query(`SELECT collection,object_id,payload FROM ${table('objects')} WHERE guild_id=$1`, [guild]);
     for (const r of objects.rows) { C.requireThat(COLLECTIONS.has(r.collection), '数据库集合类型不合法。'); state[r.collection] ||= {}; state[r.collection][r.object_id] = open(guild, r.collection, r.object_id, r.payload); }
-    state.events = (await runner.query(`SELECT operation_id,payload FROM ${table('audit')} WHERE guild_id=$1 ORDER BY sequence`, [guild])).rows.map(r => open(guild, 'audit', r.operation_id, r.payload));
-    state.receipts = {};
-    for (const r of (await runner.query(`SELECT operation_id,payload FROM ${table('receipts')} WHERE guild_id=$1`, [guild])).rows) state.receipts[r.operation_id] = open(guild, 'receipt', r.operation_id, r.payload);
-    if(head.imported_digest&&Number(head.imported_revision)===state.revision)C.requireThat(digest(state)===head.imported_digest,'数据库首次导入内容校验失败，拒绝启用或恢复。');
+    const verifyImport=head.imported_digest&&Number(head.imported_revision)===state.revision;
+    const paged=hot&&!verifyImport;
+    const count=paged?Number((await runner.query(`SELECT COALESCE(MAX(sequence)+1,0) AS n FROM ${table('audit')} WHERE guild_id=$1`,[guild])).rows[0].n):0;
+    const offset=Math.max(0,count-100);
+    state.events=(await runner.query(`SELECT operation_id,payload FROM ${table('audit')} WHERE guild_id=$1${paged?' AND sequence >= $2':''} ORDER BY sequence`,paged?[guild,offset]:[guild])).rows.map(r=>open(guild,'audit',r.operation_id,r.payload));
+    state.receipts={};
+    for(const r of (await runner.query(`SELECT operation_id,payload FROM ${table('receipts')} WHERE guild_id=$1${paged?' ORDER BY at DESC,operation_id LIMIT 256':''}`,[guild])).rows)state.receipts[r.operation_id]=open(guild,'receipt',r.operation_id,r.payload);
+    if(verifyImport)C.requireThat(digest(state)===head.imported_digest,'数据库首次导入内容校验失败，拒绝启用或恢复。');
+    if(hot){state._auditOffset=paged?offset:0;compactHistory(state);}
     return state;
   }
   async function batch(runner, sql, rows, columns) {
@@ -70,35 +75,51 @@ function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool
       await runner.query(sql.replace('VALUES_PLACEHOLDER', values), args);
     }
   }
-  async function save(guild, before, next, source) {
+  async function save(guild, before, next, source, changeSet) {
     await init(); assertLease(); C.requireThat(lease, '尚未取得数据库独占运行锁，拒绝写入。'); const end = metrics?.start('database.commit'); const runner = await pool.connect();
     try {
       await runner.query('BEGIN');
       const head = (await runner.query(`SELECT revision FROM ${table('guilds')} WHERE guild_id=$1 FOR UPDATE`, [guild])).rows[0];
       C.requireThat(before ? head && Number(head.revision) === before.revision : !head, '数据库版本已有变化，停止写入以避免覆盖。');
       if (source) await runner.query(`INSERT INTO ${table('imports')}(guild_id,message_id,revision,digest) VALUES($1,$2,$3,$4)`, [guild, source.messageId, next.revision, digest(next)]);
-      const metadata = Object.fromEntries(Object.entries(next).filter(([k]) => !COLLECTIONS.has(k) && !['events', 'receipts'].includes(k)));
+      const metadata = Object.fromEntries(Object.entries(next).filter(([k]) => !COLLECTIONS.has(k) && !['events', 'receipts','_auditOffset'].includes(k)));
       metadata._collections = [...COLLECTIONS].filter(k => Object.hasOwn(next, k));
       if (before) await runner.query(`UPDATE ${table('guilds')} SET revision=$2,metadata=$3,updated_at=now() WHERE guild_id=$1`, [guild, next.revision, seal(guild, 'metadata', guild, metadata)]);
       else await runner.query(`INSERT INTO ${table('guilds')}(guild_id,revision,metadata,imported_message_id,imported_revision,imported_digest) VALUES($1,$2,$3,$4,$5,$6)`, [guild, next.revision, seal(guild, 'metadata', guild, metadata), source?.messageId || null, source ? next.revision : null, source ? digest(next) : null]);
       const changed = [], deleted = [];
+      changeSet ||= require('./changes').changes(before,next);
       for (const key of COLLECTIONS) {
         const old = before?.[key] || {}, current = next[key] || {};
-        for (const [id, value] of Object.entries(current)) if (!Object.hasOwn(old, id) || JSON.stringify(old[id]) !== JSON.stringify(value)) changed.push([guild, key, id, seal(guild, key, id, value)]);
+        for (const [id, value] of Object.entries(current)) if (changeSet.get(key)?.has(id)) changed.push([guild, key, id, seal(guild, key, id, value)]);
         for (const id of Object.keys(old)) if (!Object.hasOwn(current, id)) deleted.push([key, id]);
       }
       await batch(runner, `INSERT INTO ${table('objects')}(guild_id,collection,object_id,payload) VALUES VALUES_PLACEHOLDER ON CONFLICT(guild_id,collection,object_id) DO UPDATE SET payload=EXCLUDED.payload`, changed, 4);
       for (const [key, id] of deleted) await runner.query(`DELETE FROM ${table('objects')} WHERE guild_id=$1 AND collection=$2 AND object_id=$3`, [guild, key, id]);
       C.requireThat(!before || next.events.length >= before.events.length, '不能覆盖已有审计历史。');
-      const audits = next.events.slice(before?.events.length || 0).map((e, n) => [guild, (before?.events.length || 0) + n, e.id, seal(guild, 'audit', e.id, e)]);
+      const audits = next.events.slice(before?.events.length || 0).map((e, n) => [guild, (before?._auditOffset||0) + (before?.events.length || 0) + n, e.id, seal(guild, 'audit', e.id, e)]);
       await batch(runner, `INSERT INTO ${table('audit')}(guild_id,sequence,operation_id,payload) VALUES VALUES_PLACEHOLDER`, audits, 4);
       const receipts = Object.entries(next.receipts).filter(([id, v]) => !before?.receipts[id] || JSON.stringify(before.receipts[id]) !== JSON.stringify(v)).map(([id, v]) => [guild, id, v.at, seal(guild, 'receipt', id, v)]);
       await batch(runner, `INSERT INTO ${table('receipts')}(guild_id,operation_id,at,payload) VALUES VALUES_PLACEHOLDER ON CONFLICT(guild_id,operation_id) DO NOTHING`, receipts, 4);
       // Expiry follows the in-memory receipt policy, including migrated old receipts.
-      for (const id of Object.keys(before?.receipts || {})) if (!Object.hasOwn(next.receipts, id)) await runner.query(`DELETE FROM ${table('receipts')} WHERE guild_id=$1 AND operation_id=$2`, [guild, id]);
+      for (const id of Object.keys(before?.receipts || {})) if (next._auditOffset===undefined&&!Object.hasOwn(next.receipts, id)) await runner.query(`DELETE FROM ${table('receipts')} WHERE guild_id=$1 AND operation_id=$2`, [guild, id]);
       assertLease(); await runner.query('COMMIT'); metrics?.gauge('database.changedObjects', changed.length);
     } catch (error) { await runner.query('ROLLBACK').catch(() => {}); throw error; }
     finally { runner.release(); end?.(); }
+  }
+  function compactHistory(s){
+    if(s._auditOffset===undefined)return;
+    if(s.events.length>100){const n=s.events.length-100;s.events=s.events.slice(n);s._auditOffset+=n;}
+    const receipts=Object.entries(s.receipts).sort((a,b)=>b[1].at-a[1].at);
+    if(receipts.length>256)s.receipts=Object.fromEntries(receipts.slice(0,256));
+  }
+  async function receipt(guild,operation){await init();assertLease();const r=(await pool.query(`SELECT payload FROM ${table('receipts')} WHERE guild_id=$1 AND operation_id=$2`,[guild,operation])).rows[0];return r?open(guild,'receipt',operation,r.payload):null;}
+  async function auditPage(guild,{page=0,size=25,q='',id}={}){
+    await init();assertLease();page=C.number(page,'页',0,100000);size=C.number(size,'每页',1,100);q=String(q).normalize('NFKC').toLowerCase();
+    if(id){const r=(await pool.query(`SELECT payload FROM ${table('audit')} WHERE guild_id=$1 AND operation_id=$2 ORDER BY sequence DESC LIMIT 1`,[guild,id])).rows[0];return {item:r?open(guild,'audit',id,r.payload):null};}
+    if(!q){const total=Number((await pool.query(`SELECT count(*) AS n FROM ${table('audit')} WHERE guild_id=$1`,[guild])).rows[0].n);const rows=(await pool.query(`SELECT operation_id,payload FROM ${table('audit')} WHERE guild_id=$1 ORDER BY sequence DESC LIMIT $2 OFFSET $3`,[guild,size,page*size])).rows;return {total,page,items:rows.map(r=>open(guild,'audit',r.operation_id,r.payload))};}
+    let cursor='9223372036854775807',total=0;const items=[];
+    for(;;){const rows=(await pool.query(`SELECT sequence,operation_id,payload FROM ${table('audit')} WHERE guild_id=$1 AND sequence<$2 ORDER BY sequence DESC LIMIT 200`,[guild,cursor])).rows;if(!rows.length)break;for(const r of rows){const e=open(guild,'audit',r.operation_id,r.payload);if((e.label||e.id).normalize('NFKC').toLowerCase().includes(q)){if(total>=page*size&&items.length<size)items.push(e);total++;}}cursor=rows.at(-1).sequence;}
+    return {total,page,items};
   }
   async function importState(guild, state, messageId) {
     C.requireThat(messageId && state.guildId === guild, '导入须来自已定位的权威Discord存档。');
@@ -107,6 +128,6 @@ function createPostgres({ connectionString, encrypt, decrypt, pool: suppliedPool
   }
   async function deleteGuild(guild,runner){C.requireThat(schema!=="rpg", "禁止从网站删除Discord存档。");assertLease();for(const name of ["objects","audit","receipts","imports","guilds"])await runner.query(`DELETE FROM ${table(name)} WHERE guild_id=$1`,[guild]);}
   async function close() { lost = true; clearInterval(heartbeat); if (lease) { lease.release(true); lease = null; } await pool.end(); }
-  return { init, load, save, importState, acquireLease, assertLease, close, digest, pool, deleteGuild };
+  return { init, load, loadHot: guild=>load(guild,undefined,{hot:true}), receipt, auditPage, compactHistory, save, importState, acquireLease, assertLease, close, digest, pool, deleteGuild };
 }
 module.exports = { createPostgres, COLLECTIONS, digest };

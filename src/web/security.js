@@ -42,6 +42,13 @@ function codec(encoded) {
         }),
       );
     },
+    async *sealStream(scope,id,source){
+      const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',key,iv);c.setAAD(Buffer.from(scope+':'+id));
+      yield '{"v":1,"iv":'+JSON.stringify(iv.toString('base64'))+',"data":"';
+      async function* encrypted(){for await(const chunk of source)yield c.update(chunk);yield c.final();}
+      yield* require('./backup-stream').base64(encrypted());
+      yield '","tag":'+JSON.stringify(c.getAuthTag().toString('base64'))+'}';
+    },
     open(scope, id, bytes) {
       const e = JSON.parse(Buffer.from(bytes).toString()),
         d = crypto.createDecipheriv(

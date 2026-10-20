@@ -5,7 +5,8 @@ const { migrate } = require('./activities');
 
 // A failed Discord write is not retried with fresh dice. The canonical attachment
 // must be read first; unresolved outcomes freeze this guild until a GM recovers it.
-function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt, fetcher = fetch, database, allowImport = false, backgroundPublications = !!database, metrics, systemActorId, deriveDelivery, beforeMutation }) {
+function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt, fetcher = fetch, database, allowImport = false, backgroundPublications = !!database, metrics, systemActorId, deriveDelivery, beforeMutation, pagedHistory=false }) {
+  const loadDatabase = guild => pagedHistory&&database.loadHot?database.loadHot(guild):database.load(guild);
   const actor = () => systemActorId || client.user.id;
   const states = new Map(), messages = new Map(), queues = new Map(), frozen = new Map();
   const depths = new Map(), listeners = new Set(), backupMessages = new Map(), backedUp = new Map(), backupJobs = new Map();
@@ -73,7 +74,7 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
     C.requireThat(!removedGuilds.has(guild), "此团已删除，不能恢复。");
     let state, message;
     if (database) {
-      state = await database.load(guild);
+      state = await loadDatabase(guild);
       if (!state) {
         C.requireThat(allowImport&&!loadedDatabaseGuilds.has(guild), '数据库没有跑团存档。首次迁移须显式开启RPG_IMPORT_DISCORD_ONCE，拒绝自动回退旧存档。');
         message = await find(guild);
@@ -117,9 +118,12 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       C.requireThat(states.has(guild), '跑团存档尚未读取，请稍后。');
       C.requireThat(!frozen.has(guild), '存档写入结果待核对，跑团已暂停。GM请使用 /gm 恢复存档。');
       const before = states.get(guild);
-      if (before.receipts[operation]) return C.clone(before.receipts[operation].result);
+      const prior=before.receipts[operation]||(pagedHistory&&database?.receipt?await database.receipt(guild,operation):null);
+      if(prior)return C.clone(prior.result);
+      if(options.when&&!options.when(before)){metrics?.observe('transaction.skipped',1);return C.clone(options.skipResult??null);}
       beforeMutation?.(guild,operation,options);
       const computeDone = metrics?.start('transaction.compute');
+      metrics?.observe('transaction.source.'+(options.delivery===false?'delivery':operation.startsWith('web-tick:')?'timer':'action'),1);
       const next = C.clone(before);
       const result = await fn(next);
       if(options.lifecycle!==false)require('./mortality').reconcile(next, before);
@@ -128,20 +132,22 @@ function createStore({ client, channel, settingsFor, saveIndex, encrypt, decrypt
       next.receipts[operation] = { at: Date.now(), result: C.clone(savedResult) };
       next.events.push({ id: operation, at: Date.now(), actorId, label, revision: next.revision, result: C.clone(savedResult) });
       // Interaction IDs cannot be reused after 24h. Full audit entries remain.
-      for (const [key, receipt] of Object.entries(next.receipts)) if (Date.now() - receipt.at > 86400000) delete next.receipts[key];
+      if(!pagedHistory)for (const [key, receipt] of Object.entries(next.receipts)) if (Date.now() - receipt.at > 86400000) delete next.receipts[key];
       if (backgroundPublications && options.delivery !== false) (deriveDelivery || require('./outbox').derive)(before, next);
+      const changes=database?require('./changes').changes(before,next):null;
       computeDone?.();
       try {
         const commitDone=metrics?.start('transaction.commit');
-        try{if (database) await database.save(guild, before, next); else await persist(guild, next);}finally{commitDone?.();}
+        try{if (database) await database.save(guild, before, next, undefined, changes); else await persist(guild, next);}finally{commitDone?.();}
+        if(pagedHistory)database?.compactHistory?.(next);
         states.set(guild, next);
-        for (const listener of listeners) { try { listener(guild, {before,next,label,operation}); } catch { /* Notification cannot invalidate a durable commit. */ } }
+        for (const listener of listeners) { try { listener(guild, {before,next,label,operation,changes}); } catch { /* Notification cannot invalidate a durable commit. */ } }
         return C.clone(savedResult);
       } catch (error) {
         frozen.set(guild, error.message);
         try {
           let canonical;
-          if (database) canonical = await database.load(guild);
+          if (database) canonical = await loadDatabase(guild);
           else {
             const canonicalMessage = await find(guild);
             C.requireThat(canonicalMessage, '存档无法定位。');

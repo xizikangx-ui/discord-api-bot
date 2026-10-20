@@ -205,6 +205,7 @@ function createWeb({
   const deletion=require('./group-deletion').createDeletion({repo,content,accounts,games,database,storage,disconnected:group=>{for(const ws of sockets)if(ws.groupId===group||ws.watchGroups?.has(group))subscriptions.clearGroup(ws,group,{code:'NOT_FOUND',message:'此团正在删除。'});}});
   const explorationReset=require('./exploration-reset').createReset({repo,accounts,games,broadcast:(group,event)=>background.run(()=>emit(group,event))});
   chat.setSystemReader(async(group,messages)=>{await games.ensure(group);const marks=games.store.select(group,s=>({maps:s.mapTombstones||{},battles:s.battleTombstones||{}}));return require('./exploration-reset').decorate(messages,marks);});
+  async function safeFeedback(saved,group,uid,a){try{return await readableFeedback(saved,group,uid,a);}catch{metrics.gauge('response.feedbackFailure',1);return saved;}}
   async function readableFeedback(saved,group,uid,a){
     if(!saved || (!saved.battleFeedback?.length && !saved.rareLoot?.length))return saved;
     const access=new Map();
@@ -696,9 +697,9 @@ function createWeb({
         const key=group+':'+uid+':'+p.operationId;
         if(p.command==='npc.portrait'&&p.params)p.params.mediaId ||= p.params.uploadId;
         const job=games.execute(group,uid,p.command,p.params||{},p.operationId,p.versions,rest==='/gm/execute');pending.set(key,job);
-        try{const saved=await job;if(p.command==='character.portrait')background.run(()=>notifyAvatar(uid,group));let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');gamePatch=await games.view(group,uid,keys,a);}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...await readableFeedback(saved,group,uid,a),...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
+        try{const saved=await job;if(p.command==='character.portrait')background.run(()=>notifyAvatar(uid,group));let gamePatch;if(p.includePatch){const keys=require('./game-sections').parse(p.sections||'dashboard,core,battle,explore,bag');try{gamePatch=await games.view(group,uid,keys,a);}catch{metrics.gauge('response.patchFailure',1);}}res.setHeader('Server-Timing','game;dur='+Math.round(performance.now()-started));return answer({...await safeFeedback(saved,group,uid,a),...(gamePatch?{gamePatch}: {})});}finally{if(pending.get(key)===job)pending.delete(key);}
       }
-      if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length),result=pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op);if(result.status==='committed'&&u.searchParams.get('includePatch')==='1')result.gamePatch=await games.view(group,uid,require('./game-sections').parse(u.searchParams.get('sections')||'dashboard,core,battle,explore,bag,market'),a);return answer(await readableFeedback(result,group,uid,a));}
+      if(rest.startsWith('/game/operations/')&&!p){const op=rest.slice('/game/operations/'.length),result=pending.has(group+':'+uid+':'+op)?{status:'processing'}:await games.operationReceipt(group,uid,op);if(result.status==='committed'&&u.searchParams.get('includePatch')==='1')try{result.gamePatch=await games.view(group,uid,require('./game-sections').parse(u.searchParams.get('sections')||'dashboard,core,battle,explore,bag,market'),a);}catch{metrics.gauge('response.patchFailure',1);}return answer(await safeFeedback(result,group,uid,a));}
       if (rest === "/game/preview" && p)
         return answer(
           await games.preview(
@@ -727,10 +728,10 @@ function createWeb({
           await games.receipt(group, uid, rest.slice("/game/receipt/".length)),
         );
       if(rest==='/game/skill-check'&&p){
-        try{const st=games.store.snapshot(group),P=require('./game-service'),{b}=P.ownActor(st,uid,p.battleId),x=P.normalizeAction(st,uid,p);require('../rpg/combat').validateOperation(st,b,{type:'attack',ability:x.abilityKey,target:x.targetId,group:x.action,firing:x.firing});return answer({available:true});}catch(e){return answer({available:false,reason:e.message});}
+        try{const st=games.store.select(group,s=>require('./gm-read').battle(s,p.battleId)),P=require('./game-service'),{b}=P.ownActor(st,uid,p.battleId),x=P.normalizeAction(st,uid,p);require('../rpg/combat').validateOperation(st,b,{type:'attack',ability:x.abilityKey,target:x.targetId,group:x.action,firing:x.firing});return answer({available:true});}catch(e){return answer({available:false,reason:e.message});}
       }
       if (rest === "/game/movement" && !p) {
-        const s = games.store.snapshot(group),
+        const s = games.store.select(group,s=>require('./gm-read').battle(s,u.searchParams.get('battleId'))),
           { b, a: actor } = require("./game-service").ownActor(
             s,
             uid,
@@ -796,8 +797,16 @@ function createWeb({
         return answer(await library.propose(a, games.store.snapshot(group), p));
       S.ok(rest.startsWith("/gm/"), "接口不存在。", "NOT_FOUND");
       accounts.gm(a);
-      const gpath = rest.slice(3),
-        s = games.store.snapshot(group);
+      const gpath=rest.slice(3);
+      if(gpath.startsWith('/collections/'))return answer(await require('./gm-read').collection(games.store,group,uid,gpath.slice(13),u.searchParams));
+      const s=games.store.select(group,st=>{
+        if(['/session','/directory'].includes(gpath))return {revision:st.revision,config:st.config};
+        if(gpath==='/schemas')return {};
+        if(gpath==='/context/battle')return require('./gm-read').battle(st,u.searchParams.get('id'));
+        if(gpath==='/context/maps')return Object.fromEntries(['config','roomTemplates','mapCategories','bossPools','merchantTemplates'].map(k=>[k,st[k]]));
+        if(gpath==='/drafts')return {forms:Object.fromEntries(Object.entries(st.forms).filter(([,f])=>f.owner===uid&&f.kind==='gmWebDraft'))};
+        return Object.fromEntries(['revision','config','forms',...Object.values(G.KINDS)].map(k=>[k,k==='forms'?{}:st[k]]));
+      });
       if (gpath === "/session")
         return answer({
           guildId: group,
@@ -888,63 +897,6 @@ function createWeb({
         }
         const f = F.create(s, uid, p.kind, undefined, p.id);
         return answer({ ...f, baseVersion: f.baseTemplateVersion });
-      }
-      if (gpath.startsWith("/collections/")) {
-        const source = gpath.slice(13),
-          allowed = [
-            ...Object.values(G.KINDS),
-            "players",
-            "explorations",
-            "battles",
-            "offers",
-            "checks",
-            "sessions",
-            "deaths",
-            "corpses",
-            "forms",
-            "events",
-            "deliveryJobs",
-            "lootPublications",
-            "containerDefinitions",
-            "couponRedemptions",
-            "merchantTrades", "markets", "marketTrades",
-          ];
-        S.ok(allowed.includes(source), "查询类型无效。");
-        let all = Object.values(s[source] || {});
-        if (source === "forms") all = all.filter((f) => f.owner === uid);
-        const id = u.searchParams.get("id");
-        if (id) {
-          const item = all.find((x) => [x.id, x.userId, x.key].includes(id));
-          S.ok(item, "对象不存在。");
-          return answer({
-            item:
-              source === "players" ? { ...item, stats: Mstats(item) } : item,
-            revision: s.revision,
-          });
-        }
-        const q = (u.searchParams.get("q") || "").toLowerCase(),
-          category = u.searchParams.get("category");
-        all = all.filter((t) =>
-          (t.name || t.title || t.label || t.id || t.key || "")
-            .toLowerCase()
-            .includes(q),
-        );
-        if (source === "catalog" && category)
-          all = all.filter((t) =>
-            require("../rpg/item-categories").matches(t, category, true),
-          );
-        if (source === "events") all.reverse();
-        const size = C.number(u.searchParams.get("size") || 25, "每页", 1, 100),
-          page = C.number(u.searchParams.get("page") || 0, "页", 0, 100000);
-        return answer({
-          revision: s.revision,
-          total: all.length,
-          items: all
-            .slice(page * size, (page + 1) * size)
-            .map((t) =>
-              source === "players" ? { ...t, stats: Mstats(t) } : t,
-            ),
-        });
       }
       if (gpath === "/context/battle") return answer(require("../rpg/gm-context-data").battle(s,u.searchParams.get("id"),u.searchParams.get("actorId")));
       if (gpath === "/context/maps") return answer(require("../rpg/gm-context-data").mapOptions(s));
@@ -1254,6 +1206,7 @@ if (require.main === module) {
       const aws = require("@aws-sdk/client-s3");
       storage = {
         bucket: process.env.WEB_BUCKET,
+        streaming: true,
         client: new aws.S3Client({
           endpoint: process.env.WEB_S3_ENDPOINT,
           region: process.env.WEB_S3_REGION || "auto",

@@ -660,10 +660,7 @@ test(
             );
             assert.equal(r.status, 403);
           }
-          const hidden = await app.chat.create(
-            await app.accounts.member(group.id, admin.user.id),
-            { name: "限成员频道", kind: "chat", members: [alice.user.id] },
-          );
+          const hidden = gmRoom;
           await assert.rejects(
             app.chat.history(bob.user.id, hidden.id, {
               after: 0,
@@ -692,7 +689,7 @@ test(
         },
       );
       await t.test(
-        "websocket reconnect cursors retain order and deletion; permission revocation closes subscriptions",
+        "websocket reconnect cursors retain order and deletion; revocation clears only the affected subscription",
         async () => {
           const { WebSocket } = require("ws");
           const connect = () =>
@@ -706,11 +703,8 @@ test(
               w.once("open", () => resolve(w));
               w.once("error", reject);
             });
-          const w = await connect();
-          const room = await app.chat.create(
-            await app.accounts.member(group.id, admin.user.id),
-            { name: "实时权限测试", kind: "chat", members: [] },
-          );
+          const w = await connect();t.after(()=>w.terminate());
+          const room={id:crypto.randomUUID(),groupId:group.id,name:'旧版受限频道',kind:'chat',members:[],sequence:0,version:1},baseline=0;await repo.put('room',room,{scope:group.id});
           const subscribed = new Promise((resolve) =>
             w.once("message", (data) => resolve(JSON.parse(data))),
           );
@@ -732,7 +726,7 @@ test(
             });
             first ||= m;
           }
-          let cursor = 0,
+          let cursor = baseline,
             all = [];
           for (;;) {
             const batch = (
@@ -753,8 +747,8 @@ test(
             ).data;
           assert.equal(delta[0].id, first.id);
           assert.equal(delta[0].text, "");
-          assert.equal(removed.sequence, 68);
-          const live = await connect();
+          assert.equal(removed.sequence, baseline+68);
+          const live = await connect();t.after(()=>live.terminate());
           const joined = new Promise((resolve) =>
             live.once("message", resolve),
           );
@@ -766,9 +760,7 @@ test(
             }),
           );
           await joined;
-          const closed = new Promise((resolve) =>
-            live.once("close", (code) => resolve(code)),
-          );
+          const revoked=new Promise(resolve=>live.on('message',bytes=>{const event=JSON.parse(bytes);if(event.type==='subscription-error')resolve(event.data);}));
           await app.chat.update(
             await app.accounts.member(group.id, admin.user.id),
             room.id,
@@ -778,7 +770,7 @@ test(
               members: [alice.user.id],
             },
           );
-          assert.equal(await closed, 4003);
+          assert.equal((await revoked).code,'FORBIDDEN');assert.equal(live.readyState,1);live.close();
         },
       );
       await t.test(
@@ -1346,8 +1338,8 @@ test(
       await t.test('deletion waits for first game initialization and cannot resurrect an empty save',async()=>{
         const u=await accountsUser(),g=await app.accounts.createGroup(u,{name:'首次初始化并发删除验收'},crypto.randomUUID());
         let entered,release;
-        const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r),originalLoad=db.load;
-        db.load=async id=>{if(id===g.id){entered();await gate;}return originalLoad(id);};
+        const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r),loadKey=db.loadHot?'loadHot':'load',originalLoad=db[loadKey];
+        db[loadKey]=async id=>{if(id===g.id){entered();await gate;}return originalLoad(id);};
         try{
           const initializing=app.games.ensure(g.id);await started;
           await app.deletion.start(u,g.id,{operationId:crypto.randomUUID(),baseVersion:g.version});
@@ -1356,7 +1348,7 @@ test(
           assert.equal((await app.deletion.status(u,g.id)).status,'deleted');
           await assert.rejects(app.games.ensure(g.id),/删除/);
           assert.equal(await originalLoad(g.id),null);
-        }finally{release();db.load=originalLoad;}
+        }finally{release();db[loadKey]=originalLoad;}
       });
       await t.test(
         "encrypted data can be read from fresh repositories after restart",

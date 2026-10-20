@@ -22,7 +22,7 @@ function versions(s, { uid, roomIds, gm = false, sources },hash=(source,id)=>G.f
 }
 function createVersionCache(){const groups=new Map();return {
  get(s,options){let c=groups.get(s.guildId);if(!c||c.revision!==s.revision){c={revision:s.revision,hashes:new Map()};groups.set(s.guildId,c);}return versions(s,options,(source,id)=>{const key=source+':'+(id||'');if(!c.hashes.has(key))c.hashes.set(key,{source,id,hash:G.fingerprint(id?s[source]?.[id]:s[source])});return c.hashes.get(key).hash;});},
- commit(before,next){const c=groups.get(next.guildId);if(!c)return;for(const e of c.hashes.values()){const hash=G.fingerprint(e.id?next[e.source]?.[e.id]:next[e.source]);if(hash!==e.hash)e.hash=hash;}c.revision=next.revision;},
+ commit(before,next,changes){const c=groups.get(next.guildId);if(!c)return;for(const e of c.hashes.values()){if(changes&&!changes.get(e.source)?.has(e.id||''))continue;const hash=G.fingerprint(e.id?next[e.source]?.[e.id]:next[e.source]);if(hash!==e.hash)e.hash=hash;}c.revision=next.revision;},
  forget(group){groups.delete(group);}
 };}
 module.exports = { versions,createVersionCache };

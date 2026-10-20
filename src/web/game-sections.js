@@ -13,7 +13,7 @@ const definitions={
   management:{fields:[],sources:[...new Set(Object.values(G.KINDS)), 'config','players','battles','explorations']},
 };
 function parse(value){if(value==null)return null;const names=[...new Set(String(value).split(','))];S.ok(names.length&&names.every(k=>definitions[k]),'数据分区无效。');return names;}
-function changed(before,next){const sources=new Set(Object.values(definitions).flatMap(d=>d.sources));const dirty=new Set([...sources].filter(k=>G.fingerprint(before[k])!==G.fingerprint(next[k])));return Object.keys(definitions).filter(k=>definitions[k].sources.some(s=>dirty.has(s)));}
+function changed(before,next,changes){if(changes)return Object.keys(definitions).filter(k=>definitions[k].sources.some(s=>changes.has(s)));const sources=new Set(Object.values(definitions).flatMap(d=>d.sources));const dirty=new Set([...sources].filter(k=>G.fingerprint(before[k])!==G.fingerprint(next[k])));return Object.keys(definitions).filter(k=>definitions[k].sources.some(s=>dirty.has(s)));}
 function fields(names){return [...new Set(['revision',...names.flatMap(k=>definitions[k].fields)])];}
 function sources(names){return [...new Set(['players','characterDrafts',...names.flatMap(k=>definitions[k].sources)])];}
 module.exports={definitions,parse,changed,fields,sources};

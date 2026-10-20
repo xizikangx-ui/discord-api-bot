@@ -142,8 +142,10 @@ function createBackups({ pool, repo, crypt, storage, names }) {
         week = Math.floor((day + 3) / 7),
         state = await repo.get("backup", "schedule");
       if (!force && state?.day === day) return;
-      const id = Date.now() + "-" + crypto.randomBytes(4).toString("hex"),
-        archive = await snapshot(pool, { names }),
+      const id=Date.now()+'-'+crypto.randomBytes(4).toString('hex'),key='backups/'+id+'/manifest.enc';let imageCount=0,streamReport;
+      if(storage.streaming&&crypt.sealStream){streamReport=await require('./backup-stream').writeBackup({pool,names,definitions,crypt,storage,id,key});imageCount=streamReport.images;}
+      else {
+      const archive = await snapshot(pool, { names }),
         images = archive.namespaces.platform.records
           .filter((row) => row.kind === "media")
           .map((row) =>
@@ -179,7 +181,7 @@ function createBackups({ pool, repo, crypt, storage, names }) {
       }
       const zipped = zlib.gzipSync(Buffer.from(JSON.stringify(archive))),
         body = crypt.seal("backup", id, { gzip: zipped.toString("base64") }),
-        key = "backups/" + id + "/manifest.enc";
+        manifestKey = key;
       await storage.client.send(
         new storage.commands.PutObjectCommand({
           Bucket: storage.bucket,
@@ -187,6 +189,8 @@ function createBackups({ pool, repo, crypt, storage, names }) {
           Body: body,
         }),
       );
+      imageCount=archive.images.length;
+      }
       const saved = {
         id,
         backupId: id,
@@ -194,7 +198,8 @@ function createBackups({ pool, repo, crypt, storage, names }) {
         at: Date.now(),
         day,
         week,
-        images: archive.images.length,
+        images: imageCount,
+        ...(streamReport?{digest:streamReport.digest,bytes:streamReport.bytes}:{}),
       };
       await repo.put("backup", saved);
       await repo.put("backup", { ...saved, id: "daily:" + day });

@@ -208,6 +208,7 @@ function createGames({
       encrypt,
       decrypt,
       backgroundPublications: true,
+      pagedHistory: true,
       deriveDelivery: derive,
       metrics,
       beforeMutation:(group,op,options)=>S.ok(!resetFences.has(group)||op===resetFences.get(group)||options.maintenance,'管理员正在清理旧探索，请稍后再操作。','MAINTENANCE'),
@@ -225,7 +226,7 @@ function createGames({
     const job = store.initialize(id, async () => {
       const group = await repo.get("group", id);
       S.ok(group && !group.deleting && !(await repo.get("groupDeletion", id)), "跑团不存在或已删除。");
-      let s = await database.load(id);
+      let s = await (database.loadHot?database.loadHot(id):database.load(id));
       if (!s) {
         s = C.newState(id);
         const rooms = await repo.list("room", id);
@@ -806,80 +807,12 @@ function createGames({
       if(worldLibrary&&Date.now()-worldRefreshAt>=86400000){await worldLibrary.refresh();worldRefreshAt=Date.now();}
       for (const group of store.guilds()) {
         if (store.frozen(group)||resetFences.has(group)) continue;
-        const s = store.select(group,st=>({
-          librarySync:st.librarySync,
-          worldSettings:st.worldSettings?.main,
-          battles:Object.fromEntries(Object.entries(st.battles).map(([id,b])=>[id,{id,status:b.status,pending:{hits:require('../rpg/aoe').hits(b).map(h=>({expiresAt:h.expiresAt}))},due:require('../rpg/npc-auto').due(st,b),terminal:!!B.terminalOutcome(st,b)}])),
-          offers:Object.values(st.offers).map(o=>({status:o.status,expiresAt:o.expiresAt})),sessions:Object.values(st.sessions).map(x=>({startsAt:x.startsAt,reminder:x.reminder})),
-          explorations:Object.values(st.explorations).map(m=>({status:m.status,moves:Object.values(m.moves||{}).map(r=>({status:r.status,expiresAt:r.expiresAt})),pending:require('../rpg/team-movement').pendingAuto(st,m)})),
-          players:Object.values(st.players).map(p=>({temporaryEffects:(p.temporaryEffects||[]).map(e=>({expiresAt:e.expiresAt}))})),lifecycle:needsLifecycle(st),
-        })),
-          now = Date.now(),
-          due = Object.values(s.battles).some(
-            (b) =>
-              b.status === "active" &&
-              (b.pending.hits
-                .some((h) => h.expiresAt <= now) ||
-                b.due || b.terminal),
-          ),
-          expires = Object.values(s.offers).some(
-            (o) =>
-              ["editing", "ready"].includes(o.status) && o.expiresAt <= now,
-          ),
-          sessions = Object.values(s.sessions).some(
-            (x) => x.startsAt <= now && x.reminder.status === "pending",
-          ),
-          maps = Object.values(s.explorations).some(
-            (m) =>
-              m.status === "active" &&
-              (Object.values(m.moves || {}).some(
-                (r) => r.status === "pending" && r.expiresAt <= now,
-              ) ||
-                m.pending),
-          );
-        if (
-          due ||
-          s.lifecycle ||
-          store.select(group,st=>Object.values(st.worldJourneys||{}).some(j=>['confirming','approval'].includes(j.status)&&j.expiresAt<=now)) ||
-          expires ||
-          sessions ||
-          maps ||
-          Object.values(s.players).some((p) =>
-            p.temporaryEffects?.some((e) => e.expiresAt <= now),
-          )
-        )
-          await store.transact(
-            group,
-            "web-tick:" + crypto.randomUUID(),
-            "system:web",
-            (st) => {
-              require("../rpg/activities").expireAll(st, now);
-              require('./world').expire(st,now);
-              for (const session of Object.values(st.sessions))
-                if (
-                  session.startsAt <= now &&
-                  session.reminder.status === "pending"
-                ) {
-                  session.status = "notified";
-                  session.reminder.status = "sent";
-                  session.reminder.webDeliveredAt = now;
-                  session.version++;
-                }
-              for (const m of Object.values(st.explorations))
-                require("../rpg/team-movement").expire(st, m, now);
-              for (const b of Object.values(st.battles).filter(
-                (b) => b.status === "active",
-              )) {
-                for (const h of [...require("../rpg/aoe").hits(b)])
-                  if (h.expiresAt <= now) B.defend(st, b, h.id, "defend");
-                if (require("../rpg/npc-auto").due(st, b))
-                  require("../rpg/npc-auto").step(st, b);
-              }
-              require("../rpg/team-movement").autoEncounters(st);
-              return { tick: true };
-            },
-            "网站定时结算",
-          );
+        const now=Date.now(),s=store.select(group,st=>({librarySync:st.librarySync,worldSettings:st.worldSettings?.main}));
+        const scheduler=require('./game-scheduler');
+        if(store.select(group,st=>scheduler.due(st,now,needsLifecycle)))
+          await store.transact(group,'web-tick:'+crypto.randomUUID(),'system:web',st=>scheduler.processDue(st,Date.now()),'网站到期任务',{
+            when:st=>scheduler.due(st,Date.now(),needsLifecycle),skipResult:{tick:false},
+          });
         await publishJobs(group);
         const g = await repo.get("group", group);
         const publicDue=now-(s.librarySync?.lastSyncAt||0)>=86400000,
@@ -905,21 +838,13 @@ function createGames({
     } finally {
       pumping = false;
       if(!stopped&&scheduled){let delay=30000;for(const group of store.guilds())if(!store.frozen(group)&&!resetFences.has(group))delay=Math.min(delay,store.select(group,s=>{
-        const now=Date.now(),times=[];
-        for(const b of Object.values(s.battles))if(b.status==='active'){if(require('../rpg/npc-auto').due(s,b)||B.terminalOutcome(s,b))return 100;for(const h of require('../rpg/aoe').hits(b))times.push(h.expiresAt);if(b.current&&!b.pending&&b.actors.some(a=>a.id===b.current.actorId&&!a.userId&&require('../rpg/npc-auto').config(a.ai).mode==='auto'))times.push(now+1000);}
-        for(const j of Object.values(s.deliveryJobs||{}))if(j.kind.startsWith('web')&&j.status==='pending')times.push(now+1000);
-        for(const o of Object.values(s.offers))if(['editing','ready'].includes(o.status))times.push(o.expiresAt);
-        for(const x of Object.values(s.sessions))if(x.reminder.status==='pending')times.push(x.startsAt);
-        for(const p of Object.values(s.players))for(const e of p.temporaryEffects||[])if(e.expiresAt)times.push(e.expiresAt);
-        for(const m of Object.values(s.explorations))for(const r of Object.values(m.moves||{}))if(r.status==='pending')times.push(r.expiresAt);
-        for(const j of Object.values(s.worldJourneys||{}))if(['confirming','approval'].includes(j.status))times.push(j.expiresAt);
-        return Math.max(100,Math.min(30000,...times.map(t=>t-now)));
+        return require('./game-scheduler').delay(s,Date.now(),needsLifecycle);
       }));wake(delay);}
     }
   }
   const unsubscribe = store.onCommit((group,change) => {
-    if(change)versionCache.commit(change.before,change.next);
-    const sections=change?Sections.changed(change.before,change.next):Object.keys(Sections.definitions),v=versions(group);
+    if(change)versionCache.commit(change.before,change.next,change.changes);
+    const sections=change?Sections.changed(change.before,change.next,change.changes):Object.keys(Sections.definitions),v=versions(group);
     const next={...v.sectionVersions};for(const key of sections)next[key]=v.revision;stamps.set(group,next);
     if(sections.length)broadcast(group, {
       type: "state",
