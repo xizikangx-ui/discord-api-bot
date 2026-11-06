@@ -1133,9 +1133,12 @@ function managementDeletePanel(guildId) {
   ];
 }
 
-function managementDeleteConfirmationComponents(proposalId, token, disabled = true) {
+function managementDeleteConfirmationComponents(proposalId, token, waiting = true) {
   return [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`mgmtdelete-confirm:${proposalId}:${token}`).setLabel('确认删除帖子').setStyle(ButtonStyle.Danger).setDisabled(disabled),
+    // Keep the server-side confirmAfter check authoritative. An enabled
+    // button during the warning window lets the final approver retry if the
+    // timer's Discord message edit fails; an early click only gives feedback.
+    new ButtonBuilder().setCustomId(`mgmtdelete-confirm:${proposalId}:${token}`).setLabel(waiting ? '安全等待中 · 点击查看' : '确认删除帖子').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`mgmtdelete-cancel:${proposalId}:${token}`).setLabel('取消').setStyle(ButtonStyle.Secondary),
   )];
 }
@@ -1209,7 +1212,7 @@ function moderationProposalEmbed(proposal) {
   const phase = proposal.status === 'pending_management'
     ? `主管理组同意：${managementVotes}/${proposal.managementVotesRequired || 3}（发起人计 1 票；需不同成员）`
     : proposal.status === 'awaiting_management_confirmation'
-      ? `主管理组同意：${managementVotes}/${proposal.managementVotesRequired || 3}\n最后审批者：<@${proposal.finalApproverId || proposal.pendingManagementConfirmation?.userId || proposal.requesterId}>，等待最终确认。\n\n⚠️ 最终警示：确认后 Bot 会立即删除整个帖子及其中所有消息，无法恢复。按钮等待 5 秒后启用。`
+      ? `主管理组同意：${managementVotes}/${proposal.managementVotesRequired || 3}\n最后审批者：<@${proposal.finalApproverId || proposal.pendingManagementConfirmation?.userId || proposal.requesterId}>，等待最终确认。\n\n⚠️ 最终警示：确认后 Bot 会立即删除整个帖子及其中所有消息，无法恢复。等待 5 秒；期间可点按钮查看剩余时间。`
       : proposal.status === 'pending_operator'
         ? `操作员同意：${operatorVotes}/${proposal.operatorVotesRequired}`
         : proposal.status === 'pending_reviewer'
@@ -1978,7 +1981,8 @@ async function handleManagementDeleteConfirmation(interaction) {
       return;
     }
     if (Date.now() < pending.confirmAfter) {
-      await interaction.followUp({ content: '安全等待时间尚未结束，请 5 秒后再确认。', flags: MessageFlags.Ephemeral }).catch(() => {});
+      const seconds = Math.max(1, Math.ceil((pending.confirmAfter - Date.now()) / 1000));
+      await interaction.followUp({ content: `安全等待还剩约 ${seconds} 秒，帖子尚未删除。等候结束后可再点同一按钮确认。`, flags: MessageFlags.Ephemeral }).catch(() => {});
       return;
     }
     const member = await interaction.guild.members.fetch(interaction.user.id);
